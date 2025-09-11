@@ -1,0 +1,15 @@
+{
+    "symbols": [
+        "SOL/USDT",
+        "ADA/USDT",
+        "XRP/USDT",
+        "DOT/USDT",
+        "AVAX/USDT"
+    ],
+    "timeframe": "1h",
+    "atr_multiplier": 1.0,
+    "entry_range_pct": 0.02,
+    "exchange": "binance",
+    "api_key": "",
+    "api_secret": ""
+}
