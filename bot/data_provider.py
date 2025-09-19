@@ -9,19 +9,22 @@ import asyncio
 import base58  # Untuk decode pubkey
 import requests  # Tambahan untuk CoinGecko
 
+# ===================== ABSTRACT BASE =====================
+
 class DataProvider(ABC):
     @abstractmethod
     def get_ohlcv(self, symbol, timeframe, limit):
         pass
-        
+
     @abstractmethod
     def get_ticker(self, symbol):
         pass
-        
+
     @abstractmethod
     def get_popular_assets(self, limit):
         pass
 
+# ===================== CCXT WRAPPER =====================
 
 class CCXTDataProvider(DataProvider):
     def __init__(self, exchange_id='binance', api_key='', secret=''):
@@ -31,7 +34,7 @@ class CCXTDataProvider(DataProvider):
             'secret': secret,
             'enableRateLimit': True,
         })
-        
+
     def get_ohlcv(self, symbol, timeframe, limit=200):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -39,55 +42,59 @@ class CCXTDataProvider(DataProvider):
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
         except Exception as e:
-            print(f"Error getting data for {symbol}: {e}")
+            print(f"Error getting data for {symbol} from {self.exchange.id}: {e}")
             return None
-            
+
     def get_ticker(self, symbol):
         try:
             return self.exchange.fetch_ticker(symbol)
         except Exception as e:
-            print(f"Error getting ticker for {symbol}: {e}")
+            print(f"Error getting ticker for {symbol} from {self.exchange.id}: {e}")
             return None
-            
+
     def get_popular_assets(self, limit=100):
         try:
             markets = self.exchange.load_markets()
             usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
             excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST']
             filtered_markets = [
-                symbol for symbol in usdt_markets 
+                symbol for symbol in usdt_markets
                 if not any(excluded in symbol for excluded in excluded_coins)
             ]
             try:
                 tickers = self.exchange.fetch_tickers()
-                filtered_markets.sort(key=lambda x: tickers[x]['quoteVolume'] if x in tickers else 0, reverse=True)
+                filtered_markets.sort(
+                    key=lambda x: tickers[x]['quoteVolume'] if x in tickers else 0,
+                    reverse=True
+                )
             except:
                 pass
             return filtered_markets[:limit]
         except Exception as e:
             print(f"Error loading markets from {self.exchange.id}: {e}")
             return [
-                'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'ADA/USDT', 'XRP/USDT',
-                'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT', 'BNB/USDT'
+                'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
+                'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
             ]
 
+# ===================== YFINANCE =====================
 
 class YFinanceDataProvider(DataProvider):
     def __init__(self, market_type='saham_id'):  # 'saham_id' or 'forex'
         self.market_type = market_type
-        
+
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         try:
             interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
             interval = interval_map.get(timeframe, '1h')
-            
+
             if interval == '1h':
                 period = '5d' if limit <= 120 else '2mo'
             elif interval == '1d':
                 period = '1y'
             else:
                 period = '1y'
-            
+
             ticker = yf.Ticker(symbol)
             df = ticker.history(period=period, interval=interval)
             if len(df) > limit:
@@ -101,7 +108,7 @@ class YFinanceDataProvider(DataProvider):
         except Exception as e:
             print(f"Error getting data for {symbol}: {e}")
             return None
-            
+
     def get_ticker(self, symbol):
         try:
             ticker = yf.Ticker(symbol)
@@ -115,24 +122,25 @@ class YFinanceDataProvider(DataProvider):
         except Exception as e:
             print(f"Error getting ticker for {symbol}: {e}")
             return None
-            
+
     def get_popular_assets(self, limit=50):
         if self.market_type == 'saham_id':
             return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK',
                     'BBRI.JK', 'ANTM.JK', 'UNVR.JK', 'INDF.JK', 'GOTO.JK'][:limit]
         elif self.market_type == 'forex':
             return [
-                'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 
+                'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X',
                 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
                 'AUDJPY=X', 'USDSGD=X', 'EURCAD=X', 'AUDCAD=X', 'NZDJPY=X'
             ][:limit]
 
+# ===================== SOLANA PUMP FUN =====================
 
 class SolanaPumpFunProvider:
     def __init__(self, rpc_url):
         self.client = Client(rpc_url)
         self.program_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
-    
+
     async def monitor_new_tokens(self, limit=10):
         results = []
         try:
@@ -152,23 +160,82 @@ class SolanaPumpFunProvider:
         except Exception as e:
             print(f"Error monitoring Pump.fun: {e}")
         return results
-    
+
     def extract_token_mint(self, msg):
         return "EXAMPLE_MINT_TOKEN"
-    
+
     async def get_solana_ticker(self, mint):
         return {'last': 0.001, 'volume': 10000}
 
+# ===================== COINGECKO =====================
 
-# ===================== BYBIT =====================
-class BybitDataProvider(CCXTDataProvider):
-    def __init__(self, api_key='', secret=''):
-        super().__init__('bybit', api_key, secret)
+class CoinGeckoDataProvider(DataProvider):
+    def __init__(self):
+        self.base_url = "https://api.coingecko.com/api/v3"
 
+    def get_ohlcv(self, symbol, timeframe="1h", limit=200):
+        try:
+            url = f"{self.base_url}/coins/{symbol}/market_chart"
+            params = {"vs_currency": "usd", "days": "30", "interval": "hourly"}
+            r = requests.get(url, params=params)
+            data = r.json()
+            prices = data.get("prices", [])
+            volumes = data.get("total_volumes", [])
+            df = pd.DataFrame(prices, columns=["timestamp", "price"])
+            df["volume"] = [v[1] for v in volumes]
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            df["open"] = df["price"]
+            df["high"] = df["price"]
+            df["low"] = df["price"]
+            df["close"] = df["price"]
+            df = df[["timestamp", "open", "high", "low", "close", "volume"]]
+            if len(df) > limit:
+                df = df.tail(limit)
+            return df
+        except Exception as e:
+            print(f"Error getting OHLCV from CoinGecko for {symbol}: {e}")
+            return None
 
-# ===================== Gunakan Bybit =====================
-def get_provider(limit=30):
-    print("🔗 Menggunakan Bybit via CCXT...")
-    provider = BybitDataProvider()
+    def get_ticker(self, symbol):
+        try:
+            url = f"{self.base_url}/simple/price"
+            params = {"ids": symbol, "vs_currencies": "usd", "include_24hr_vol": "true"}
+            r = requests.get(url, params=params)
+            data = r.json()
+            price = data[symbol]["usd"]
+            volume = data[symbol].get("usd_24h_vol", 0)
+            return {"last": price, "volume": volume}
+        except Exception as e:
+            print(f"Error getting ticker from CoinGecko for {symbol}: {e}")
+            return None
+
+    def get_popular_assets(self, limit=50):
+        try:
+            url = f"{self.base_url}/coins/markets"
+            params = {"vs_currency": "usd", "order": "volume_desc", "per_page": limit, "page": 1}
+            r = requests.get(url, params=params)
+            data = r.json()
+            return [coin["id"] for coin in data]
+        except Exception as e:
+            print(f"Error getting popular assets from CoinGecko: {e}")
+            return ["bitcoin", "ethereum", "solana", "dogecoin", "avalanche-2"]
+
+# ===================== AUTO FALLBACK =====================
+
+def get_provider_with_fallback(limit=30):
+    exchanges = ['binance', 'bybit', 'okx']
+    for ex in exchanges:
+        try:
+            print(f"🔗 Trying {ex} via CCXT...")
+            provider = CCXTDataProvider(ex)
+            assets = provider.get_popular_assets(limit)
+            if assets:
+                return provider, assets
+        except Exception as e:
+            print(f"⚠️ {ex} failed: {e}")
+
+    # fallback terakhir → CoinGecko
+    print("🔄 Switching to CoinGecko...")
+    provider = CoinGeckoDataProvider()
     assets = provider.get_popular_assets(limit)
     return provider, assets
