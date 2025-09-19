@@ -66,10 +66,9 @@ class CCXTDataProvider(DataProvider):
             return filtered_markets[:limit]
         except Exception as e:
             print(f"Error loading markets from {self.exchange.id}: {e}")
-            # fallback default
             return [
-                'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
-                'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
+                'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'ADA/USDT', 'XRP/USDT',
+                'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT', 'BNB/USDT'
             ]
 
 
@@ -161,81 +160,15 @@ class SolanaPumpFunProvider:
         return {'last': 0.001, 'volume': 10000}
 
 
-# ===================== CoinGecko Provider =====================
-class CoinGeckoDataProvider(DataProvider):
-    def __init__(self):
-        self.base_url = "https://api.coingecko.com/api/v3"
-
-    def get_ohlcv(self, symbol, timeframe="1h", limit=200):
-        try:
-            url = f"{self.base_url}/coins/{symbol}/market_chart"
-            params = {"vs_currency": "usd", "days": "30", "interval": "hourly"}
-            r = requests.get(url, params=params)
-            data = r.json()
-            prices = data.get("prices", [])
-            volumes = data.get("total_volumes", [])
-            df = pd.DataFrame(prices, columns=["timestamp", "price"])
-            df["volume"] = [v[1] for v in volumes]
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-            df["open"] = df["price"]
-            df["high"] = df["price"]
-            df["low"] = df["price"]
-            df["close"] = df["price"]
-            df = df[["timestamp", "open", "high", "low", "close", "volume"]]
-            if len(df) > limit:
-                df = df.tail(limit)
-            return df
-        except Exception as e:
-            print(f"Error getting OHLCV from CoinGecko for {symbol}: {e}")
-            return None
-
-    def get_ticker(self, symbol):
-        try:
-            url = f"{self.base_url}/simple/price"
-            params = {"ids": symbol, "vs_currencies": "usd", "include_24hr_vol": "true"}
-            r = requests.get(url, params=params)
-            data = r.json()
-            price = data[symbol]["usd"]
-            volume = data[symbol].get("usd_24h_vol", 0)
-            return {"last": price, "volume": volume}
-        except Exception as e:
-            print(f"Error getting ticker from CoinGecko for {symbol}: {e}")
-            return None
-
-    def get_popular_assets(self, limit=50):
-        try:
-            url = f"{self.base_url}/coins/markets"
-            params = {"vs_currency": "usd", "order": "volume_desc", "per_page": limit, "page": 1}
-            r = requests.get(url, params=params)
-            data = r.json()
-            return [coin["id"] for coin in data]
-        except Exception as e:
-            print(f"Error getting popular assets from CoinGecko: {e}")
-            return ["bitcoin", "ethereum", "solana", "dogecoin", "avalanche-2"]
-
-
-# ===================== BYBIT & OKX Provider =====================
+# ===================== BYBIT =====================
 class BybitDataProvider(CCXTDataProvider):
     def __init__(self, api_key='', secret=''):
         super().__init__('bybit', api_key, secret)
 
-class OKXDataProvider(CCXTDataProvider):
-    def __init__(self, api_key='', secret=''):
-        super().__init__('okx', api_key, secret)
 
-
-# ===================== AUTO FALLBACK =====================
-def get_provider_with_fallback(limit=30):
-    try:
-        print("🔗 Trying Binance via CCXT...")
-        provider = CCXTDataProvider('binance')
-        assets = provider.get_popular_assets(limit)
-        if not assets:
-            raise Exception("No assets returned from Binance")
-        return provider, assets
-    except Exception as e:
-        print(f"⚠️ Binance blocked or failed: {e}")
-        print("🔄 Switching to CoinGecko...")
-        provider = CoinGeckoDataProvider()
-        assets = provider.get_popular_assets(limit)
-        return provider, assets
+# ===================== Gunakan Bybit =====================
+def get_provider(limit=30):
+    print("🔗 Menggunakan Bybit via CCXT...")
+    provider = BybitDataProvider()
+    assets = provider.get_popular_assets(limit)
+    return provider, assets
