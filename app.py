@@ -444,142 +444,73 @@ def main():
                 tp2 = pos[7] if len(pos) > 7 else 0
                 tp3 = pos[8] if len(pos) > 8 else 0
                 
-                # Calculate P/L
-                if action == "LONG":
-                    pl_pct = ((current_price - entry_price) / entry_price) * 100
-                    pl_color = "green" if pl_pct >= 0 else "red"
-                else:  # SHORT
-                    pl_pct = ((entry_price - current_price) / entry_price) * 100
-                    pl_color = "green" if pl_pct >= 0 else "red"
-                
-                st.markdown("---")
-                col1, col2, col3 = st.columns([3, 1, 1])
-                
+                col1, col2 = st.columns([3, 1])
                 with col1:
                     st.write(f"**{symbol}** ({market_type}) - {action}")
-                    st.write(f"📥 Entry: `{entry_price:.5f}` | 📊 Current: `{current_price:.5f}`")
-                    st.write(f"🛡️ SL: `{sl:.5f}` | 🎯 TP1: `{tp1:.5f}` | 🎯 TP2: `{tp2:.5f}` | 🎯 TP3: `{tp3:.5f}`")
-                    st.write(f"💰 P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
+                    st.write(f"Entry: {entry_price:.5f} | Current: {current_price:.5f}")
+                    st.write(f"SL: {sl:.5f} | TP1: {tp1:.5f} | TP2: {tp2:.5f} | TP3: {tp3:.5f}")
                 
                 with col2:
-                    # Update current price
-                    if st.button("🔄", key=f"update_{symbol}"):
-                        ticker = bot.data_provider.get_ticker(symbol)
-                        if ticker and 'last' in ticker:
-                            bot.db.update_position_current_price(symbol, ticker['last'])
-                            st.success(f"Harga {symbol} diperbarui!")
-                            st.session_state.positions_data = bot.get_active_positions()
-                            st.rerun()
-                
-                with col3:
-                    # Close position
-                    exit_price = st.number_input(
-                        "Exit Price",
-                        value=float(current_price),
-                        step=0.0001,
-                        key=f"exit_{symbol}"
-                    )
-                    if st.button("🔒 Tutup", key=f"close_{symbol}"):
-                        if bot.close_position(pos_id, exit_price):
-                            st.success(f"Posisi {symbol} ditutup!")
-                            st.session_state.positions_data = bot.get_active_positions()
-                            st.rerun()
-                        else:
-                            st.error("Gagal menutup posisi.")
+                    if st.button(f"❌ Tutup {symbol}", key=f"close_{pos_id}"):
+                        bot.db.close_position(pos_id)
+                        st.success(f"Posisi {symbol} ditutup!")
+                        st.session_state.positions_data = bot.get_active_positions()
+                        st.rerun()
 
     # ===============================
     # Tab 5: History
     # ===============================
     with tab5:
-        st.subheader("📋 History Trading")
+        st.subheader("📜 Trade History")
         
-        # Refresh history data
         if st.button("🔄 Refresh History", key="refresh_history"):
-            st.session_state.history_data = bot.get_trade_history(20)
+            st.session_state.history_data = bot.get_trade_history()
             st.success("History diperbarui!")
             st.rerun()
         
         if not st.session_state.history_data:
             st.info("📭 Tidak ada history trading.")
         else:
-            st.write(f"**📊 Total Trade:** {len(st.session_state.history_data)}")
+            st.write(f"**📊 Total Transaksi:** {len(st.session_state.history_data)}")
             
-            for trade in st.session_state.history_data:
-                # Unpack trade data
-                trade_id = trade[0]
-                symbol = trade[1]
-                market_type = trade[2]
-                action = trade[3]
-                entry_price = trade[4]
-                exit_price = trade[5]
-                profit_loss = trade[6]
-                trade_type = trade[7]
-                timestamp = trade[8]
+            for hist in st.session_state.history_data:
+                hist_id = hist[0]
+                symbol = hist[1]
+                action = hist[2]
+                entry_price = hist[3]
+                exit_price = hist[4]
+                pnl = hist[6]
+                closed_at = hist[7]
                 
-                # Determine color based on profit/loss
-                color = "green" if profit_loss > 0 else "red"
-                emoji = "✅" if profit_loss > 0 else "❌"
-                
-                st.markdown("---")
-                st.write(f"{emoji} **{symbol}** ({market_type}) - {action} - {trade_type}")
-                st.write(f"📥 Entry: `{entry_price:.5f}` | 📤 Exit: `{exit_price:.5f}`")
-                st.write(f"💰 P/L: <span style='color:{color}'>{profit_loss:.5f}</span>", unsafe_allow_html=True)
-                st.write(f"⏰ Waktu: {timestamp}")
+                st.write(f"**{symbol}** - {action} | Entry: {entry_price:.5f} | Exit: {exit_price:.5f} "
+                         f"| PnL: {pnl:.2f} | Closed At: {closed_at}")
 
     # ===============================
     # Tab 6: Live Scanner
     # ===============================
     with tab6:
-        st.subheader("📡 Live Scanner")
+        st.subheader("📡 Live Market Monitoring")
         
-        # Start/stop live monitoring
-        if st.button("🚀 Mulai Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Hentikan Live Monitoring"):
-            st.session_state.live_monitoring = not st.session_state.live_monitoring
+        if st.button("▶️ Mulai Monitoring", key="start_monitor"):
+            st.session_state.live_monitoring = True
+            st.success("Live monitoring dimulai!")
+            st.rerun()
+        
+        if st.button("⏹️ Stop Monitoring", key="stop_monitor"):
+            st.session_state.live_monitoring = False
+            st.success("Live monitoring dihentikan!")
             st.rerun()
         
         if st.session_state.live_monitoring:
-            st.info("📡 Live monitoring aktif. Harga akan diperbarui setiap 30 detik.")
-            
-            # Display current positions with live prices
-            if st.session_state.positions_data:
-                st.subheader("📊 Posisi Aktif - Live")
-                for pos in st.session_state.positions_data:
-                    symbol = pos[1]
-                    entry_price = pos[4]
-                    current_price = pos[11] if len(pos) > 11 else entry_price
-                    
-                    # Get latest price
-                    ticker = bot.data_provider.get_ticker(symbol)
-                    if ticker and 'last' in ticker:
-                        latest_price = ticker['last']
-                        price_change = ((latest_price - current_price) / current_price) * 100
-                        total_change = ((latest_price - entry_price) / entry_price) * 100
-                        
-                        color = "green" if price_change >= 0 else "red"
-                        total_color = "green" if total_change >= 0 else "red"
-                        
-                        st.write(f"**{symbol}**")
-                        st.write(f"📊 Current: `{current_price:.5f}` → Live: `{latest_price:.5f}`")
-                        st.write(f"📈 Change: <span style='color:{color}'>{price_change:+.2f}%</span>", unsafe_allow_html=True)
-                        st.write(f"💰 Total P/L: <span style='color:{total_color}'>{total_change:+.2f}%</span>", unsafe_allow_html=True)
-                        st.markdown("---")
-            
-            # Auto refresh checkbox
-            st_auto_refresh = st.checkbox("🔄 Auto Refresh (30s)")
-            if st_auto_refresh:
-                time.sleep(30)
-                st.rerun()
-                
-            # Manual refresh button
-            if st.button("🔄 Refresh Sekarang"):
-                st.rerun()
-                
-        else:
-            st.info("👉 Klik 'Mulai Live Monitoring' untuk memantau harga real-time.")
+            with st.spinner("🔄 Memantau pasar..."):
+                live_results = bot.live_monitor()
+                if live_results:
+                    st.subheader("🔥 Peluang Terbaru:")
+                    for res in live_results:
+                        st.write(f"**{res['symbol']}** - {res['action']} (Score: {res['score']})")
+                else:
+                    st.info("Tidak ada peluang baru saat ini.")
 
 
-# ====================================
-# Entry Point
-# ====================================
 if __name__ == "__main__":
     main()
