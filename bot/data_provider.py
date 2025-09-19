@@ -22,6 +22,7 @@ class DataProvider(ABC):
     def get_popular_assets(self, limit):
         pass
 
+
 class CCXTDataProvider(DataProvider):
     def __init__(self, exchange_id='binance', api_key='', secret=''):
         exchange_class = getattr(ccxt, exchange_id)
@@ -51,26 +52,26 @@ class CCXTDataProvider(DataProvider):
     def get_popular_assets(self, limit=100):
         try:
             markets = self.exchange.load_markets()
-            if self.exchange.id == 'binance':
-                usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
-                excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST']
-                filtered_markets = [
-                    symbol for symbol in usdt_markets 
-                    if not any(excluded in symbol for excluded in excluded_coins)
-                ]
-                try:
-                    tickers = self.exchange.fetch_tickers()
-                    filtered_markets.sort(key=lambda x: tickers[x]['quoteVolume'] if x in tickers else 0, reverse=True)
-                except:
-                    pass
-                return filtered_markets[:limit]
+            usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
+            excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST']
+            filtered_markets = [
+                symbol for symbol in usdt_markets 
+                if not any(excluded in symbol for excluded in excluded_coins)
+            ]
+            try:
+                tickers = self.exchange.fetch_tickers()
+                filtered_markets.sort(key=lambda x: tickers[x]['quoteVolume'] if x in tickers else 0, reverse=True)
+            except:
+                pass
+            return filtered_markets[:limit]
         except Exception as e:
             print(f"Error loading markets from {self.exchange.id}: {e}")
-            # Fallback default list
+            # fallback default
             return [
                 'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
                 'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
             ]
+
 
 class YFinanceDataProvider(DataProvider):
     def __init__(self, market_type='saham_id'):  # 'saham_id' or 'forex'
@@ -127,6 +128,7 @@ class YFinanceDataProvider(DataProvider):
                 'AUDJPY=X', 'USDSGD=X', 'EURCAD=X', 'AUDCAD=X', 'NZDJPY=X'
             ][:limit]
 
+
 class SolanaPumpFunProvider:
     def __init__(self, rpc_url):
         self.client = Client(rpc_url)
@@ -158,8 +160,8 @@ class SolanaPumpFunProvider:
     async def get_solana_ticker(self, mint):
         return {'last': 0.001, 'volume': 10000}
 
-# ===================== Tambahan CoinGecko =====================
 
+# ===================== CoinGecko Provider =====================
 class CoinGeckoDataProvider(DataProvider):
     def __init__(self):
         self.base_url = "https://api.coingecko.com/api/v3"
@@ -211,8 +213,18 @@ class CoinGeckoDataProvider(DataProvider):
             print(f"Error getting popular assets from CoinGecko: {e}")
             return ["bitcoin", "ethereum", "solana", "dogecoin", "avalanche-2"]
 
-# ===================== AUTO FALLBACK WRAPPER =====================
 
+# ===================== BYBIT & OKX Provider =====================
+class BybitDataProvider(CCXTDataProvider):
+    def __init__(self, api_key='', secret=''):
+        super().__init__('bybit', api_key, secret)
+
+class OKXDataProvider(CCXTDataProvider):
+    def __init__(self, api_key='', secret=''):
+        super().__init__('okx', api_key, secret)
+
+
+# ===================== AUTO FALLBACK =====================
 def get_provider_with_fallback(limit=30):
     try:
         print("🔗 Trying Binance via CCXT...")
