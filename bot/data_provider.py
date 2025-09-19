@@ -7,6 +7,7 @@ from solana.rpc.websocket_api import connect
 import json
 import asyncio
 import base58  # Untuk decode pubkey
+import requests  # Tambahan untuk CoinGecko
 
 class DataProvider(ABC):
     @abstractmethod
@@ -68,7 +69,6 @@ class CCXTDataProvider(DataProvider):
             return [
                 'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
                 'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
-                # ... (sama seperti sebelumnya)
             ]
 
 class YFinanceDataProvider(DataProvider):
@@ -77,13 +77,11 @@ class YFinanceDataProvider(DataProvider):
         
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         try:
-            # Map timeframe yfinance: '1h', '2h', '1d', etc.
             interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
             interval = interval_map.get(timeframe, '1h')
             
-            # Period: adjust berdasarkan interval dan limit
             if interval == '1h':
-                period = '5d' if limit <= 120 else '2mo'  # Max 730h ~1mo, tapi extend
+                period = '5d' if limit <= 120 else '2mo'
             elif interval == '1d':
                 period = '1y'
             else:
@@ -94,7 +92,7 @@ class YFinanceDataProvider(DataProvider):
             if len(df) > limit:
                 df = df.tail(limit)
             df.reset_index(inplace=True)
-            df.columns = [col.lower() for col in df.columns]  # Normalize: 'datetime' -> 'timestamp'
+            df.columns = [col.lower() for col in df.columns]
             if 'datetime' in df.columns:
                 df.rename(columns={'datetime': 'timestamp'}, inplace=True)
             df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
@@ -107,7 +105,7 @@ class YFinanceDataProvider(DataProvider):
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
-            hist = ticker.history(period='1d', interval='1m')  # Latest price
+            hist = ticker.history(period='1d', interval='1m')
             if not hist.empty:
                 last_price = hist['close'].iloc[-1]
             else:
@@ -119,10 +117,9 @@ class YFinanceDataProvider(DataProvider):
             
     def get_popular_assets(self, limit=50):
         if self.market_type == 'saham_id':
-            # IDX stocks
-            return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BBRI.JK', 'ANTM.JK', 'UNVR.JK', 'INDF.JK', 'GOTO.JK'][:limit]
+            return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK',
+                    'BBRI.JK', 'ANTM.JK', 'UNVR.JK', 'INDF.JK', 'GOTO.JK'][:limit]
         elif self.market_type == 'forex':
-            # Popular forex pairs via Yahoo symbols
             return [
                 'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 
                 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
@@ -130,7 +127,6 @@ class YFinanceDataProvider(DataProvider):
             ][:limit]
 
 class SolanaPumpFunProvider:
-    # Sama seperti sebelumnya, tidak berubah
     def __init__(self, rpc_url):
         self.client = Client(rpc_url)
         self.program_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
@@ -144,7 +140,7 @@ class SolanaPumpFunProvider:
                     commitment="finalized"
                 )
                 async for msg in websocket:
-                    if "create" in str(msg.result.value.logs):  # Simplified
+                    if "create" in str(msg.result.value.logs):
                         token_mint = self.extract_token_mint(msg)
                         if token_mint:
                             ticker = await self.get_solana_ticker(token_mint)
@@ -156,9 +152,60 @@ class SolanaPumpFunProvider:
         return results
     
     def extract_token_mint(self, msg):
-        # Placeholder (real: parse logs)
         return "EXAMPLE_MINT_TOKEN"
     
     async def get_solana_ticker(self, mint):
-        # Placeholder (real: Birdeye/Dexscreener API)
         return {'last': 0.001, 'volume': 10000}
+
+# ===================== Tambahan CoinGecko =====================
+
+class CoinGeckoDataProvider(DataProvider):
+    def __init__(self):
+        self.base_url = "https://api.coingecko.com/api/v3"
+
+    def get_ohlcv(self, symbol, timeframe="1h", limit=200):
+        try:
+            url = f"{self.base_url}/coins/{symbol}/market_chart"
+            params = {"vs_currency": "usd", "days": "30", "interval": "hourly"}
+            r = requests.get(url, params=params)
+            data = r.json()
+            prices = data.get("prices", [])
+            volumes = data.get("total_volumes", [])
+            df = pd.DataFrame(prices, columns=["timestamp", "price"])
+            df["volume"] = [v[1] for v in volumes]
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            df["open"] = df["price"]
+            df["high"] = df["price"]
+            df["low"] = df["price"]
+            df["close"] = df["price"]
+            df = df[["timestamp", "open", "high", "low", "close", "volume"]]
+            if len(df) > limit:
+                df = df.tail(limit)
+            return df
+        except Exception as e:
+            print(f"Error getting OHLCV from CoinGecko for {symbol}: {e}")
+            return None
+
+    def get_ticker(self, symbol):
+        try:
+            url = f"{self.base_url}/simple/price"
+            params = {"ids": symbol, "vs_currencies": "usd", "include_24hr_vol": "true"}
+            r = requests.get(url, params=params)
+            data = r.json()
+            price = data[symbol]["usd"]
+            volume = data[symbol].get("usd_24h_vol", 0)
+            return {"last": price, "volume": volume}
+        except Exception as e:
+            print(f"Error getting ticker from CoinGecko for {symbol}: {e}")
+            return None
+
+    def get_popular_assets(self, limit=50):
+        try:
+            url = f"{self.base_url}/coins/markets"
+            params = {"vs_currency": "usd", "order": "volume_desc", "per_page": limit, "page": 1}
+            r = requests.get(url, params=params)
+            data = r.json()
+            return [coin["id"] for coin in data]
+        except Exception as e:
+            print(f"Error getting popular assets from CoinGecko: {e}")
+            return ["bitcoin", "ethereum", "solana", "dogecoin", "avalanche-2"]
