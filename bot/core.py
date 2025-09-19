@@ -66,9 +66,9 @@ class TradingBot:
                 "exchange_crypto": "binance",
                 "analysis_coins_limit": 50,
                 "ohlcv_limit": 200,
-                "min_score": 3,  # Reduced from 5 to 3 to get more signals
+                "min_score": 3,  # Reduced dari 5 -> 3 supaya sinyal lebih banyak
                 "max_signals": 5,
-                "update_interval": 30,  # Add update interval for background tasks
+                "update_interval": 30,  # Interval update background task
             }
             self.save_config()
 
@@ -103,7 +103,7 @@ class TradingBot:
 
         print(f"Mode set to: {self.mode.upper()} with data provider: {self.data_provider}")
         
-        # Start background tasks when mode is set
+        # Start background tasks ketika mode di-set
         self.start_background_tasks()
         
         return True
@@ -112,7 +112,7 @@ class TradingBot:
     # Background Tasks
     # =========================================================
     def start_background_tasks(self):
-        """Start background tasks for price updates and scanning"""
+        """Start background tasks untuk update harga dan scan"""
         if self.scheduler_thread and self.scheduler_thread.is_alive():
             self.stop_background_tasks()
             
@@ -129,11 +129,11 @@ class TradingBot:
         print("Background tasks stopped")
 
     def _run_scheduler(self):
-        """Run scheduled tasks in background"""
-        # Update prices every 30 seconds
+        """Jalankan task terjadwal di background"""
+        # Update harga tiap 30 detik
         schedule.every(self.config.get("update_interval", 30)).seconds.do(self.update_all_prices)
         
-        # Run scanner every 5 minutes
+        # Scan tiap 5 menit
         schedule.every(5).minutes.do(self.scan_potential_assets)
         
         while not self.stop_scheduler:
@@ -141,14 +141,14 @@ class TradingBot:
             time.sleep(1)
 
     def update_all_prices(self):
-        """Update prices for all active positions"""
+        """Update harga untuk semua posisi aktif"""
         if not self.data_provider:
             return
             
         try:
             active_positions = self.get_active_positions()
             for position in active_positions:
-                symbol = position[1]  # symbol is at index 1
+                symbol = position[1]  # symbol ada di index 1
                 try:
                     ticker = self.data_provider.get_ticker(symbol)
                     if ticker and 'last' in ticker:
@@ -164,7 +164,7 @@ class TradingBot:
     # Asset Handling
     # =========================================================
     def get_popular_assets(self, limit=None):
-        """Get list of popular assets for the selected market"""
+        """Ambil list aset populer dari provider"""
         if not self.data_provider:
             print("No data provider available.")
             return []
@@ -174,7 +174,7 @@ class TradingBot:
             assets = self.data_provider.get_popular_assets(limit)
             if not assets:
                 print(f"No popular assets found for {self.mode}")
-                # Return fallback assets based on mode
+                # fallback sesuai mode
                 if self.mode == "crypto":
                     assets = [
                         'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
@@ -194,7 +194,7 @@ class TradingBot:
             return []
 
     def scan_potential_assets(self, limit=None):
-        """Scan popular assets and return potential trading signals"""
+        """Scan aset populer dan return sinyal trading"""
         if not self.data_provider:
             print("No data provider for scanning.")
             return []
@@ -209,7 +209,7 @@ class TradingBot:
                 df = self.data_provider.get_ohlcv(
                     asset, self.timeframe, self.config.get("ohlcv_limit", 200)
                 )
-                if df is None or len(df) < 50:  # Reduced from 100 to 50 to allow more assets
+                if df is None or len(df) < 50:  # minimal 50 candle
                     print(f"Insufficient data for {asset}")
                     continue
 
@@ -217,14 +217,14 @@ class TradingBot:
                 if (
                     analysis
                     and analysis["action"] in ["LONG", "SHORT"]
-                    and analysis["score"] >= self.config.get("min_score", 3)  # Reduced from 5 to 3
+                    and analysis["score"] >= self.config.get("min_score", 3)
                 ):
                     analysis["symbol"] = asset
                     analysis["market_type"] = self.mode
                     self.db.save_signal(analysis)
                     results.append(analysis)
 
-                time.sleep(0.2)  # avoid rate limits
+                time.sleep(0.2)  # hindari rate limits
             except Exception as e:
                 print(f"Error analyzing {asset}: {e}")
                 continue
@@ -233,7 +233,7 @@ class TradingBot:
         return results[: self.config.get("max_signals", 5)]
 
     def analyze_asset(self, symbol):
-        """Analyze a specific asset and return signal"""
+        """Analisis satu aset"""
         if not self.data_provider:
             print("No data provider for analysis.")
             return None
@@ -241,7 +241,7 @@ class TradingBot:
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
-            if df is not None and len(df) >= 50:  # Reduced from 100 to 50
+            if df is not None and len(df) >= 50:
                 analysis = self.strategy.analyze(df)
                 if analysis:
                     analysis["symbol"] = symbol
@@ -255,7 +255,7 @@ class TradingBot:
             return None
 
     async def scan_pump_fun(self):
-        """Scan new tokens on Solana Pump Fun"""
+        """Scan token baru di Pump.fun Solana"""
         if not self.pump_provider:
             print("No Pump Fun provider available.")
             return []
@@ -266,7 +266,7 @@ class TradingBot:
             return []
 
     def calculate_custom_entry(self, symbol, entry_price):
-        """Calculate TP/SL for a custom entry price"""
+        """Hitung TP/SL custom entry"""
         if not self.data_provider:
             print("No data provider for custom entry.")
             return None
@@ -274,7 +274,7 @@ class TradingBot:
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
-            if df is not None and len(df) >= 50:  # Reduced from 100 to 50
+            if df is not None and len(df) >= 50:
                 atr = self.strategy.calculate_atr(df)
                 return {
                     "symbol": symbol,
@@ -294,10 +294,10 @@ class TradingBot:
     # Database Helpers
     # =========================================================
     def get_active_positions(self):
-        """Get active positions from database"""
+        """Ambil posisi aktif dari database"""
         try:
             positions = self.db.get_active_positions(self.mode)
-            # Update prices before returning
+            # Update harga terbaru
             for position in positions:
                 symbol = position[1]
                 ticker = self.data_provider.get_ticker(symbol)
@@ -309,7 +309,7 @@ class TradingBot:
             return []
 
     def get_trade_history(self, limit=10):
-        """Get trade history from database"""
+        """Ambil history trade dari database"""
         try:
             return self.db.get_trade_history(self.mode, limit)
         except Exception as e:
@@ -317,11 +317,11 @@ class TradingBot:
             return []
 
     def delete_signals_not_selected(self, selected_symbols):
-        """Delete non-selected signals from signals table"""
+        """Hapus sinyal yg ga dipilih"""
         try:
             all_signals = self.db.get_all_signals(self.mode)
             for signal in all_signals:
-                symbol = signal[1]  # column: symbol
+                symbol = signal[1]
                 if symbol not in selected_symbols:
                     self.db.delete_signal_by_symbol(symbol, self.mode)
                     print(f"Deleted non-selected signal for {symbol}")
@@ -329,7 +329,7 @@ class TradingBot:
             print(f"Error deleting non-selected signals: {e}")
 
     def close_position(self, position_id, exit_price, exit_type="manual"):
-        """Close a position with the given exit price"""
+        """Tutup posisi"""
         try:
             return self.db.close_position(position_id, exit_price, exit_type)
         except Exception as e:
