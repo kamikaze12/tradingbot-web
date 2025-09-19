@@ -9,25 +9,19 @@ import asyncio
 import base58  # Untuk decode pubkey
 import requests  # Tambahan untuk CoinGecko
 
-# ======================================================
-# Abstract Base Class
-# ======================================================
 class DataProvider(ABC):
     @abstractmethod
     def get_ohlcv(self, symbol, timeframe, limit):
         pass
-
+        
     @abstractmethod
     def get_ticker(self, symbol):
         pass
-
+        
     @abstractmethod
     def get_popular_assets(self, limit):
         pass
 
-# ======================================================
-# CCXT (Binance)
-# ======================================================
 class CCXTDataProvider(DataProvider):
     def __init__(self, exchange_id='binance', api_key='', secret=''):
         exchange_class = getattr(ccxt, exchange_id)
@@ -36,7 +30,7 @@ class CCXTDataProvider(DataProvider):
             'secret': secret,
             'enableRateLimit': True,
         })
-
+        
     def get_ohlcv(self, symbol, timeframe, limit=200):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -46,14 +40,14 @@ class CCXTDataProvider(DataProvider):
         except Exception as e:
             print(f"Error getting data for {symbol}: {e}")
             return None
-
+            
     def get_ticker(self, symbol):
         try:
             return self.exchange.fetch_ticker(symbol)
         except Exception as e:
             print(f"Error getting ticker for {symbol}: {e}")
             return None
-
+            
     def get_popular_assets(self, limit=100):
         try:
             markets = self.exchange.load_markets()
@@ -70,31 +64,30 @@ class CCXTDataProvider(DataProvider):
                 except:
                     pass
                 return filtered_markets[:limit]
-        except:
+        except Exception as e:
+            print(f"Error loading markets from {self.exchange.id}: {e}")
+            # Fallback default list
             return [
                 'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
-                'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT'
+                'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
             ]
 
-# ======================================================
-# YFinance (Saham & Forex)
-# ======================================================
 class YFinanceDataProvider(DataProvider):
     def __init__(self, market_type='saham_id'):  # 'saham_id' or 'forex'
         self.market_type = market_type
-
+        
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         try:
             interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
             interval = interval_map.get(timeframe, '1h')
-
+            
             if interval == '1h':
                 period = '5d' if limit <= 120 else '2mo'
             elif interval == '1d':
                 period = '1y'
             else:
                 period = '1y'
-
+            
             ticker = yf.Ticker(symbol)
             df = ticker.history(period=period, interval=interval)
             if len(df) > limit:
@@ -108,7 +101,7 @@ class YFinanceDataProvider(DataProvider):
         except Exception as e:
             print(f"Error getting data for {symbol}: {e}")
             return None
-
+            
     def get_ticker(self, symbol):
         try:
             ticker = yf.Ticker(symbol)
@@ -122,7 +115,7 @@ class YFinanceDataProvider(DataProvider):
         except Exception as e:
             print(f"Error getting ticker for {symbol}: {e}")
             return None
-
+            
     def get_popular_assets(self, limit=50):
         if self.market_type == 'saham_id':
             return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK',
@@ -134,9 +127,6 @@ class YFinanceDataProvider(DataProvider):
                 'AUDJPY=X', 'USDSGD=X', 'EURCAD=X', 'AUDCAD=X', 'NZDJPY=X'
             ][:limit]
 
-# ======================================================
-# Solana Pump.fun
-# ======================================================
 class SolanaPumpFunProvider:
     def __init__(self, rpc_url):
         self.client = Client(rpc_url)
@@ -168,9 +158,8 @@ class SolanaPumpFunProvider:
     async def get_solana_ticker(self, mint):
         return {'last': 0.001, 'volume': 10000}
 
-# ======================================================
-# CoinGecko Provider
-# ======================================================
+# ===================== Tambahan CoinGecko =====================
+
 class CoinGeckoDataProvider(DataProvider):
     def __init__(self):
         self.base_url = "https://api.coingecko.com/api/v3"
@@ -222,41 +211,19 @@ class CoinGeckoDataProvider(DataProvider):
             print(f"Error getting popular assets from CoinGecko: {e}")
             return ["bitcoin", "ethereum", "solana", "dogecoin", "avalanche-2"]
 
-# ======================================================
-# Fallback Wrapper (CCXT → CoinGecko)
-# ======================================================
-class FallbackDataProvider:
-    def __init__(self):
-        self.ccxt_provider = CCXTDataProvider("binance")
-        self.cg_provider = CoinGeckoDataProvider()
-        self.mapping = {
-            "BTC/USDT": "bitcoin",
-            "ETH/USDT": "ethereum",
-            "BNB/USDT": "binancecoin",
-            "SOL/USDT": "solana",
-            "ADA/USDT": "cardano",
-            "XRP/USDT": "ripple",
-            "DOT/USDT": "polkadot",
-            "DOGE/USDT": "dogecoin",
-            "AVAX/USDT": "avalanche-2",
-            "MATIC/USDT": "matic-network"
-        }
+# ===================== AUTO FALLBACK WRAPPER =====================
 
-    def get_ohlcv(self, symbol, timeframe="1h", limit=200):
-        df = self.ccxt_provider.get_ohlcv(symbol, timeframe, limit)
-        if df is not None and not df.empty:
-            return df
-        cg_symbol = self.mapping.get(symbol)
-        if cg_symbol:
-            print(f"⚡ Fallback ke CoinGecko untuk {symbol}")
-            return self.cg_provider.get_ohlcv(cg_symbol, timeframe, limit)
-        return None
-
-    def get_ticker(self, symbol):
-        ticker = self.ccxt_provider.get_ticker(symbol)
-        if ticker:
-            return ticker
-        cg_symbol = self.mapping.get(symbol)
-        if cg_symbol:
-            return self.cg_provider.get_ticker(cg_symbol)
-        return None
+def get_provider_with_fallback(limit=30):
+    try:
+        print("🔗 Trying Binance via CCXT...")
+        provider = CCXTDataProvider('binance')
+        assets = provider.get_popular_assets(limit)
+        if not assets:
+            raise Exception("No assets returned from Binance")
+        return provider, assets
+    except Exception as e:
+        print(f"⚠️ Binance blocked or failed: {e}")
+        print("🔄 Switching to CoinGecko...")
+        provider = CoinGeckoDataProvider()
+        assets = provider.get_popular_assets(limit)
+        return provider, assets
