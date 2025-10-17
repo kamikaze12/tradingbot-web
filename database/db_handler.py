@@ -4,6 +4,7 @@ import threading
 from dotenv import load_dotenv
 from datetime import datetime
 import streamlit as st
+from urllib.parse import urlparse
 
 load_dotenv()
 
@@ -15,44 +16,27 @@ class DatabaseHandler:
         self.create_tables()
 
     # =========================================================
-    # Connection - FIXED
+    # Connection - FIXED DATABASE_URL PARSING
     # =========================================================
     def get_connection(self):
         """Get or create a thread-local database connection"""
         if not hasattr(self.thread_local, "conn"):
             try:
-                # Priority 1: Streamlit Secrets
-                if hasattr(st, 'secrets'):
-                    connection_string = self._get_connection_string_from_secrets()
-                    if connection_string:
-                        self.thread_local.conn = psycopg2.connect(connection_string)
-                        print("Connected using DATABASE_URL from Streamlit secrets")
+                # Try DATABASE_URL first (with proper parsing)
+                database_url = self._get_database_url()
+                if database_url:
+                    self.thread_local.conn = psycopg2.connect(database_url)
+                    print("Connected using DATABASE_URL")
+                    return self.thread_local.conn
                 
-                # Priority 2: Environment variables DATABASE_URL
-                if not hasattr(self.thread_local, "conn"):
-                    database_url = os.getenv("DATABASE_URL")
-                    if database_url:
-                        self.thread_local.conn = psycopg2.connect(database_url)
-                        print("Connected using DATABASE_URL from environment")
-                
-                # Priority 3: Individual parameters from Streamlit secrets
-                if not hasattr(self.thread_local, "conn"):
-                    conn_params = self._get_connection_params_from_secrets()
-                    if conn_params:
-                        self.thread_local.conn = psycopg2.connect(**conn_params)
-                        print(f"Connected using individual params to {conn_params.get('host')}")
-                
-                # Priority 4: Individual parameters from environment
-                if not hasattr(self.thread_local, "conn"):
-                    conn_params = self._get_connection_params_from_env()
-                    if conn_params:
-                        self.thread_local.conn = psycopg2.connect(**conn_params)
-                        print(f"Connected using env vars to {conn_params.get('host')}")
+                # Fallback to individual parameters
+                conn_params = self._get_connection_params()
+                if conn_params:
+                    self.thread_local.conn = psycopg2.connect(**conn_params)
+                    print(f"Connected to {conn_params.get('host')}")
+                    return self.thread_local.conn
 
-                if not hasattr(self.thread_local, "conn"):
-                    raise Exception("No database configuration found in secrets or environment variables")
-                
-                print("Connected to database successfully")
+                raise Exception("No database configuration found")
                 
             except Exception as e:
                 print(f"Failed to connect to database: {e}")
@@ -61,83 +45,75 @@ class DatabaseHandler:
                 raise
         return self.thread_local.conn
 
-    def _get_connection_string_from_secrets(self):
-        """Get DATABASE_URL connection string from Streamlit secrets"""
+    def _get_database_url(self):
+        """Get properly formatted DATABASE_URL from secrets or env"""
         try:
-            secrets = st.secrets
+            # From Streamlit secrets
+            if hasattr(st, 'secrets'):
+                if 'DATABASE_URL' in st.secrets:
+                    return st.secrets['DATABASE_URL']
+                elif 'database' in st.secrets and 'DATABASE_URL' in st.secrets['database']:
+                    return st.secrets['database']['DATABASE_URL']
             
-            # Try DATABASE_URL directly
-            if 'DATABASE_URL' in secrets:
-                return secrets['DATABASE_URL']
-            
-            # Try in database section
-            if 'database' in secrets and 'DATABASE_URL' in secrets['database']:
-                return secrets['database']['DATABASE_URL']
+            # From environment
+            database_url = os.getenv("DATABASE_URL")
+            if database_url:
+                return database_url
                 
         except Exception as e:
-            print(f"Error reading connection string from secrets: {e}")
+            print(f"Error getting DATABASE_URL: {e}")
         
         return None
 
-    def _get_connection_params_from_secrets(self):
-        """Get individual connection parameters from Streamlit secrets"""
+    def _get_connection_params(self):
+        """Get individual connection parameters"""
         try:
-            secrets = st.secrets
-            
-            # Initialize with defaults
+            # Default values
             params = {
                 'dbname': 'postgres',
-                'user': 'postgres', 
+                'user': 'postgres',
                 'password': '',
                 'host': 'localhost',
                 'port': 5432
             }
             
-            # Check database section first
-            if 'database' in secrets:
-                db_config = secrets['database']
-                if 'DB_NAME' in db_config: params['dbname'] = db_config['DB_NAME']
-                if 'DB_USER' in db_config: params['user'] = db_config['DB_USER']
-                if 'DB_PASSWORD' in db_config: params['password'] = db_config['DB_PASSWORD']
-                if 'DB_HOST' in db_config: params['host'] = db_config['DB_HOST']
-                if 'DB_PORT' in db_config: params['port'] = int(db_config['DB_PORT'])
+            # Update from Streamlit secrets
+            if hasattr(st, 'secrets'):
+                secrets = st.secrets
+                
+                # Check database section
+                if 'database' in secrets:
+                    db_sec = secrets['database']
+                    params.update({
+                        'dbname': db_sec.get('DB_NAME', params['dbname']),
+                        'user': db_sec.get('DB_USER', params['user']),
+                        'password': db_sec.get('DB_PASSWORD', params['password']),
+                        'host': db_sec.get('DB_HOST', params['host']),
+                        'port': int(db_sec.get('DB_PORT', params['port']))
+                    })
+                
+                # Check individual keys (override section)
+                if 'DB_NAME' in secrets: params['dbname'] = secrets['DB_NAME']
+                if 'DB_USER' in secrets: params['user'] = secrets['DB_USER']
+                if 'DB_PASSWORD' in secrets: params['password'] = secrets['DB_PASSWORD']
+                if 'DB_HOST' in secrets: params['host'] = secrets['DB_HOST']
+                if 'DB_PORT' in secrets: params['port'] = int(secrets['DB_PORT'])
             
-            # Check individual secrets (override database section)
-            if 'DB_NAME' in secrets: params['dbname'] = secrets['DB_NAME']
-            if 'DB_USER' in secrets: params['user'] = secrets['DB_USER']
-            if 'DB_PASSWORD' in secrets: params['password'] = secrets['DB_PASSWORD']
-            if 'DB_HOST' in secrets: params['host'] = secrets['DB_HOST']
-            if 'DB_PORT' in secrets: params['port'] = int(secrets['DB_PORT'])
+            # Update from environment (override secrets)
+            params.update({
+                'dbname': os.getenv("DB_NAME", params['dbname']),
+                'user': os.getenv("DB_USER", params['user']),
+                'password': os.getenv("DB_PASSWORD", params['password']),
+                'host': os.getenv("DB_HOST", params['host']),
+                'port': int(os.getenv("DB_PORT", params['port']))
+            })
             
-            # Only return if not using default localhost (meaning we found real config)
-            if params['host'] != 'localhost':
+            # Only return if we have real configuration (not localhost default)
+            if params['host'] not in ['localhost', '127.0.0.1']:
                 return params
                 
         except Exception as e:
-            print(f"Error reading connection params from secrets: {e}")
-        
-        return None
-
-    def _get_connection_params_from_env(self):
-        """Get individual connection parameters from environment variables"""
-        try:
-            dbname = os.getenv("DB_NAME", "postgres")
-            user = os.getenv("DB_USER", "postgres")
-            password = os.getenv("DB_PASSWORD", "")
-            host = os.getenv("DB_HOST", "localhost")
-            port = int(os.getenv("DB_PORT", "5432"))
-            
-            if host != "localhost":  # Only return if not using default localhost
-                return {
-                    'dbname': dbname,
-                    'user': user,
-                    'password': password,
-                    'host': host,
-                    'port': port,
-                }
-                
-        except Exception as e:
-            print(f"Error reading connection params from env: {e}")
+            print(f"Error getting connection params: {e}")
         
         return None
 
