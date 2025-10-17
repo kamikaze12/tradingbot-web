@@ -3,36 +3,115 @@ import psycopg2
 import threading
 from dotenv import load_dotenv
 from datetime import datetime
+import streamlit as st
 
 load_dotenv()
 
 
 class DatabaseHandler:
     def __init__(self):
-        self.db_type = os.getenv("DB_TYPE", "postgresql")
+        self.db_type = "postgresql"
         self.thread_local = threading.local()
         self.create_tables()
 
     # =========================================================
-    # Connection
+    # Connection - IMPROVED
     # =========================================================
     def get_connection(self):
         """Get or create a thread-local database connection"""
         if not hasattr(self.thread_local, "conn"):
             try:
-                print(f"Connecting to database: {os.getenv('DB_HOST')}")
-                self.thread_local.conn = psycopg2.connect(
-                    dbname=os.getenv("DB_NAME", "postgres"),
-                    user=os.getenv("DB_USER", "postgres"),
-                    password=os.getenv("DB_PASSWORD", ""),
-                    host=os.getenv("DB_HOST", "localhost"),
-                    port=os.getenv("DB_PORT", "5432"),
-                )
+                # Priority 1: Streamlit Secrets
+                if hasattr(st, 'secrets'):
+                    conn_params = self._get_connection_from_secrets()
+                    if conn_params:
+                        self.thread_local.conn = psycopg2.connect(**conn_params)
+                        print(f"Connected using Streamlit secrets to {conn_params.get('host')}")
+                
+                # Priority 2: Environment variables
+                if not hasattr(self.thread_local, "conn"):
+                    conn_params = self._get_connection_from_env()
+                    if conn_params:
+                        self.thread_local.conn = psycopg2.connect(**conn_params)
+                        print(f"Connected using env vars to {conn_params.get('host')}")
+                
+                # Priority 3: DATABASE_URL from env
+                if not hasattr(self.thread_local, "conn"):
+                    database_url = os.getenv("DATABASE_URL")
+                    if database_url:
+                        self.thread_local.conn = psycopg2.connect(database_url)
+                        print("Connected using DATABASE_URL from env")
+                
+                if not hasattr(self.thread_local, "conn"):
+                    raise Exception("No database configuration found")
+                
                 print("Connected to database successfully")
+                
             except Exception as e:
                 print(f"Failed to connect to database: {e}")
+                if hasattr(st, 'error'):
+                    st.error(f"Database connection failed: {e}")
                 raise
         return self.thread_local.conn
+
+    def _get_connection_from_secrets(self):
+        """Get connection parameters from Streamlit secrets"""
+        try:
+            secrets = st.secrets
+            
+            # Try DATABASE_URL first
+            if 'DATABASE_URL' in secrets:
+                return secrets['DATABASE_URL']
+            
+            # Try database section
+            if 'database' in secrets:
+                db_config = secrets['database']
+                return {
+                    'dbname': db_config.get('DB_NAME', 'postgres'),
+                    'user': db_config.get('DB_USER', 'postgres'),
+                    'password': db_config.get('DB_PASSWORD', ''),
+                    'host': db_config.get('DB_HOST', 'localhost'),
+                    'port': db_config.get('DB_PORT', 5432),
+                }
+            
+            # Try individual secrets
+            db_config = {}
+            if 'DB_NAME' in secrets: db_config['dbname'] = secrets['DB_NAME']
+            if 'DB_USER' in secrets: db_config['user'] = secrets['DB_USER']
+            if 'DB_PASSWORD' in secrets: db_config['password'] = secrets['DB_PASSWORD']
+            if 'DB_HOST' in secrets: db_config['host'] = secrets['DB_HOST']
+            if 'DB_PORT' in secrets: db_config['port'] = secrets['DB_PORT']
+            
+            if db_config:
+                return db_config
+                
+        except Exception as e:
+            print(f"Error reading secrets: {e}")
+        
+        return None
+
+    def _get_connection_from_env(self):
+        """Get connection parameters from environment variables"""
+        try:
+            dbname = os.getenv("DB_NAME", "postgres")
+            user = os.getenv("DB_USER", "postgres")
+            password = os.getenv("DB_PASSWORD", "")
+            host = os.getenv("DB_HOST", "localhost")
+            port = os.getenv("DB_PORT", "5432")
+            
+            if host != "localhost":  # Only return if not using default localhost
+                return {
+                    'dbname': dbname,
+                    'user': user,
+                    'password': password,
+                    'host': host,
+                    'port': int(port) if port else 5432,
+                }
+                
+        except Exception as e:
+            print(f"Error reading env vars: {e}")
+        
+        return None
 
     # =========================================================
     # Schema
@@ -436,3 +515,10 @@ class DatabaseHandler:
             return float(data)
         except Exception:
             return str(data)
+
+    def close_connection(self):
+        """Close the database connection"""
+        if hasattr(self.thread_local, "conn"):
+            self.thread_local.conn.close()
+            del self.thread_local.conn
+            print("Database connection closed")
