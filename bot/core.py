@@ -9,7 +9,8 @@ import schedule
 from dotenv import load_dotenv
 from .strategies import TechnicalAnalysisStrategy
 from .data_provider import (
-    AutoDataProvider,  # <-- ganti semua provider dengan AutoDataProvider untuk fallback
+    CCXTDataProvider,
+    YFinanceDataProvider,
     SolanaPumpFunProvider
 )
 from .notifier import SoundNotifier
@@ -65,9 +66,9 @@ class TradingBot:
                 "exchange_crypto": "binance",
                 "analysis_coins_limit": 50,
                 "ohlcv_limit": 200,
-                "min_score": 3,
+                "min_score": 3,  # Reduced from 5 to 3 to get more signals
                 "max_signals": 5,
-                "update_interval": 30,
+                "update_interval": 30,  # Add update interval for background tasks
             }
             self.save_config()
 
@@ -81,35 +82,26 @@ class TradingBot:
     # Mode / Provider
     # =========================================================
     def set_mode(self, mode):
-        """Set market mode (crypto, forex, saham_id) with fallback support"""
+        """Set market mode (crypto, forex, saham_id)"""
         self.mode = mode.lower()
-        
         if self.mode == "crypto":
-            # Auto fallback provider
-            self.data_provider = AutoDataProvider()
-            # Pump provider only for crypto
+            self.data_provider = CCXTDataProvider(
+                self.config.get("exchange_crypto", "binance"), "", ""
+            )
             self.pump_provider = SolanaPumpFunProvider(
                 os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com")
             )
         elif self.mode == "forex":
-            # Force YFinance fallback
-            self.data_provider = AutoDataProvider()
-            self.data_provider.available_providers = [("yfinance", None)]
-            self.data_provider.active_provider = self.data_provider.available_providers[0]
-            self.pump_provider = None
+            self.data_provider = YFinanceDataProvider(market_type="forex")
         elif self.mode == "saham_id":
-            # Force YFinance fallback
-            self.data_provider = AutoDataProvider()
-            self.data_provider.available_providers = [("yfinance", None)]
-            self.data_provider.active_provider = self.data_provider.available_providers[0]
-            self.pump_provider = None
+            self.data_provider = YFinanceDataProvider(market_type="saham_id")
         else:
             self.data_provider = None
             self.pump_provider = None
             print(f"Invalid mode: {mode}")
             return False
 
-        print(f"Mode set to: {self.mode.upper()} with data provider: {self.data_provider.active_provider[0].upper()}")
+        print(f"Mode set to: {self.mode.upper()} with data provider: {self.data_provider}")
         
         # Start background tasks when mode is set
         self.start_background_tasks()
@@ -138,7 +130,10 @@ class TradingBot:
 
     def _run_scheduler(self):
         """Run scheduled tasks in background"""
+        # Update prices every 30 seconds
         schedule.every(self.config.get("update_interval", 30)).seconds.do(self.update_all_prices)
+        
+        # Run scanner every 5 minutes
         schedule.every(5).minutes.do(self.scan_potential_assets)
         
         while not self.stop_scheduler:
@@ -153,7 +148,7 @@ class TradingBot:
         try:
             active_positions = self.get_active_positions()
             for position in active_positions:
-                symbol = position[1]
+                symbol = position[1]  # symbol is at index 1
                 try:
                     ticker = self.data_provider.get_ticker(symbol)
                     if ticker and 'last' in ticker:
@@ -169,15 +164,17 @@ class TradingBot:
     # Asset Handling
     # =========================================================
     def get_popular_assets(self, limit=None):
+        """Get list of popular assets for the selected market"""
         if not self.data_provider:
             print("No data provider available.")
             return []
 
         limit = limit or self.config.get("analysis_coins_limit", 50)
         try:
-            assets = self.data_provider.get_symbols()[:limit]
+            assets = self.data_provider.get_popular_assets(limit)
             if not assets:
-                # Fallback based on mode
+                print(f"No popular assets found for {self.mode}")
+                # Return fallback assets based on mode
                 if self.mode == "crypto":
                     assets = [
                         'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
@@ -212,7 +209,7 @@ class TradingBot:
                 df = self.data_provider.get_ohlcv(
                     asset, self.timeframe, self.config.get("ohlcv_limit", 200)
                 )
-                if df is None or len(df) < 50:
+                if df is None or len(df) < 50:  # Reduced from 100 to 50 to allow more assets
                     print(f"Insufficient data for {asset}")
                     continue
 
@@ -220,14 +217,14 @@ class TradingBot:
                 if (
                     analysis
                     and analysis["action"] in ["LONG", "SHORT"]
-                    and analysis["score"] >= self.config.get("min_score", 3)
+                    and analysis["score"] >= self.config.get("min_score", 3)  # Reduced from 5 to 3
                 ):
                     analysis["symbol"] = asset
                     analysis["market_type"] = self.mode
                     self.db.save_signal(analysis)
                     results.append(analysis)
 
-                time.sleep(0.2)
+                time.sleep(0.2)  # avoid rate limits
             except Exception as e:
                 print(f"Error analyzing {asset}: {e}")
                 continue
@@ -244,7 +241,7 @@ class TradingBot:
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
-            if df is not None and len(df) >= 50:
+            if df is not None and len(df) >= 50:  # Reduced from 100 to 50
                 analysis = self.strategy.analyze(df)
                 if analysis:
                     analysis["symbol"] = symbol
@@ -277,7 +274,7 @@ class TradingBot:
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
-            if df is not None and len(df) >= 50:
+            if df is not None and len(df) >= 50:  # Reduced from 100 to 50
                 atr = self.strategy.calculate_atr(df)
                 return {
                     "symbol": symbol,
@@ -300,6 +297,7 @@ class TradingBot:
         """Get active positions from database"""
         try:
             positions = self.db.get_active_positions(self.mode)
+            # Update prices before returning
             for position in positions:
                 symbol = position[1]
                 ticker = self.data_provider.get_ticker(symbol)
@@ -311,6 +309,7 @@ class TradingBot:
             return []
 
     def get_trade_history(self, limit=10):
+        """Get trade history from database"""
         try:
             return self.db.get_trade_history(self.mode, limit)
         except Exception as e:
@@ -318,10 +317,11 @@ class TradingBot:
             return []
 
     def delete_signals_not_selected(self, selected_symbols):
+        """Delete non-selected signals from signals table"""
         try:
             all_signals = self.db.get_all_signals(self.mode)
             for signal in all_signals:
-                symbol = signal[1]
+                symbol = signal[1]  # column: symbol
                 if symbol not in selected_symbols:
                     self.db.delete_signal_by_symbol(symbol, self.mode)
                     print(f"Deleted non-selected signal for {symbol}")
@@ -329,6 +329,7 @@ class TradingBot:
             print(f"Error deleting non-selected signals: {e}")
 
     def close_position(self, position_id, exit_price, exit_type="manual"):
+        """Close a position with the given exit price"""
         try:
             return self.db.close_position(position_id, exit_price, exit_type)
         except Exception as e:
