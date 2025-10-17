@@ -15,7 +15,7 @@ class DatabaseHandler:
         self.create_tables()
 
     # =========================================================
-    # Connection - IMPROVED
+    # Connection - FIXED
     # =========================================================
     def get_connection(self):
         """Get or create a thread-local database connection"""
@@ -23,27 +23,34 @@ class DatabaseHandler:
             try:
                 # Priority 1: Streamlit Secrets
                 if hasattr(st, 'secrets'):
-                    conn_params = self._get_connection_from_secrets()
-                    if conn_params:
-                        self.thread_local.conn = psycopg2.connect(**conn_params)
-                        print(f"Connected using Streamlit secrets to {conn_params.get('host')}")
+                    connection_string = self._get_connection_string_from_secrets()
+                    if connection_string:
+                        self.thread_local.conn = psycopg2.connect(connection_string)
+                        print("Connected using DATABASE_URL from Streamlit secrets")
                 
-                # Priority 2: Environment variables
-                if not hasattr(self.thread_local, "conn"):
-                    conn_params = self._get_connection_from_env()
-                    if conn_params:
-                        self.thread_local.conn = psycopg2.connect(**conn_params)
-                        print(f"Connected using env vars to {conn_params.get('host')}")
-                
-                # Priority 3: DATABASE_URL from env
+                # Priority 2: Environment variables DATABASE_URL
                 if not hasattr(self.thread_local, "conn"):
                     database_url = os.getenv("DATABASE_URL")
                     if database_url:
                         self.thread_local.conn = psycopg2.connect(database_url)
-                        print("Connected using DATABASE_URL from env")
+                        print("Connected using DATABASE_URL from environment")
                 
+                # Priority 3: Individual parameters from Streamlit secrets
                 if not hasattr(self.thread_local, "conn"):
-                    raise Exception("No database configuration found")
+                    conn_params = self._get_connection_params_from_secrets()
+                    if conn_params:
+                        self.thread_local.conn = psycopg2.connect(**conn_params)
+                        print(f"Connected using individual params to {conn_params.get('host')}")
+                
+                # Priority 4: Individual parameters from environment
+                if not hasattr(self.thread_local, "conn"):
+                    conn_params = self._get_connection_params_from_env()
+                    if conn_params:
+                        self.thread_local.conn = psycopg2.connect(**conn_params)
+                        print(f"Connected using env vars to {conn_params.get('host')}")
+
+                if not hasattr(self.thread_local, "conn"):
+                    raise Exception("No database configuration found in secrets or environment variables")
                 
                 print("Connected to database successfully")
                 
@@ -54,50 +61,71 @@ class DatabaseHandler:
                 raise
         return self.thread_local.conn
 
-    def _get_connection_from_secrets(self):
-        """Get connection parameters from Streamlit secrets"""
+    def _get_connection_string_from_secrets(self):
+        """Get DATABASE_URL connection string from Streamlit secrets"""
         try:
             secrets = st.secrets
             
-            # Try DATABASE_URL first
+            # Try DATABASE_URL directly
             if 'DATABASE_URL' in secrets:
                 return secrets['DATABASE_URL']
             
-            # Try database section
-            if 'database' in secrets:
-                db_config = secrets['database']
-                return {
-                    'dbname': db_config.get('DB_NAME', 'postgres'),
-                    'user': db_config.get('DB_USER', 'postgres'),
-                    'password': db_config.get('DB_PASSWORD', ''),
-                    'host': db_config.get('DB_HOST', 'localhost'),
-                    'port': db_config.get('DB_PORT', 5432),
-                }
-            
-            # Try individual secrets
-            db_config = {}
-            if 'DB_NAME' in secrets: db_config['dbname'] = secrets['DB_NAME']
-            if 'DB_USER' in secrets: db_config['user'] = secrets['DB_USER']
-            if 'DB_PASSWORD' in secrets: db_config['password'] = secrets['DB_PASSWORD']
-            if 'DB_HOST' in secrets: db_config['host'] = secrets['DB_HOST']
-            if 'DB_PORT' in secrets: db_config['port'] = secrets['DB_PORT']
-            
-            if db_config:
-                return db_config
+            # Try in database section
+            if 'database' in secrets and 'DATABASE_URL' in secrets['database']:
+                return secrets['database']['DATABASE_URL']
                 
         except Exception as e:
-            print(f"Error reading secrets: {e}")
+            print(f"Error reading connection string from secrets: {e}")
         
         return None
 
-    def _get_connection_from_env(self):
-        """Get connection parameters from environment variables"""
+    def _get_connection_params_from_secrets(self):
+        """Get individual connection parameters from Streamlit secrets"""
+        try:
+            secrets = st.secrets
+            
+            # Initialize with defaults
+            params = {
+                'dbname': 'postgres',
+                'user': 'postgres', 
+                'password': '',
+                'host': 'localhost',
+                'port': 5432
+            }
+            
+            # Check database section first
+            if 'database' in secrets:
+                db_config = secrets['database']
+                if 'DB_NAME' in db_config: params['dbname'] = db_config['DB_NAME']
+                if 'DB_USER' in db_config: params['user'] = db_config['DB_USER']
+                if 'DB_PASSWORD' in db_config: params['password'] = db_config['DB_PASSWORD']
+                if 'DB_HOST' in db_config: params['host'] = db_config['DB_HOST']
+                if 'DB_PORT' in db_config: params['port'] = int(db_config['DB_PORT'])
+            
+            # Check individual secrets (override database section)
+            if 'DB_NAME' in secrets: params['dbname'] = secrets['DB_NAME']
+            if 'DB_USER' in secrets: params['user'] = secrets['DB_USER']
+            if 'DB_PASSWORD' in secrets: params['password'] = secrets['DB_PASSWORD']
+            if 'DB_HOST' in secrets: params['host'] = secrets['DB_HOST']
+            if 'DB_PORT' in secrets: params['port'] = int(secrets['DB_PORT'])
+            
+            # Only return if not using default localhost (meaning we found real config)
+            if params['host'] != 'localhost':
+                return params
+                
+        except Exception as e:
+            print(f"Error reading connection params from secrets: {e}")
+        
+        return None
+
+    def _get_connection_params_from_env(self):
+        """Get individual connection parameters from environment variables"""
         try:
             dbname = os.getenv("DB_NAME", "postgres")
             user = os.getenv("DB_USER", "postgres")
             password = os.getenv("DB_PASSWORD", "")
             host = os.getenv("DB_HOST", "localhost")
-            port = os.getenv("DB_PORT", "5432")
+            port = int(os.getenv("DB_PORT", "5432"))
             
             if host != "localhost":  # Only return if not using default localhost
                 return {
@@ -105,11 +133,11 @@ class DatabaseHandler:
                     'user': user,
                     'password': password,
                     'host': host,
-                    'port': int(port) if port else 5432,
+                    'port': port,
                 }
                 
         except Exception as e:
-            print(f"Error reading env vars: {e}")
+            print(f"Error reading connection params from env: {e}")
         
         return None
 
