@@ -4,7 +4,6 @@ import threading
 from dotenv import load_dotenv
 from datetime import datetime
 import streamlit as st
-from urllib.parse import urlparse
 
 load_dotenv()
 
@@ -16,27 +15,21 @@ class DatabaseHandler:
         self.create_tables()
 
     # =========================================================
-    # Connection - FIXED DATABASE_URL PARSING
+    # Connection - SIMPLIFIED & FIXED
     # =========================================================
     def get_connection(self):
         """Get or create a thread-local database connection"""
         if not hasattr(self.thread_local, "conn"):
             try:
-                # Try DATABASE_URL first (with proper parsing)
-                database_url = self._get_database_url()
-                if database_url:
-                    self.thread_local.conn = psycopg2.connect(database_url)
-                    print("Connected using DATABASE_URL")
-                    return self.thread_local.conn
-                
-                # Fallback to individual parameters
+                # Get connection parameters
                 conn_params = self._get_connection_params()
-                if conn_params:
-                    self.thread_local.conn = psycopg2.connect(**conn_params)
-                    print(f"Connected to {conn_params.get('host')}")
-                    return self.thread_local.conn
-
-                raise Exception("No database configuration found")
+                
+                if not conn_params:
+                    raise Exception("No database configuration found")
+                
+                print(f"Connecting to: {conn_params['host']}:{conn_params['port']} as {conn_params['user']}")
+                self.thread_local.conn = psycopg2.connect(**conn_params)
+                print("Connected to database successfully")
                 
             except Exception as e:
                 print(f"Failed to connect to database: {e}")
@@ -45,77 +38,63 @@ class DatabaseHandler:
                 raise
         return self.thread_local.conn
 
-    def _get_database_url(self):
-        """Get properly formatted DATABASE_URL from secrets or env"""
-        try:
-            # From Streamlit secrets
-            if hasattr(st, 'secrets'):
-                if 'DATABASE_URL' in st.secrets:
-                    return st.secrets['DATABASE_URL']
-                elif 'database' in st.secrets and 'DATABASE_URL' in st.secrets['database']:
-                    return st.secrets['database']['DATABASE_URL']
-            
-            # From environment
-            database_url = os.getenv("DATABASE_URL")
-            if database_url:
-                return database_url
-                
-        except Exception as e:
-            print(f"Error getting DATABASE_URL: {e}")
-        
-        return None
-
     def _get_connection_params(self):
-        """Get individual connection parameters"""
+        """Get connection parameters from Streamlit secrets or environment"""
+        # Default values
+        params = {
+            'dbname': 'postgres',
+            'user': 'postgres',
+            'password': '',
+            'host': 'localhost',
+            'port': 5432
+        }
+        
         try:
-            # Default values
-            params = {
-                'dbname': 'postgres',
-                'user': 'postgres',
-                'password': '',
-                'host': 'localhost',
-                'port': 5432
-            }
-            
-            # Update from Streamlit secrets
+            # Priority 1: Streamlit Secrets
             if hasattr(st, 'secrets'):
                 secrets = st.secrets
                 
+                # Check individual parameters first
+                if all(key in secrets for key in ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME']):
+                    params.update({
+                        'host': secrets['DB_HOST'],
+                        'user': secrets['DB_USER'],
+                        'password': secrets['DB_PASSWORD'],
+                        'dbname': secrets['DB_NAME'],
+                        'port': int(secrets.get('DB_PORT', 5432))
+                    })
+                    return params
+                
                 # Check database section
                 if 'database' in secrets:
-                    db_sec = secrets['database']
-                    params.update({
-                        'dbname': db_sec.get('DB_NAME', params['dbname']),
-                        'user': db_sec.get('DB_USER', params['user']),
-                        'password': db_sec.get('DB_PASSWORD', params['password']),
-                        'host': db_sec.get('DB_HOST', params['host']),
-                        'port': int(db_sec.get('DB_PORT', params['port']))
-                    })
-                
-                # Check individual keys (override section)
-                if 'DB_NAME' in secrets: params['dbname'] = secrets['DB_NAME']
-                if 'DB_USER' in secrets: params['user'] = secrets['DB_USER']
-                if 'DB_PASSWORD' in secrets: params['password'] = secrets['DB_PASSWORD']
-                if 'DB_HOST' in secrets: params['host'] = secrets['DB_HOST']
-                if 'DB_PORT' in secrets: params['port'] = int(secrets['DB_PORT'])
+                    db_config = secrets['database']
+                    if all(key in db_config for key in ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME']):
+                        params.update({
+                            'host': db_config['DB_HOST'],
+                            'user': db_config['DB_USER'],
+                            'password': db_config['DB_PASSWORD'],
+                            'dbname': db_config['DB_NAME'],
+                            'port': int(db_config.get('DB_PORT', 5432))
+                        })
+                        return params
             
-            # Update from environment (override secrets)
-            params.update({
-                'dbname': os.getenv("DB_NAME", params['dbname']),
-                'user': os.getenv("DB_USER", params['user']),
-                'password': os.getenv("DB_PASSWORD", params['password']),
-                'host': os.getenv("DB_HOST", params['host']),
-                'port': int(os.getenv("DB_PORT", params['port']))
-            })
-            
-            # Only return if we have real configuration (not localhost default)
-            if params['host'] not in ['localhost', '127.0.0.1']:
+            # Priority 2: Environment Variables
+            if all(os.getenv(key) for key in ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME']):
+                params.update({
+                    'host': os.getenv('DB_HOST'),
+                    'user': os.getenv('DB_USER'),
+                    'password': os.getenv('DB_PASSWORD'),
+                    'dbname': os.getenv('DB_NAME'),
+                    'port': int(os.getenv('DB_PORT', 5432))
+                })
                 return params
-                
+            
+            # If we get here, no valid config found
+            return None
+            
         except Exception as e:
             print(f"Error getting connection params: {e}")
-        
-        return None
+            return None
 
     # =========================================================
     # Schema
