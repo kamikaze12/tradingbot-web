@@ -35,7 +35,7 @@ class AutoDataProvider(DataProvider):
                     print(f"⚠️ {name.upper()} failed to initialize: {msg[:100]}")
                     continue
 
-        # If both CCXT exchanges fail, use yfinance
+        # If all CCXT exchanges fail, use yfinance
         if not self.available_providers:
             print("⚠️ All CCXT exchanges failed, using YFINANCE fallback.")
             self.available_providers.append(("yfinance", None))
@@ -104,3 +104,48 @@ class AutoDataProvider(DataProvider):
                 print(f"⚠️ {name.upper()} failed to load symbols: {e}")
                 continue
         return symbols[:20]
+
+    def get_ticker(self, symbol):
+        """Return latest ticker price as dict {last, bid, ask, high, low, volume}"""
+        for name, provider in self.available_providers:
+            try:
+                if name == "yfinance":
+                    yf_symbol = symbol.replace("/", "-").replace("USDT", "USD")
+                    print(f"📊 Fetching ticker from YFINANCE: {yf_symbol}")
+                    data = yf.download(yf_symbol, period="1d", interval="1m")
+                    if data.empty:
+                        raise Exception("YFinance ticker returned empty data")
+                    last_price = data['Close'].iloc[-1]
+                    high = data['High'].max()
+                    low = data['Low'].min()
+                    volume = data['Volume'].sum()
+                    return {
+                        "last": float(last_price),
+                        "bid": float(last_price),
+                        "ask": float(last_price),
+                        "high": float(high),
+                        "low": float(low),
+                        "volume": float(volume)
+                    }
+
+                ticker = provider.fetch_ticker(symbol)
+                return {
+                    "last": float(ticker['last']),
+                    "bid": float(ticker['bid']),
+                    "ask": float(ticker['ask']),
+                    "high": float(ticker['high']),
+                    "low": float(ticker['low']),
+                    "volume": float(ticker['baseVolume'])
+                }
+
+            except Exception as e:
+                msg = str(e)
+                print(f"❌ {name.upper()} ticker error for {symbol}: {msg[:100]}...")
+                if "451" in msg or "restricted location" in msg.lower():
+                    print(f"⚠️ {name.upper()} blocked, switching provider...")
+                    continue
+                time.sleep(1)
+                continue
+
+        print(f"❌ All providers failed to fetch ticker for {symbol}")
+        return None
