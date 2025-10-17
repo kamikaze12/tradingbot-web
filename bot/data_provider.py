@@ -1,216 +1,107 @@
+# data_provider.py
 import ccxt
 import yfinance as yf
 import pandas as pd
-import requests
-import asyncio
-import aiohttp
 import time
+import random
+from abc import ABC, abstractmethod
 
+class DataProvider(ABC):
+    @abstractmethod
+    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
+        pass
 
-# =========================================================
-# === Base Class ==========================================
-# =========================================================
-class BaseDataProvider:
-    def get_ohlcv(self, symbol, timeframe, limit):
-        raise NotImplementedError
+class BybitProvider(DataProvider):
+    def __init__(self):
+        self.exchange = ccxt.bybit({'enableRateLimit': True})
 
-    def get_ticker(self, symbol):
-        raise NotImplementedError
-
-    def get_popular_assets(self, limit):
-        raise NotImplementedError
-
-
-# =========================================================
-# === CCXT (Binance / Bybit) ==============================
-# =========================================================
-class CCXTDataProvider(BaseDataProvider):
-    def __init__(self, exchange_name="binance", api_key="", api_secret=""):
+    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         try:
-            self.exchange = getattr(ccxt, exchange_name)({
-                "enableRateLimit": True,
-                "timeout": 30000,
-            })
-            self.exchange_name = exchange_name
-            self.ok = True
-            print(f"CCXTDataProvider initialized for {exchange_name}")
-        except Exception as e:
-            print(f"Failed to init CCXT for {exchange_name}: {e}")
-            self.ok = False
-
-    def get_ohlcv(self, symbol, timeframe="1h", limit=200):
-        """Get OHLCV with fallback handling"""
-        try:
-            if not self.ok:
-                raise Exception("Exchange not initialized")
             data = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            df = pd.DataFrame(
-                data,
-                columns=["timestamp", "open", "high", "low", "close", "volume"]
-            )
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
         except Exception as e:
-            print(f"[{self.exchange_name}] OHLCV error for {symbol}: {e}")
+            print(f"Bybit error for {symbol}: {e}")
             return None
 
-    def get_ticker(self, symbol):
+class BinanceUSProvider(DataProvider):
+    def __init__(self):
+        self.exchange = ccxt.binanceus({'enableRateLimit': True})
+
+    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         try:
-            if not self.ok:
-                raise Exception("Exchange not initialized")
-            return self.exchange.fetch_ticker(symbol)
-        except Exception as e:
-            print(f"[{self.exchange_name}] Ticker error for {symbol}: {e}")
-            return None
-
-    def get_popular_assets(self, limit=20):
-        """Top symbols by volume"""
-        try:
-            if not self.ok:
-                raise Exception("Exchange not initialized")
-            markets = self.exchange.load_markets()
-            sorted_markets = sorted(
-                markets.values(),
-                key=lambda x: x.get("info", {}).get("quoteVolume", 0),
-                reverse=True
-            )
-            symbols = [m["symbol"] for m in sorted_markets if "/USDT" in m["symbol"]][:limit]
-            return symbols
-        except Exception as e:
-            print(f"[{self.exchange_name}] Error fetching assets: {e}")
-            return []
-
-
-# =========================================================
-# === YFinance Provider ===================================
-# =========================================================
-class YFinanceDataProvider(BaseDataProvider):
-    def __init__(self, market_type="crypto"):
-        self.market_type = market_type
-        print(f"YFinanceDataProvider initialized for {market_type}")
-
-    def _convert_symbol(self, symbol):
-        """Convert Binance-like symbol to Yahoo Finance format"""
-        if self.market_type == "crypto":
-            base = symbol.split("/")[0].replace("USDT", "USD")
-            return f"{base}-USD"
-        elif self.market_type == "forex":
-            return symbol
-        elif self.market_type == "saham_id":
-            return symbol
-        else:
-            return symbol
-
-    def get_ohlcv(self, symbol, timeframe="1h", limit=200):
-        try:
-            yf_symbol = self._convert_symbol(symbol)
-            interval = "1h" if timeframe == "1h" else "1d"
-            df = yf.download(yf_symbol, period="90d", interval=interval, progress=False)
-            df = df.rename(columns=str.lower).reset_index()
-            df = df.tail(limit)
+            data = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
         except Exception as e:
-            print(f"[YFinance] Error getting OHLCV for {symbol}: {e}")
+            print(f"BinanceUS error for {symbol}: {e}")
             return None
 
-    def get_ticker(self, symbol):
+class YahooFinanceProvider(DataProvider):
+    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         try:
-            yf_symbol = self._convert_symbol(symbol)
-            data = yf.Ticker(yf_symbol).history(period="1d")
-            if not data.empty:
-                return {"last": float(data["Close"].iloc[-1])}
-            return None
+            # Ganti simbol agar cocok untuk YFinance (contoh BTC/USDT -> BTC-USD)
+            yf_symbol = symbol.replace("/", "-").replace("USDT", "USD")
+            df = yf.download(yf_symbol, period='60d', interval='1h')
+            if df.empty:
+                return None
+            df = df.reset_index().rename(columns={
+                'Datetime': 'timestamp',
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume'
+            })
+            return df.tail(limit)
         except Exception as e:
-            print(f"[YFinance] Error fetching ticker for {symbol}: {e}")
+            print(f"YFinance error for {symbol}: {e}")
             return None
 
-    def get_popular_assets(self, limit=20):
-        if self.market_type == "crypto":
-            return [
-                "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "ADA/USDT",
-                "XRP/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "MATIC/USDT",
-                "LTC/USDT", "LINK/USDT", "TRX/USDT", "UNI/USDT", "ATOM/USDT",
-                "NEAR/USDT", "FIL/USDT", "ETC/USDT", "HBAR/USDT", "APT/USDT"
-            ][:limit]
-        elif self.market_type == "forex":
-            return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X'][:limit]
-        elif self.market_type == "saham_id":
-            return ['BBCA.JK', 'BMRI.JK', 'BBNI.JK', 'TLKM.JK', 'ASII.JK'][:limit]
-        return []
 
-
-# =========================================================
-# === Solana PumpFun Provider =============================
-# =========================================================
-class SolanaPumpFunProvider:
-    def __init__(self, rpc_url):
-        self.rpc_url = rpc_url
-        print(f"SolanaPumpFunProvider connected to {rpc_url}")
-
-    async def monitor_new_tokens(self, limit=10):
-        """Fetch new PumpFun tokens (mock for demo)"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get("https://api.dexscreener.com/latest/dex/tokens") as resp:
-                    data = await resp.json()
-                    tokens = data.get("pairs", [])[:limit]
-                    return [{
-                        "name": t.get("baseToken", {}).get("name", ""),
-                        "symbol": t.get("baseToken", {}).get("symbol", ""),
-                        "priceUsd": t.get("priceUsd", 0),
-                        "volume": t.get("volume", 0)
-                    } for t in tokens]
-        except Exception as e:
-            print(f"[PumpFun] Error monitoring tokens: {e}")
-            return []
-
-
-# =========================================================
-# === Auto Provider with Fallback =========================
-# =========================================================
-class AutoDataProvider(BaseDataProvider):
+class AutoDataProvider:
     """
-    Combines Binance → Bybit → YFinance fallback logic.
-    You can set this in your TradingBot by just replacing CCXTDataProvider with AutoDataProvider if needed.
+    Provider otomatis: coba Bybit dulu, lalu BinanceUS, terakhir YFinance.
     """
     def __init__(self):
-        self.binance = CCXTDataProvider("binance")
-        self.bybit = CCXTDataProvider("bybit")
-        self.yf = YFinanceDataProvider("crypto")
+        self.providers = [
+            BybitProvider(),
+            BinanceUSProvider(),
+            YahooFinanceProvider()
+        ]
 
-    def get_ohlcv(self, symbol, timeframe="1h", limit=200):
-        for provider in [self.binance, self.bybit, self.yf]:
+    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
+        for provider in self.providers:
             df = provider.get_ohlcv(symbol, timeframe, limit)
-            if df is not None and len(df) > 0:
+            if df is not None and not df.empty:
+                print(f"✅ Data OK from {provider.__class__.__name__} for {symbol}")
                 return df
+        print(f"⚠️ All providers failed for {symbol}")
         return None
 
-    def get_ticker(self, symbol):
-        for provider in [self.binance, self.bybit, self.yf]:
-            ticker = provider.get_ticker(symbol)
-            if ticker and "last" in ticker:
-                return ticker
-        return None
 
-    def get_popular_assets(self, limit=20):
-        for provider in [self.binance, self.bybit, self.yf]:
-            assets = provider.get_popular_assets(limit)
-            if assets:
-                return assets[:limit]
-        return []
+def get_top_symbols(limit=20):
+    """Ambil daftar coin utama (USDT pair)."""
+    coins = [
+        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
+        'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
+        'LTC/USDT', 'TRX/USDT', 'LINK/USDT', 'ATOM/USDT', 'UNI/USDT',
+        'ETC/USDT', 'XLM/USDT', 'FIL/USDT', 'NEAR/USDT', 'APT/USDT'
+    ]
+    return coins[:limit]
 
 
-# =========================================================
-# === Example Local Test ==================================
-# =========================================================
 if __name__ == "__main__":
     provider = AutoDataProvider()
-    coins = provider.get_popular_assets()
-    print("Popular assets:", coins)
+    symbols = get_top_symbols(limit=20)
 
-    for sym in coins[:3]:
-        df = provider.get_ohlcv(sym, "1h", 50)
-        if df is not None:
-            print(f"{sym} OHLCV rows: {len(df)}")
-        ticker = provider.get_ticker(sym)
-        print(f"{sym} price:", ticker)
+    for i, symbol in enumerate(symbols, 1):
+        print(f"\nAnalyzing {i}/{len(symbols)}: {symbol}")
+        df = provider.get_ohlcv(symbol)
+        if df is not None and not df.empty:
+            print(df.tail(3))
+        else:
+            print(f"❌ No data available for {symbol}")
+        time.sleep(random.uniform(1.5, 2.5))
