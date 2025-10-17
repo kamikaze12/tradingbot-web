@@ -63,7 +63,7 @@ class TradingBot:
                 "timeframe": "1h",
                 "atr_multiplier": 1.0,
                 "entry_range_pct": 0.02,
-                "exchange_crypto": "binance",
+                "exchange_crypto": "bybit",  # Default to bybit for CCXT
                 "analysis_coins_limit": 50,
                 "ohlcv_limit": 200,
                 "min_score": 3,  # Reduced from 5 to 3 to get more signals
@@ -85,8 +85,9 @@ class TradingBot:
         """Set market mode (crypto, forex, saham_id)"""
         self.mode = mode.lower()
         if self.mode == "crypto":
+            exchange_id = self.config.get("exchange_crypto", "bybit")
             self.data_provider = CCXTDataProvider(
-                self.config.get("exchange_crypto", "binance"), "", ""
+                exchange_id, "", ""
             )
             self.pump_provider = SolanaPumpFunProvider(
                 os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com")
