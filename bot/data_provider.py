@@ -1,4 +1,3 @@
-# bot/data_provider.py
 import ccxt
 import pandas as pd
 import yfinance as yf
@@ -7,7 +6,6 @@ from abc import ABC, abstractmethod
 from solana.rpc.api import Client
 from solana.rpc.websocket_api import connect
 import asyncio
-import os
 
 # =========================
 # Base DataProvider
@@ -62,6 +60,9 @@ class AutoDataProvider(DataProvider):
         self.active_provider = self.available_providers[0]
         print(f"✅ Active provider set to: {self.active_provider[0].upper()}")
 
+    # -------------------------
+    # OHLCV Data
+    # -------------------------
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         for name, provider in self.available_providers:
             try:
@@ -84,29 +85,36 @@ class AutoDataProvider(DataProvider):
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 return df
             except Exception as e:
-                print(f"❌ {name.upper()} error for {symbol}: {str(e)[:100]}...")
+                msg = str(e)
+                print(f"❌ {name.upper()} error for {symbol}: {msg[:100]}...")
                 time.sleep(1)
                 continue
         return pd.DataFrame()
 
+    # -------------------------
+    # Symbols / Markets
+    # -------------------------
     def get_symbols(self):
         symbols = []
         for name, provider in self.available_providers:
+            if name == "yfinance":
+                return [
+                    "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "ADA/USDT",
+                    "XRP/USDT", "DOT/USDT", "DOGE/USDT", "AVAX/USDT", "MATIC/USDT"
+                ]
             try:
-                if name == "yfinance":
-                    symbols.extend([
-                        "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "ADA/USDT",
-                        "XRP/USDT", "DOT/USDT", "DOGE/USDT", "AVAX/USDT", "MATIC/USDT"
-                    ])
-                else:
-                    markets = provider.load_markets()
-                    for s in markets:
-                        if s.endswith("/USDT"):
-                            symbols.append(s)
+                markets = provider.load_markets()
+                for s in markets:
+                    if s.endswith("/USDT"):
+                        symbols.append(s)
+                return symbols[:20]
             except:
                 continue
         return symbols[:20]
 
+    # -------------------------
+    # Ticker
+    # -------------------------
     def get_ticker(self, symbol):
         for name, provider in self.available_providers:
             try:
@@ -119,31 +127,45 @@ class AutoDataProvider(DataProvider):
                     high = data['High'].max()
                     low = data['Low'].min()
                     volume = data['Volume'].sum()
-                    return {"last": float(last_price), "bid": float(last_price), "ask": float(last_price),
-                            "high": float(high), "low": float(low), "volume": float(volume)}
+                    return {
+                        "last": float(last_price),
+                        "bid": float(last_price),
+                        "ask": float(last_price),
+                        "high": float(high),
+                        "low": float(low),
+                        "volume": float(volume)
+                    }
                 ticker = provider.fetch_ticker(symbol)
-                return {"last": float(ticker['last']), "bid": float(ticker['bid']), "ask": float(ticker['ask']),
-                        "high": float(ticker['high']), "low": float(ticker['low']), "volume": float(ticker['baseVolume'])}
+                return {
+                    "last": float(ticker['last']),
+                    "bid": float(ticker['bid']),
+                    "ask": float(ticker['ask']),
+                    "high": float(ticker['high']),
+                    "low": float(ticker['low']),
+                    "volume": float(ticker['baseVolume'])
+                }
             except:
                 continue
         return None
 
+    # -------------------------
+    # Popular Assets
+    # -------------------------
     def get_popular_assets(self, limit=10):
         return self.get_symbols()[:limit]
 
 # =========================
-# Solana Pump Fun Provider (placeholder async)
+# Solana Pump Fun
 # =========================
 class SolanaPumpFunProvider:
-    def __init__(self, rpc_url=None):
-        self.rpc_url = rpc_url or os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com")
-        self.client = Client(self.rpc_url)
+    def __init__(self, rpc_url):
+        self.client = Client(rpc_url)
         self.program_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 
     async def monitor_new_tokens(self, limit=10):
         results = []
         try:
-            async with connect(self.rpc_url + "/") as websocket:
+            async with connect(self.client._provider.endpoint_uri + "/") as websocket:
                 await websocket.logs_subscribe({"mentions": [self.program_id]}, commitment="finalized")
                 async for msg in websocket:
                     if "create" in str(msg.result.value.logs):
