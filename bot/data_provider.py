@@ -8,7 +8,7 @@ import json
 import asyncio
 import base58  # Untuk decode pubkey
 import os
-import requests  # Untuk Alpha Vantage
+import requests  # Untuk Alpha Vantage dan DexScreener
 
 # Extended mapping untuk crypto, forex, dan saham populer
 COMMON_COIN_MAPPING = {
@@ -146,6 +146,39 @@ class AlphaVantageProvider(DataProvider):
 
     def get_popular_assets(self, limit=100):
         return [COMMON_COIN_MAPPING[k].get('ccxt') or COMMON_COIN_MAPPING[k].get('yf') or COMMON_COIN_MAPPING[k].get('av') for k in list(COMMON_COIN_MAPPING.keys())[:limit]]
+
+class DexScreenerProvider:
+    def __init__(self):
+        self.base_url = "https://api.dexscreener.com/latest/dex"
+
+    def get_ticker(self, chain, token_address):
+        try:
+            # Example: Fetch pairs for token, ambil first pair untuk ticker
+            url = f"{self.base_url}/tokens/{chain}/{token_address}"
+            response = requests.get(url)
+            data = response.json()
+            if 'pairs' in data and data['pairs']:
+                pair = data['pairs'][0]
+                return {
+                    'last': float(pair.get('priceUsd', 0)),
+                    'volume': float(pair.get('volume', {}).get('h24', 0)),
+                    'liquidity': float(pair.get('liquidity', {}).get('usd', 0)),
+                    'fdv': float(pair.get('fdv', 0))
+                }
+            return None
+        except Exception as e:
+            print(f"Error getting ticker from DexScreener for {token_address}: {e}")
+            return None
+
+    def search_pairs(self, query):
+        try:
+            url = f"{self.base_url}/search?q={query}"
+            response = requests.get(url)
+            data = response.json()
+            return data.get('pairs', [])
+        except Exception as e:
+            print(f"Error searching pairs in DexScreener: {e}")
+            return []
 
 class CCXTDataProvider(DataProvider):
     def __init__(self, exchange_id='bybit', api_key='', secret=''):
@@ -285,10 +318,10 @@ class YFinanceDataProvider(DataProvider):
         return []
 
 class SolanaPumpFunProvider:
-    # Sama seperti sebelumnya, tidak berubah
     def __init__(self, rpc_url):
         self.client = Client(rpc_url)
         self.program_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        self.dex_provider = DexScreenerProvider()  # Integrasi DexScreener
     
     async def monitor_new_tokens(self, limit=10):
         results = []
@@ -311,9 +344,11 @@ class SolanaPumpFunProvider:
         return results
     
     def extract_token_mint(self, msg):
-        # Placeholder (real: parse logs)
-        return "EXAMPLE_MINT_TOKEN"
-    
+        # Placeholder (real: parse logs untuk dapat mint address)
+        return "EXAMPLE_MINT_TOKEN"  # Ganti dengan parsing real dari logs
+
     async def get_solana_ticker(self, mint):
-        # Placeholder (real: Birdeye/Dexscreener API)
-        return {'last': 0.001, 'volume': 10000}
+        # Gunakan DexScreener untuk fetch real ticker (misal search pair dengan mint)
+        # Asumsi mint adalah tokenAddress, chain 'solana'
+        # Contoh: Search pair 'mint USDC' atau fetch token pairs
+        return self.dex_provider.get_ticker('solana', mint)  # Return {'last': price, 'volume': vol}
