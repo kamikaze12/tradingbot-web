@@ -8,24 +8,24 @@ import json
 import asyncio
 import base58  # Untuk decode pubkey
 import os
-import requests  # Untuk Alpha Vantage dan CoinGecko
+import requests  # Untuk Alpha Vantage
 
 # Extended mapping untuk crypto, forex, dan saham populer
 COMMON_COIN_MAPPING = {
     # Crypto
-    'BTC': {'ccxt': 'BTC/USDT', 'yf': 'BTC-USD', 'av': 'BTC', 'cg_id': 'bitcoin'},
-    'ETH': {'ccxt': 'ETH/USDT', 'yf': 'ETH-USD', 'av': 'ETH', 'cg_id': 'ethereum'},
-    'BNB': {'ccxt': 'BNB/USDT', 'yf': 'BNB-USD', 'av': 'BNB', 'cg_id': 'bnb'},
-    'SOL': {'ccxt': 'SOL/USDT', 'yf': 'SOL-USD', 'av': 'SOL', 'cg_id': 'solana'},
-    'ADA': {'ccxt': 'ADA/USDT', 'yf': 'ADA-USD', 'av': 'ADA', 'cg_id': 'cardano'},
-    'XRP': {'ccxt': 'XRP/USDT', 'yf': 'XRP-USD', 'av': 'XRP', 'cg_id': 'xrp'},
-    'DOT': {'ccxt': 'DOT/USDT', 'yf': 'DOT-USD', 'av': 'DOT', 'cg_id': 'polkadot'},
-    'DOGE': {'ccxt': 'DOGE/USDT', 'yf': 'DOGE-USD', 'av': 'DOGE', 'cg_id': 'dogecoin'},
-    'AVAX': {'ccxt': 'AVAX/USDT', 'yf': 'AVAX-USD', 'av': 'AVAX', 'cg_id': 'avalanche-2'},
-    'MATIC': {'ccxt': 'MATIC/USDT', 'yf': 'MATIC-USD', 'av': 'MATIC', 'cg_id': 'polygon'},
-    'LINK': {'ccxt': 'LINK/USDT', 'yf': 'LINK-USD', 'av': 'LINK', 'cg_id': 'chainlink'},
-    'UNI': {'ccxt': 'UNI/USDT', 'yf': 'UNI-USD', 'av': 'UNI', 'cg_id': 'uniswap'},
-    'LTC': {'ccxt': 'LTC/USDT', 'yf': 'LTC-USD', 'av': 'LTC', 'cg_id': 'litecoin'},
+    'BTC': {'ccxt': 'BTC/USDT', 'yf': 'BTC-USD', 'av': 'BTC'},
+    'ETH': {'ccxt': 'ETH/USDT', 'yf': 'ETH-USD', 'av': 'ETH'},
+    'BNB': {'ccxt': 'BNB/USDT', 'yf': 'BNB-USD', 'av': 'BNB'},
+    'SOL': {'ccxt': 'SOL/USDT', 'yf': 'SOL-USD', 'av': 'SOL'},
+    'ADA': {'ccxt': 'ADA/USDT', 'yf': 'ADA-USD', 'av': 'ADA'},
+    'XRP': {'ccxt': 'XRP/USDT', 'yf': 'XRP-USD', 'av': 'XRP'},
+    'DOT': {'ccxt': 'DOT/USDT', 'yf': 'DOT-USD', 'av': 'DOT'},
+    'DOGE': {'ccxt': 'DOGE/USDT', 'yf': 'DOGE-USD', 'av': 'DOGE'},
+    'AVAX': {'ccxt': 'AVAX/USDT', 'yf': 'AVAX-USD', 'av': 'AVAX'},
+    'MATIC': {'ccxt': 'MATIC/USDT', 'yf': 'MATIC-USD', 'av': 'MATIC'},
+    'LINK': {'ccxt': 'LINK/USDT', 'yf': 'LINK-USD', 'av': 'LINK'},
+    'UNI': {'ccxt': 'UNI/USDT', 'yf': 'UNI-USD', 'av': 'UNI'},
+    'LTC': {'ccxt': 'LTC/USDT', 'yf': 'LTC-USD', 'av': 'LTC'},
 
     # Forex
     'EURUSD': {'yf': 'EURUSD=X', 'av': 'EUR/USD'},
@@ -147,48 +147,6 @@ class AlphaVantageProvider(DataProvider):
     def get_popular_assets(self, limit=100):
         return [COMMON_COIN_MAPPING[k].get('ccxt') or COMMON_COIN_MAPPING[k].get('yf') or COMMON_COIN_MAPPING[k].get('av') for k in list(COMMON_COIN_MAPPING.keys())[:limit]]
 
-class CoinGeckoProvider(DataProvider):
-    def __init__(self):
-        self.base_url = "https://api.coingecko.com/api/v3"
-
-    def _convert_symbol(self, symbol):
-        base = symbol.split('/')[0] if '/' in symbol else symbol.upper()
-        return COMMON_COIN_MAPPING.get(base, {}).get('cg_id', base.lower())
-
-    def get_ohlcv(self, symbol, timeframe, limit=200):
-        try:
-            coin_id = self._convert_symbol(symbol)
-            days = max(1, limit // (24 if timeframe == '1h' else 1))
-            response = requests.get(f"{self.base_url}/coins/{coin_id}/ohlc?vs_currency=usd&days={days}")
-            data = response.json()
-            df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close'])
-            df['volume'] = 0
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            return df.tail(limit)
-        except Exception as e:
-            print(f"Error getting OHLCV from CoinGecko for {symbol}: {e}")
-            return None
-
-    def get_ticker(self, symbol):
-        try:
-            coin_id = self._convert_symbol(symbol)
-            response = requests.get(f"{self.base_url}/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_vol=true")
-            data = response.json()
-            if coin_id in data:
-                return {'last': data[coin_id]['usd'], 'volume': data[coin_id].get('usd_24h_vol', 0)}
-            return None
-        except Exception as e:
-            print(f"Error getting ticker from CoinGecko for {symbol}: {e}")
-            return None
-
-    def get_popular_assets(self, limit=100):
-        try:
-            response = requests.get(f"{self.base_url}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page={limit}&page=1")
-            data = response.json()
-            return [f"{item['symbol'].upper()}/USDT" for item in data]
-        except:
-            return [COMMON_COIN_MAPPING[k]['ccxt'] for k in list(COMMON_COIN_MAPPING.keys()) if 'ccxt' in COMMON_COIN_MAPPING[k]][:limit]
-
 class CCXTDataProvider(DataProvider):
     def __init__(self, exchange_id='bybit', api_key='', secret=''):
         exchange_class = getattr(ccxt, exchange_id)
@@ -198,7 +156,6 @@ class CCXTDataProvider(DataProvider):
             'enableRateLimit': True,
         })
         self.fallback_yf = YFinanceDataProvider(market_type='crypto')
-        self.fallback_cg = CoinGeckoProvider()
         self.fallback_av = AlphaVantageProvider()  # Last untuk hemat limit 25/day
 
     def _convert_symbol(self, symbol, target='yf'):
@@ -206,8 +163,6 @@ class CCXTDataProvider(DataProvider):
         mapping = COMMON_COIN_MAPPING.get(base, {})
         if target == 'yf':
             return mapping.get('yf', f"{base}-USD")
-        elif target == 'cg':
-            return mapping.get('cg_id', base.lower())
         elif target == 'av':
             return mapping.get('av', base)
         return symbol
@@ -220,8 +175,8 @@ class CCXTDataProvider(DataProvider):
             return df
         except Exception as e:
             print(f"Error getting data from CCXT for {symbol}: {e}")
-            # Fallback chain: yf → cg → av (hemat av)
-            for fallback, target in [(self.fallback_yf, 'yf'), (self.fallback_cg, 'cg'), (self.fallback_av, 'av')]:
+            # Fallback chain: yf → av (hemat av)
+            for fallback, target in [(self.fallback_yf, 'yf'), (self.fallback_av, 'av')]:
                 try:
                     conv_symbol = self._convert_symbol(symbol, target)
                     print(f"Falling back to {fallback.__class__.__name__} with symbol: {conv_symbol}")
@@ -237,7 +192,7 @@ class CCXTDataProvider(DataProvider):
             return self.exchange.fetch_ticker(symbol)
         except Exception as e:
             print(f"Error getting ticker from CCXT for {symbol}: {e}")
-            for fallback, target in [(self.fallback_yf, 'yf'), (self.fallback_cg, 'cg'), (self.fallback_av, 'av')]:
+            for fallback, target in [(self.fallback_yf, 'yf'), (self.fallback_av, 'av')]:
                 try:
                     conv_symbol = self._convert_symbol(symbol, target)
                     print(f"Falling back to {fallback.__class__.__name__} with symbol: {conv_symbol}")
@@ -262,8 +217,8 @@ class CCXTDataProvider(DataProvider):
                     pass
                 return filtered_markets[:limit]
         except:
-            print("Falling back to CoinGecko for popular assets")
-            return self.fallback_cg.get_popular_assets(limit)
+            print("Falling back to hardcoded popular assets")
+            return [COMMON_COIN_MAPPING[k].get('ccxt') for k in list(COMMON_COIN_MAPPING.keys()) if 'ccxt' in COMMON_COIN_MAPPING[k]][:limit]
 
 class YFinanceDataProvider(DataProvider):
     def __init__(self, market_type='saham_id'):
