@@ -8,10 +8,11 @@ import json
 import asyncio
 import base58  # Untuk decode pubkey
 import os
-import requests  # Tambah untuk Alpha Vantage dan CoinGecko
+import requests  # Untuk Alpha Vantage dan CoinGecko
 
-# Mapping untuk top koin populer
+# Extended mapping untuk crypto, forex, dan saham populer
 COMMON_COIN_MAPPING = {
+    # Crypto
     'BTC': {'ccxt': 'BTC/USDT', 'yf': 'BTC-USD', 'av': 'BTC', 'cg_id': 'bitcoin'},
     'ETH': {'ccxt': 'ETH/USDT', 'yf': 'ETH-USD', 'av': 'ETH', 'cg_id': 'ethereum'},
     'BNB': {'ccxt': 'BNB/USDT', 'yf': 'BNB-USD', 'av': 'BNB', 'cg_id': 'bnb'},
@@ -22,11 +23,33 @@ COMMON_COIN_MAPPING = {
     'DOGE': {'ccxt': 'DOGE/USDT', 'yf': 'DOGE-USD', 'av': 'DOGE', 'cg_id': 'dogecoin'},
     'AVAX': {'ccxt': 'AVAX/USDT', 'yf': 'AVAX-USD', 'av': 'AVAX', 'cg_id': 'avalanche-2'},
     'MATIC': {'ccxt': 'MATIC/USDT', 'yf': 'MATIC-USD', 'av': 'MATIC', 'cg_id': 'polygon'},
-    # Tambah lebih jika perlu, seperti sebelumnya
     'LINK': {'ccxt': 'LINK/USDT', 'yf': 'LINK-USD', 'av': 'LINK', 'cg_id': 'chainlink'},
     'UNI': {'ccxt': 'UNI/USDT', 'yf': 'UNI-USD', 'av': 'UNI', 'cg_id': 'uniswap'},
     'LTC': {'ccxt': 'LTC/USDT', 'yf': 'LTC-USD', 'av': 'LTC', 'cg_id': 'litecoin'},
-    # ... (extend dari list sebelumnya jika mau full 50)
+
+    # Forex
+    'EURUSD': {'yf': 'EURUSD=X', 'av': 'EUR/USD'},
+    'GBPUSD': {'yf': 'GBPUSD=X', 'av': 'GBP/USD'},
+    'USDJPY': {'yf': 'USDJPY=X', 'av': 'USD/JPY'},
+    'AUDUSD': {'yf': 'AUDUSD=X', 'av': 'AUD/USD'},
+    'USDCAD': {'yf': 'USDCAD=X', 'av': 'USD/CAD'},
+    'USDCHF': {'yf': 'USDCHF=X', 'av': 'USD/CHF'},
+    'NZDUSD': {'yf': 'NZDUSD=X', 'av': 'NZD/USD'},
+    'EURGBP': {'yf': 'EURGBP=X', 'av': 'EUR/GBP'},
+    'EURJPY': {'yf': 'EURJPY=X', 'av': 'EUR/JPY'},
+    'GBPJPY': {'yf': 'GBPJPY=X', 'av': 'GBP/JPY'},
+
+    # Saham ID
+    'BBCA': {'yf': 'BBCA.JK', 'av': 'BBCA.JK'},
+    'TLKM': {'yf': 'TLKM.JK', 'av': 'TLKM.JK'},
+    'ASII': {'yf': 'ASII.JK', 'av': 'ASII.JK'},
+    'BMRI': {'yf': 'BMRI.JK', 'av': 'BMRI.JK'},
+    'BBNI': {'yf': 'BBNI.JK', 'av': 'BBNI.JK'},
+    'BBRI': {'yf': 'BBRI.JK', 'av': 'BBRI.JK'},
+    'ANTM': {'yf': 'ANTM.JK', 'av': 'ANTM.JK'},
+    'UNVR': {'yf': 'UNVR.JK', 'av': 'UNVR.JK'},
+    'INDF': {'yf': 'INDF.JK', 'av': 'INDF.JK'},
+    'GOTO': {'yf': 'GOTO.JK', 'av': 'GOTO.JK'},
 }
 
 class DataProvider(ABC):
@@ -46,38 +69,46 @@ class AlphaVantageProvider(DataProvider):
     def __init__(self, api_key=None):
         self.api_key = api_key or os.getenv('ALPHA_VANTAGE_KEY')
         if not self.api_key:
-            raise ValueError("Alpha Vantage API key required.")
+            print("Warning: Alpha Vantage API key not found. Skipping Alpha fallback - get one at https://www.alphavantage.co/support/#api-key")
+            self.api_key = None
         self.base_url = "https://www.alphavantage.co/query"
 
-    def _convert_symbol(self, symbol):
-        if '/' in symbol:
-            base, _ = symbol.split('/')
-            base = base.upper()
-        else:
-            base = symbol.upper()
-        return COMMON_COIN_MAPPING.get(base, {}).get('av', base)
+    def _convert_symbol(self, symbol, market_type='crypto'):
+        base = symbol.split('=')[0] if '=X' in symbol else symbol.split('.')[0] if '.JK' in symbol else symbol.split('/')[0] if '/' in symbol else symbol.upper()
+        mapping = COMMON_COIN_MAPPING.get(base, {})
+        if market_type == 'forex':
+            return mapping.get('av', f"{base[:3]}/{base[3:]}")  # EURUSD → EUR/USD
+        return mapping.get('av', symbol if '.JK' in symbol else base)
 
     def get_ohlcv(self, symbol, timeframe, limit=200):
+        if not self.api_key:
+            return None
         try:
             symbol_av = self._convert_symbol(symbol)
-            function = "CRYPTO_INTRADAY" if timeframe in ['1m', '5m', '15m', '30m', '60m'] else "DIGITAL_CURRENCY_DAILY"
+            if '/' in symbol_av:  # Forex
+                function = "FX_DAILY"
+            else:
+                function = "DIGITAL_CURRENCY_DAILY" if 'crypto' in symbol_av.lower() else "TIME_SERIES_DAILY"
             params = {
                 "function": function,
                 "symbol": symbol_av,
-                "market": "USD",
-                "interval": timeframe if function == "CRYPTO_INTRADAY" else None,
+                "market": "USD" if function == "DIGITAL_CURRENCY_DAILY" else None,
                 "apikey": self.api_key,
                 "outputsize": "full" if limit > 100 else "compact"
             }
+            if function.startswith("FX_"):
+                params["from_symbol"], params["to_symbol"] = symbol_av.split('/')
             response = requests.get(self.base_url, params=params)
             data = response.json()
-            if "Time Series Crypto" in data:
-                time_series_key = list(data.keys())[1]  # Dynamic key seperti 'Time Series Crypto (5min)'
+            time_series_key = next((k for k in data if "Time Series" in k), None)
+            if time_series_key:
                 ohlcv_data = data[time_series_key]
                 df = pd.DataFrame.from_dict(ohlcv_data, orient='index')
                 df = df.astype(float)
                 df['timestamp'] = pd.to_datetime(df.index)
-                df = df[['timestamp', '1. open', '2. high', '3. low', '4. close', '5. volume']]
+                df = df[['timestamp', '1. open', '2. high', '3. low', '4. close', '5. volume' if '5. volume' in df else '4. close']]
+                if '5. volume' not in df.columns:
+                    df['volume'] = 0
                 df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
                 return df.sort_index().tail(limit)
             else:
@@ -88,48 +119,50 @@ class AlphaVantageProvider(DataProvider):
             return None
 
     def get_ticker(self, symbol):
+        if not self.api_key:
+            return None
         try:
             symbol_av = self._convert_symbol(symbol)
+            function = "CURRENCY_EXCHANGE_RATE" if '/' in symbol_av else "GLOBAL_QUOTE"
             params = {
-                "function": "CURRENCY_EXCHANGE_RATE",
-                "from_currency": symbol_av,
-                "to_currency": "USD",
+                "function": function,
+                "symbol": symbol_av,
                 "apikey": self.api_key
             }
+            if function == "CURRENCY_EXCHANGE_RATE":
+                params["from_currency"], params["to_currency"] = symbol_av.split('/')
             response = requests.get(self.base_url, params=params)
             data = response.json()
             if "Realtime Currency Exchange Rate" in data:
                 rate = data["Realtime Currency Exchange Rate"]
-                return {'last': float(rate['5. Exchange Rate']), 'volume': 0}  # Volume not directly available
+                return {'last': float(rate['5. Exchange Rate']), 'volume': 0}
+            elif "Global Quote" in data:
+                quote = data["Global Quote"]
+                return {'last': float(quote['05. price']), 'volume': float(quote.get('06. volume', 0))}
             return None
         except Exception as e:
             print(f"Error getting ticker from Alpha Vantage for {symbol}: {e}")
             return None
 
     def get_popular_assets(self, limit=100):
-        # Fallback ke hardcoded karena Alpha Vantage no direct popular list
-        return [COMMON_COIN_MAPPING[k]['ccxt'] for k in list(COMMON_COIN_MAPPING.keys())[:limit]]
+        return [COMMON_COIN_MAPPING[k].get('ccxt') or COMMON_COIN_MAPPING[k].get('yf') or COMMON_COIN_MAPPING[k].get('av') for k in list(COMMON_COIN_MAPPING.keys())[:limit]]
 
 class CoinGeckoProvider(DataProvider):
     def __init__(self):
         self.base_url = "https://api.coingecko.com/api/v3"
 
     def _convert_symbol(self, symbol):
-        if '/' in symbol:
-            base, _ = symbol.split('/')
-            base = base.upper()
-        else:
-            base = symbol.upper()
+        base = symbol.split('/')[0] if '/' in symbol else symbol.upper()
         return COMMON_COIN_MAPPING.get(base, {}).get('cg_id', base.lower())
 
     def get_ohlcv(self, symbol, timeframe, limit=200):
         try:
             coin_id = self._convert_symbol(symbol)
-            days = max(1, limit // (24 if timeframe == '1h' else 1))  # Approx days
+            days = max(1, limit // (24 if timeframe == '1h' else 1))
             response = requests.get(f"{self.base_url}/coins/{coin_id}/ohlc?vs_currency=usd&days={days}")
             data = response.json()
             df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close'])
-            df['volume'] = 0  # CoinGecko OHLC no volume
+            df['volume'] = 0
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df.tail(limit)
         except Exception as e:
@@ -152,9 +185,9 @@ class CoinGeckoProvider(DataProvider):
         try:
             response = requests.get(f"{self.base_url}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page={limit}&page=1")
             data = response.json()
-            return [f"{item['symbol'].upper()}/USDT" for item in data]  # Format ke CCXT style
+            return [f"{item['symbol'].upper()}/USDT" for item in data]
         except:
-            return [COMMON_COIN_MAPPING[k]['ccxt'] for k in list(COMMON_COIN_MAPPING.keys())[:limit]]
+            return [COMMON_COIN_MAPPING[k]['ccxt'] for k in list(COMMON_COIN_MAPPING.keys()) if 'ccxt' in COMMON_COIN_MAPPING[k]][:limit]
 
 class CCXTDataProvider(DataProvider):
     def __init__(self, exchange_id='bybit', api_key='', secret=''):
@@ -164,22 +197,19 @@ class CCXTDataProvider(DataProvider):
             'secret': secret,
             'enableRateLimit': True,
         })
-        self.fallback_av = AlphaVantageProvider()  # Fallback primary ke Alpha
-        self.fallback_cg = CoinGeckoProvider()
         self.fallback_yf = YFinanceDataProvider(market_type='crypto')
+        self.fallback_cg = CoinGeckoProvider()
+        self.fallback_av = AlphaVantageProvider()  # Last untuk hemat limit 25/day
 
-    def _convert_symbol(self, symbol, target='av'):
-        if '/' in symbol:
-            base, _ = symbol.split('/')
-            base = base.upper()
-        else:
-            base = symbol.upper()
-        if target == 'av':
-            return COMMON_COIN_MAPPING.get(base, {}).get('av', base)
+    def _convert_symbol(self, symbol, target='yf'):
+        base = symbol.split('/')[0] if '/' in symbol else symbol.upper()
+        mapping = COMMON_COIN_MAPPING.get(base, {})
+        if target == 'yf':
+            return mapping.get('yf', f"{base}-USD")
         elif target == 'cg':
-            return COMMON_COIN_MAPPING.get(base, {}).get('cg_id', base.lower())
-        elif target == 'yf':
-            return COMMON_COIN_MAPPING.get(base, {}).get('yf', f"{base}-USD")
+            return mapping.get('cg_id', base.lower())
+        elif target == 'av':
+            return mapping.get('av', base)
         return symbol
 
     def get_ohlcv(self, symbol, timeframe, limit=200):
@@ -190,10 +220,10 @@ class CCXTDataProvider(DataProvider):
             return df
         except Exception as e:
             print(f"Error getting data from CCXT for {symbol}: {e}")
-            # Fallback chain: Alpha -> CG -> YF
-            for fallback in [self.fallback_av, self.fallback_cg, self.fallback_yf]:
+            # Fallback chain: yf → cg → av (hemat av)
+            for fallback, target in [(self.fallback_yf, 'yf'), (self.fallback_cg, 'cg'), (self.fallback_av, 'av')]:
                 try:
-                    conv_symbol = self._convert_symbol(symbol, 'av' if fallback == self.fallback_av else 'cg' if fallback == self.fallback_cg else 'yf')
+                    conv_symbol = self._convert_symbol(symbol, target)
                     print(f"Falling back to {fallback.__class__.__name__} with symbol: {conv_symbol}")
                     df = fallback.get_ohlcv(conv_symbol, timeframe, limit)
                     if df is not None:
@@ -207,10 +237,9 @@ class CCXTDataProvider(DataProvider):
             return self.exchange.fetch_ticker(symbol)
         except Exception as e:
             print(f"Error getting ticker from CCXT for {symbol}: {e}")
-            # Fallback chain sama
-            for fallback in [self.fallback_av, self.fallback_cg, self.fallback_yf]:
+            for fallback, target in [(self.fallback_yf, 'yf'), (self.fallback_cg, 'cg'), (self.fallback_av, 'av')]:
                 try:
-                    conv_symbol = self._convert_symbol(symbol, 'av' if fallback == self.fallback_av else 'cg' if fallback == self.fallback_cg else 'yf')
+                    conv_symbol = self._convert_symbol(symbol, target)
                     print(f"Falling back to {fallback.__class__.__name__} with symbol: {conv_symbol}")
                     ticker = fallback.get_ticker(conv_symbol)
                     if ticker is not None:
@@ -222,13 +251,10 @@ class CCXTDataProvider(DataProvider):
     def get_popular_assets(self, limit=100):
         try:
             markets = self.exchange.load_markets()
-            if self.exchange.id in ['binance', 'bybit']:  # Adjust per exchange
+            if self.exchange.id in ['binance', 'bybit']:
                 usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
                 excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST']
-                filtered_markets = [
-                    symbol for symbol in usdt_markets 
-                    if not any(excluded in symbol for excluded in excluded_coins)
-                ]
+                filtered_markets = [symbol for symbol in usdt_markets if not any(excluded in symbol for excluded in excluded_coins)]
                 try:
                     tickers = self.exchange.fetch_tickers()
                     filtered_markets.sort(key=lambda x: tickers[x]['quoteVolume'] if x in tickers else 0, reverse=True)
@@ -240,61 +266,68 @@ class CCXTDataProvider(DataProvider):
             return self.fallback_cg.get_popular_assets(limit)
 
 class YFinanceDataProvider(DataProvider):
-    def __init__(self, market_type='saham_id'):  # 'saham_id' or 'forex' or 'crypto'
+    def __init__(self, market_type='saham_id'):
         self.market_type = market_type
-        
+        self.fallback_av = AlphaVantageProvider()  # Only fallback ke Alpha
+
+    def _convert_symbol(self, symbol, target='av'):
+        base = symbol.split('=')[0] if '=X' in symbol else symbol.split('.')[0] if '.JK' in symbol else symbol
+        mapping = COMMON_COIN_MAPPING.get(base, {})
+        if target == 'av':
+            if self.market_type == 'forex':
+                from_curr, to_curr = base[:3], base[3:]
+                return f"{from_curr}/{to_curr}"
+            return mapping.get('av', symbol)
+        return symbol
+
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         try:
-            # Map timeframe yfinance: '1h', '2h', '1d', etc.
             interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
             interval = interval_map.get(timeframe, '1h')
-            
-            # Period: adjust berdasarkan interval dan limit
-            if interval == '1h':
-                period = '5d' if limit <= 120 else '2mo'  # Max 730h ~1mo, tapi extend
-            elif interval == '1d':
-                period = '1y'
-            else:
-                period = '1y'
-            
+            period = '5d' if interval == '1h' and limit <= 120 else '2mo' if interval == '1h' else '1y'
             ticker = yf.Ticker(symbol)
             df = ticker.history(period=period, interval=interval)
             if len(df) > limit:
                 df = df.tail(limit)
             df.reset_index(inplace=True)
-            df.columns = [col.lower() for col in df.columns]  # Normalize: 'datetime' -> 'timestamp'
+            df.columns = [col.lower() for col in df.columns]
             if 'datetime' in df.columns:
                 df.rename(columns={'datetime': 'timestamp'}, inplace=True)
             df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
             return df
         except Exception as e:
-            print(f"Error getting data for {symbol}: {e}")
-            return None
-            
+            print(f"Error getting data from yfinance for {symbol}: {e}")
+            try:
+                conv_symbol = self._convert_symbol(symbol, 'av')
+                print(f"Falling back to AlphaVantageProvider with symbol: {conv_symbol}")
+                return self.fallback_av.get_ohlcv(conv_symbol, timeframe, limit)
+            except:
+                return None
+
     def get_ticker(self, symbol):
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
-            hist = ticker.history(period='1d', interval='1m')  # Latest price
-            if not hist.empty:
-                last_price = hist['Close'].iloc[-1]
-            else:
-                last_price = info.get('regularMarketPrice', 0)
+            hist = ticker.history(period='1d', interval='1m')
+            last_price = hist['Close'].iloc[-1] if not hist.empty else info.get('regularMarketPrice', 0)
             return {'last': last_price, 'volume': info.get('volume', 0)}
         except Exception as e:
-            print(f"Error getting ticker for {symbol}: {e}")
-            return None
-            
+            print(f"Error getting ticker from yfinance for {symbol}: {e}")
+            try:
+                conv_symbol = self._convert_symbol(symbol, 'av')
+                print(f"Falling back to AlphaVantageProvider with symbol: {conv_symbol}")
+                return self.fallback_av.get_ticker(conv_symbol)
+            except:
+                return None
+
     def get_popular_assets(self, limit=50):
         if self.market_type == 'saham_id':
-            return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BBRI.JK', 'ANTM.JK', 'UNVR.JK', 'INDF.JK', 'GOTO.JK'][:limit]
+            return [COMMON_COIN_MAPPING[k]['yf'] for k in ['BBCA', 'TLKM', 'ASII', 'BMRI', 'BBNI', 'BBRI', 'ANTM', 'UNVR', 'INDF', 'GOTO']][:limit]
         elif self.market_type == 'forex':
-            return [
-                'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 
-                'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X'
-            ][:limit]
+            return [COMMON_COIN_MAPPING[k]['yf'] for k in ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY']][:limit]
         elif self.market_type == 'crypto':
-            return [COMMON_COIN_MAPPING[k]['yf'] for k in list(COMMON_COIN_MAPPING.keys())[:limit]]
+            return [COMMON_COIN_MAPPING[k]['yf'] for k in list(COMMON_COIN_MAPPING.keys()) if 'yf' in COMMON_COIN_MAPPING[k] and 'ccxt' in COMMON_COIN_MAPPING[k]][:limit]
+        return []
 
 class SolanaPumpFunProvider:
     # Sama seperti sebelumnya, tidak berubah
