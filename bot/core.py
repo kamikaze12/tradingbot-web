@@ -63,12 +63,12 @@ class TradingBot:
                 "timeframe": "1h",
                 "atr_multiplier": 1.0,
                 "entry_range_pct": 0.02,
-                "exchange_crypto": "bybit",  # Default to bybit for CCXT
-                "analysis_coins_limit": 50,
+                "exchange_crypto": "bybit",
+                "analysis_coins_limit": 5,  # Adjust ke 5 untuk hemat calls
                 "ohlcv_limit": 200,
-                "min_score": 3,  # Reduced from 5 to 3 to get more signals
-                "max_signals": 5,
-                "update_interval": 30,  # Add update interval for background tasks
+                "min_score": 3,
+                "max_signals": 5,  # Adjust ke 5
+                "update_interval": 30,
             }
             self.save_config()
 
@@ -102,7 +102,7 @@ class TradingBot:
             print(f"Invalid mode: {mode}")
             return False
 
-        print(f"Mode set to: {self.mode.upper()} with data provider: {self.data_provider}")
+        print(f"Mode set to: {self.mode.upper()} with data provider: {self.data_provider.__class__.__name__}")
         
         # Start background tasks when mode is set
         self.start_background_tasks()
@@ -170,7 +170,7 @@ class TradingBot:
             print("No data provider available.")
             return []
 
-        limit = limit or self.config.get("analysis_coins_limit", 50)
+        limit = limit or self.config.get("analysis_coins_limit", 5)
         try:
             assets = self.data_provider.get_popular_assets(limit)
             if not assets:
