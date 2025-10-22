@@ -21,7 +21,7 @@ COMMON_COIN_MAPPING = {
     'DOT': {'ccxt': 'DOT/USDT', 'yf': 'DOT-USD', 'av': 'DOT'},
     'DOGE': {'ccxt': 'DOGE/USDT', 'yf': 'DOGE-USD', 'av': 'DOGE'},
     'AVAX': {'ccxt': 'AVAX/USDT', 'yf': 'AVAX-USD', 'av': 'AVAX'},
-    'MATIC': {'ccxt': 'MATIC/USDT', 'yf': 'MATIC-USD', 'av': 'MATIC'},
+    'MATIC': {'ccxt': 'MATIC/USDT', 'yf': 'POL-USD', 'av': 'MATIC'},
     'LINK': {'ccxt': 'LINK/USDT', 'yf': 'LINK-USD', 'av': 'LINK'},
     'UNI': {'ccxt': 'UNI/USDT', 'yf': 'UNI-USD', 'av': 'UNI'},
     'LTC': {'ccxt': 'LTC/USDT', 'yf': 'LTC-USD', 'av': 'LTC'},
@@ -168,7 +168,7 @@ class DexScreenerProvider:
             print(f"Error searching pairs in DexScreener: {e}")
             return []
 class CCXTDataProvider(DataProvider):
-    def __init__(self, exchange_id='kucoin', api_key='', secret=''):
+    def __init__(self, exchange_id='bybit', api_key='', secret=''):
         exchange_class = getattr(ccxt, exchange_id)
         self.exchange = exchange_class({
             'apiKey': api_key,
