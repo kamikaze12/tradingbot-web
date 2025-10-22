@@ -13,8 +13,6 @@ class DatabaseHandler:
         self.db_type = "postgresql"
         self.thread_local = threading.local()
         self.create_tables()
-       
-
     # =========================================================
     # Connection - SIMPLIFIED & FIXED
     # =========================================================
