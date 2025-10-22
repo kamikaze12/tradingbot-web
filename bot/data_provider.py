@@ -9,6 +9,7 @@ import asyncio
 import base58 # Untuk decode pubkey
 import os
 import requests # Untuk Alpha Vantage dan DexScreener
+import re  # Untuk parse search result
 
 class DataProvider(ABC):
     @abstractmethod
@@ -34,15 +35,16 @@ class AlphaVantageProvider(DataProvider):
     def _convert_symbol(self, symbol, market_type='crypto'):
         if '/' in symbol:
             base, quote = symbol.split('/')
-            if market_type == 'forex':
-                return f"{base}/{quote}"
-            return base
         elif '=X' in symbol:
             base = symbol.split('=')[0]
             return f"{base[:3]}/{base[3:]}"
         elif '.JK' in symbol:
             return symbol
-        return symbol.upper()
+        else:
+            base = symbol.upper()
+        if market_type == 'forex':
+            return f"{base[:3]}/{base[3:]}"
+        return base
 
     def get_ohlcv(self, symbol, timeframe, limit=200):
         if not self.api_key:
@@ -268,7 +270,6 @@ class YFinanceDataProvider(DataProvider):
                 return None
     def get_popular_assets(self, limit=50):
         if self.market_type == 'saham_id':
-            # For saham_id, use hardcoded or search if needed
             return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BBRI.JK', 'ANTM.JK', 'UNVR.JK', 'INDF.JK', 'GOTO.JK'][:limit]
         elif self.market_type == 'forex':
             return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X'][:limit]
