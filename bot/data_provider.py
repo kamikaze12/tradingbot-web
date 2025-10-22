@@ -6,10 +6,9 @@ from solana.rpc.api import Client
 from solana.rpc.websocket_api import connect
 import json
 import asyncio
-import base58  # Untuk decode pubkey
+import base58 # Untuk decode pubkey
 import os
-import requests  # Untuk Alpha Vantage dan DexScreener
-
+import requests # Untuk Alpha Vantage dan DexScreener
 # Extended mapping untuk crypto, forex, dan saham populer
 COMMON_COIN_MAPPING = {
     # Crypto
@@ -26,7 +25,6 @@ COMMON_COIN_MAPPING = {
     'LINK': {'ccxt': 'LINK/USDT', 'yf': 'LINK-USD', 'av': 'LINK'},
     'UNI': {'ccxt': 'UNI/USDT', 'yf': 'UNI-USD', 'av': 'UNI'},
     'LTC': {'ccxt': 'LTC/USDT', 'yf': 'LTC-USD', 'av': 'LTC'},
-
     # Forex
     'EURUSD': {'yf': 'EURUSD=X', 'av': 'EUR/USD'},
     'GBPUSD': {'yf': 'GBPUSD=X', 'av': 'GBP/USD'},
@@ -38,7 +36,6 @@ COMMON_COIN_MAPPING = {
     'EURGBP': {'yf': 'EURGBP=X', 'av': 'EUR/GBP'},
     'EURJPY': {'yf': 'EURJPY=X', 'av': 'EUR/JPY'},
     'GBPJPY': {'yf': 'GBPJPY=X', 'av': 'GBP/JPY'},
-
     # Saham ID
     'BBCA': {'yf': 'BBCA.JK', 'av': 'BBCA.JK'},
     'TLKM': {'yf': 'TLKM.JK', 'av': 'TLKM.JK'},
@@ -51,20 +48,18 @@ COMMON_COIN_MAPPING = {
     'INDF': {'yf': 'INDF.JK', 'av': 'INDF.JK'},
     'GOTO': {'yf': 'GOTO.JK', 'av': 'GOTO.JK'},
 }
-
 class DataProvider(ABC):
     @abstractmethod
     def get_ohlcv(self, symbol, timeframe, limit):
         pass
-        
+       
     @abstractmethod
     def get_ticker(self, symbol):
         pass
-        
+       
     @abstractmethod
     def get_popular_assets(self, limit):
         pass
-
 class AlphaVantageProvider(DataProvider):
     def __init__(self, api_key=None):
         self.api_key = api_key or os.getenv('ALPHA_VANTAGE_KEY')
@@ -72,20 +67,18 @@ class AlphaVantageProvider(DataProvider):
             print("Warning: Alpha Vantage API key not found. Skipping Alpha fallback - get one at https://www.alphavantage.co/support/#api-key")
             self.api_key = None
         self.base_url = "https://www.alphavantage.co/query"
-
     def _convert_symbol(self, symbol, market_type='crypto'):
         base = symbol.split('=')[0] if '=X' in symbol else symbol.split('.')[0] if '.JK' in symbol else symbol.split('/')[0] if '/' in symbol else symbol.upper()
         mapping = COMMON_COIN_MAPPING.get(base, {})
         if market_type == 'forex':
-            return mapping.get('av', f"{base[:3]}/{base[3:]}")  # EURUSD → EUR/USD
+            return mapping.get('av', f"{base[:3]}/{base[3:]}") # EURUSD → EUR/USD
         return mapping.get('av', symbol if '.JK' in symbol else base)
-
     def get_ohlcv(self, symbol, timeframe, limit=200):
         if not self.api_key:
             return None
         try:
             symbol_av = self._convert_symbol(symbol)
-            if '/' in symbol_av:  # Forex
+            if '/' in symbol_av: # Forex
                 function = "FX_DAILY"
             else:
                 function = "DIGITAL_CURRENCY_DAILY" if 'crypto' in symbol_av.lower() else "TIME_SERIES_DAILY"
@@ -117,7 +110,6 @@ class AlphaVantageProvider(DataProvider):
         except Exception as e:
             print(f"Error getting OHLCV from Alpha Vantage for {symbol}: {e}")
             return None
-
     def get_ticker(self, symbol):
         if not self.api_key:
             return None
@@ -143,14 +135,11 @@ class AlphaVantageProvider(DataProvider):
         except Exception as e:
             print(f"Error getting ticker from Alpha Vantage for {symbol}: {e}")
             return None
-
     def get_popular_assets(self, limit=100):
         return [COMMON_COIN_MAPPING[k].get('ccxt') or COMMON_COIN_MAPPING[k].get('yf') or COMMON_COIN_MAPPING[k].get('av') for k in list(COMMON_COIN_MAPPING.keys())[:limit]]
-
 class DexScreenerProvider:
     def __init__(self):
         self.base_url = "https://api.dexscreener.com/latest/dex"
-
     def get_ticker(self, chain, token_address):
         try:
             # Example: Fetch pairs for token, ambil first pair untuk ticker
@@ -169,7 +158,6 @@ class DexScreenerProvider:
         except Exception as e:
             print(f"Error getting ticker from DexScreener for {token_address}: {e}")
             return None
-
     def search_pairs(self, query):
         try:
             url = f"{self.base_url}/search?q={query}"
@@ -179,9 +167,8 @@ class DexScreenerProvider:
         except Exception as e:
             print(f"Error searching pairs in DexScreener: {e}")
             return []
-
 class CCXTDataProvider(DataProvider):
-    def __init__(self, exchange_id='bybit', api_key='', secret=''):
+    def __init__(self, exchange_id='kucoin', api_key='', secret=''):
         exchange_class = getattr(ccxt, exchange_id)
         self.exchange = exchange_class({
             'apiKey': api_key,
@@ -189,8 +176,7 @@ class CCXTDataProvider(DataProvider):
             'enableRateLimit': True,
         })
         self.fallback_yf = YFinanceDataProvider(market_type='crypto')
-        self.fallback_av = AlphaVantageProvider()  # Last untuk hemat limit 25/day
-
+        self.fallback_av = AlphaVantageProvider() # Last untuk hemat limit 25/day
     def _convert_symbol(self, symbol, target='yf'):
         base = symbol.split('/')[0] if '/' in symbol else symbol.upper()
         mapping = COMMON_COIN_MAPPING.get(base, {})
@@ -199,7 +185,6 @@ class CCXTDataProvider(DataProvider):
         elif target == 'av':
             return mapping.get('av', base)
         return symbol
-
     def get_ohlcv(self, symbol, timeframe, limit=200):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -219,7 +204,6 @@ class CCXTDataProvider(DataProvider):
                 except:
                     pass
             return None
-
     def get_ticker(self, symbol):
         try:
             return self.exchange.fetch_ticker(symbol)
@@ -235,11 +219,10 @@ class CCXTDataProvider(DataProvider):
                 except:
                     pass
             return None
-
     def get_popular_assets(self, limit=100):
         try:
             markets = self.exchange.load_markets()
-            if self.exchange.id in ['binance', 'bybit']:
+            if self.exchange.id in ['binance', 'bybit', 'kucoin']:
                 usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
                 excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST']
                 filtered_markets = [symbol for symbol in usdt_markets if not any(excluded in symbol for excluded in excluded_coins)]
@@ -252,12 +235,10 @@ class CCXTDataProvider(DataProvider):
         except:
             print("Falling back to hardcoded popular assets")
             return [COMMON_COIN_MAPPING[k].get('ccxt') for k in list(COMMON_COIN_MAPPING.keys()) if 'ccxt' in COMMON_COIN_MAPPING[k]][:limit]
-
 class YFinanceDataProvider(DataProvider):
     def __init__(self, market_type='saham_id'):
         self.market_type = market_type
-        self.fallback_av = AlphaVantageProvider()  # Only fallback ke Alpha
-
+        self.fallback_av = AlphaVantageProvider() # Only fallback ke Alpha
     def _convert_symbol(self, symbol, target='av'):
         base = symbol.split('=')[0] if '=X' in symbol else symbol.split('.')[0] if '.JK' in symbol else symbol
         mapping = COMMON_COIN_MAPPING.get(base, {})
@@ -267,7 +248,6 @@ class YFinanceDataProvider(DataProvider):
                 return f"{from_curr}/{to_curr}"
             return mapping.get('av', symbol)
         return symbol
-
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         try:
             interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
@@ -279,7 +259,9 @@ class YFinanceDataProvider(DataProvider):
                 df = df.tail(limit)
             df.reset_index(inplace=True)
             df.columns = [col.lower() for col in df.columns]
-            if 'datetime' in df.columns:
+            if 'date' in df.columns:
+                df.rename(columns={'date': 'timestamp'}, inplace=True)
+            elif 'datetime' in df.columns:
                 df.rename(columns={'datetime': 'timestamp'}, inplace=True)
             df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
             return df
@@ -291,7 +273,6 @@ class YFinanceDataProvider(DataProvider):
                 return self.fallback_av.get_ohlcv(conv_symbol, timeframe, limit)
             except:
                 return None
-
     def get_ticker(self, symbol):
         try:
             ticker = yf.Ticker(symbol)
@@ -307,7 +288,6 @@ class YFinanceDataProvider(DataProvider):
                 return self.fallback_av.get_ticker(conv_symbol)
             except:
                 return None
-
     def get_popular_assets(self, limit=50):
         if self.market_type == 'saham_id':
             return [COMMON_COIN_MAPPING[k]['yf'] for k in ['BBCA', 'TLKM', 'ASII', 'BMRI', 'BBNI', 'BBRI', 'ANTM', 'UNVR', 'INDF', 'GOTO']][:limit]
@@ -316,13 +296,12 @@ class YFinanceDataProvider(DataProvider):
         elif self.market_type == 'crypto':
             return [COMMON_COIN_MAPPING[k]['yf'] for k in list(COMMON_COIN_MAPPING.keys()) if 'yf' in COMMON_COIN_MAPPING[k] and 'ccxt' in COMMON_COIN_MAPPING[k]][:limit]
         return []
-
 class SolanaPumpFunProvider:
     def __init__(self, rpc_url):
         self.client = Client(rpc_url)
         self.program_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
-        self.dex_provider = DexScreenerProvider()  # Integrasi DexScreener
-    
+        self.dex_provider = DexScreenerProvider() # Integrasi DexScreener
+   
     async def monitor_new_tokens(self, limit=10):
         results = []
         try:
@@ -332,7 +311,7 @@ class SolanaPumpFunProvider:
                     commitment="finalized"
                 )
                 async for msg in websocket:
-                    if "create" in str(msg.result.value.logs):  # Simplified
+                    if "create" in str(msg.result.value.logs): # Simplified
                         token_mint = self.extract_token_mint(msg)
                         if token_mint:
                             ticker = await self.get_solana_ticker(token_mint)
@@ -342,13 +321,12 @@ class SolanaPumpFunProvider:
         except Exception as e:
             print(f"Error monitoring Pump.fun: {e}")
         return results
-    
+   
     def extract_token_mint(self, msg):
         # Placeholder (real: parse logs untuk dapat mint address)
-        return "EXAMPLE_MINT_TOKEN"  # Ganti dengan parsing real dari logs
-
+        return "EXAMPLE_MINT_TOKEN" # Ganti dengan parsing real dari logs
     async def get_solana_ticker(self, mint):
         # Gunakan DexScreener untuk fetch real ticker (misal search pair dengan mint)
         # Asumsi mint adalah tokenAddress, chain 'solana'
         # Contoh: Search pair 'mint USDC' atau fetch token pairs
-        return self.dex_provider.get_ticker('solana', mint)  # Return {'last': price, 'volume': vol}
+        return self.dex_provider.get_ticker('solana', mint) # Return {'last': price, 'volume': vol}
