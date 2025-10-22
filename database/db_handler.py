@@ -13,6 +13,9 @@ class DatabaseHandler:
         self.db_type = "postgresql"
         self.thread_local = threading.local()
         self.create_tables()
+        sslmode='require',  # Force SSL
+         keepalives=1,  # Enable keepalives
+          keepalives_idle=30,  # Ping setiap 30 detik idle
 
     # =========================================================
     # Connection - SIMPLIFIED & FIXED
