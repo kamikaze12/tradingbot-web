@@ -222,7 +222,7 @@ class CCXTDataProvider(DataProvider):
     def get_popular_assets(self, limit=100):
         try:
             markets = self.exchange.load_markets()
-            if self.exchange.id in ['binance', 'bybit', 'kucoin']:
+            if self.exchange.id in ['binance', 'bybit']:
                 usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
                 excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST']
                 filtered_markets = [symbol for symbol in usdt_markets if not any(excluded in symbol for excluded in excluded_coins)]
