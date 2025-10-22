@@ -10,6 +10,7 @@ import base58 # Untuk decode pubkey
 import os
 import requests # Untuk Alpha Vantage dan DexScreener
 import re  # Untuk parse search result
+from datetime import datetime
 
 class DataProvider(ABC):
     @abstractmethod
