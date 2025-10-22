@@ -4,10 +4,7 @@ import threading
 from dotenv import load_dotenv
 from datetime import datetime
 import streamlit as st
-
 load_dotenv()
-
-
 class DatabaseHandler:
     def __init__(self):
         self.db_type = "postgresql"
@@ -22,21 +19,20 @@ class DatabaseHandler:
             try:
                 # Get connection parameters
                 conn_params = self._get_connection_params()
-                
+               
                 if not conn_params:
                     raise Exception("No database configuration found")
-                
+               
                 print(f"Connecting to: {conn_params['host']}:{conn_params['port']} as {conn_params['user']}")
                 self.thread_local.conn = psycopg2.connect(**conn_params)
                 print("Connected to database successfully")
-                
+               
             except Exception as e:
                 print(f"Failed to connect to database: {e}")
                 if hasattr(st, 'error'):
                     st.error(f"Database connection failed: {e}")
                 raise
         return self.thread_local.conn
-
     def _get_connection_params(self):
         """Get connection parameters from Streamlit secrets or environment"""
         # Default values
@@ -45,14 +41,19 @@ class DatabaseHandler:
             'user': 'postgres',
             'password': '',
             'host': 'localhost',
-            'port': 5432
+            'port': 5432,
+            'sslmode': 'require',
+            'keepalives': 1,
+            'keepalives_idle': 30,
+            'keepalives_interval': 10,
+            'keepalives_count': 5
         }
-        
+       
         try:
             # Priority 1: Streamlit Secrets
             if hasattr(st, 'secrets'):
                 secrets = st.secrets
-                
+               
                 # Check individual parameters first
                 if all(key in secrets for key in ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME']):
                     params.update({
@@ -63,7 +64,7 @@ class DatabaseHandler:
                         'port': int(secrets.get('DB_PORT', 5432))
                     })
                     return params
-                
+               
                 # Check database section
                 if 'database' in secrets:
                     db_config = secrets['database']
@@ -76,7 +77,7 @@ class DatabaseHandler:
                             'port': int(db_config.get('DB_PORT', 5432))
                         })
                         return params
-            
+           
             # Priority 2: Environment Variables
             if all(os.getenv(key) for key in ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME']):
                 params.update({
@@ -87,14 +88,13 @@ class DatabaseHandler:
                     'port': int(os.getenv('DB_PORT', 5432))
                 })
                 return params
-            
+           
             # If we get here, no valid config found
             return None
-            
+           
         except Exception as e:
             print(f"Error getting connection params: {e}")
             return None
-
     # =========================================================
     # Schema
     # =========================================================
@@ -104,12 +104,10 @@ class DatabaseHandler:
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-
             # Drop tables (reset)
             cursor.execute("DROP TABLE IF EXISTS signals CASCADE")
             cursor.execute("DROP TABLE IF EXISTS positions CASCADE")
             cursor.execute("DROP TABLE IF EXISTS trade_history CASCADE")
-
             # Table: signals
             cursor.execute(
                 """
@@ -140,7 +138,6 @@ class DatabaseHandler:
                 )
                 """
             )
-
             # Table: positions
             cursor.execute(
                 """
@@ -163,7 +160,6 @@ class DatabaseHandler:
                 )
                 """
             )
-
             # Table: trade_history
             cursor.execute(
                 """
@@ -180,10 +176,8 @@ class DatabaseHandler:
                 )
                 """
             )
-
             conn.commit()
             print("Tables created successfully")
-
         except Exception as e:
             print(f"Error creating tables: {e}")
             if conn:
@@ -191,7 +185,6 @@ class DatabaseHandler:
         finally:
             if cursor:
                 cursor.close()
-
     # =========================================================
     # Signals
     # =========================================================
@@ -201,13 +194,11 @@ class DatabaseHandler:
         cursor = conn.cursor()
         converted_data = self._convert_numpy_types(data)
         print(f"Saving signal: {converted_data}")
-
         try:
             hh = bool(converted_data.get("hh", False))
             hl = bool(converted_data.get("hl", False))
             lh = bool(converted_data.get("lh", False))
             ll = bool(converted_data.get("ll", False))
-
             cursor.execute(
                 """
                 INSERT INTO signals (
@@ -248,19 +239,16 @@ class DatabaseHandler:
                     converted_data.get("ema_score", 0),
                 ),
             )
-
             conn.commit()
             signal_id = cursor.fetchone()[0]
             print(f"Signal saved with ID: {signal_id}")
             return signal_id
-
         except Exception as e:
             print(f"Error saving signal: {e}")
             conn.rollback()
             raise
         finally:
             cursor.close()
-
     def get_all_signals(self, market_type):
         """Get all signals for a market"""
         conn = self.get_connection()
@@ -273,7 +261,6 @@ class DatabaseHandler:
             return cursor.fetchall()
         finally:
             cursor.close()
-
     def delete_signal_by_symbol(self, symbol, market_type):
         """Delete signal by symbol"""
         conn = self.get_connection()
@@ -292,7 +279,6 @@ class DatabaseHandler:
             return False
         finally:
             cursor.close()
-
     # =========================================================
     # Positions
     # =========================================================
@@ -313,7 +299,6 @@ class DatabaseHandler:
         """Save a new position to the database"""
         conn = self.get_connection()
         cursor = conn.cursor()
-
         try:
             if current_price is None:
                 current_price = entry_price
@@ -321,7 +306,6 @@ class DatabaseHandler:
                 entry_low = entry_price * 0.98
             if entry_high is None:
                 entry_high = entry_price * 1.02
-
             cursor.execute(
                 """
                 INSERT INTO positions (
@@ -345,19 +329,16 @@ class DatabaseHandler:
                     current_price,
                 ),
             )
-
             conn.commit()
             position_id = cursor.fetchone()[0]
             print(f"Position saved with ID: {position_id}")
             return position_id
-
         except Exception as e:
             print(f"Error saving position: {e}")
             conn.rollback()
             return None
         finally:
             cursor.close()
-
     def update_position_current_price(self, symbol, current_price):
         """Update current price for a position"""
         conn = self.get_connection()
@@ -376,7 +357,6 @@ class DatabaseHandler:
             return False
         finally:
             cursor.close()
-
     def get_active_positions(self, market_type=None):
         """Get active positions from database"""
         conn = self.get_connection()
@@ -399,7 +379,6 @@ class DatabaseHandler:
             return cursor.fetchall()
         finally:
             cursor.close()
-
     def close_position(self, position_id, close_price, exit_type):
         """Close a position and save to history"""
         conn = self.get_connection()
@@ -407,13 +386,11 @@ class DatabaseHandler:
         try:
             cursor.execute("SELECT * FROM positions WHERE id = %s", (position_id,))
             position = cursor.fetchone()
-
             if position:
                 if position[3] == "LONG":
                     profit_loss = close_price - position[4]
-                else:  # SHORT
+                else: # SHORT
                     profit_loss = position[4] - close_price
-
                 # Insert trade history
                 cursor.execute(
                     """
@@ -433,7 +410,6 @@ class DatabaseHandler:
                         exit_type,
                     ),
                 )
-
                 # Update position status
                 cursor.execute(
                     """
@@ -443,19 +419,16 @@ class DatabaseHandler:
                     """,
                     (close_price, position_id),
                 )
-
                 conn.commit()
                 print(f"Position {position_id} closed with P/L: {profit_loss}")
                 return True
             return False
-
         except Exception as e:
             print(f"Error closing position: {e}")
             conn.rollback()
             return False
         finally:
             cursor.close()
-
     # =========================================================
     # Trade History
     # =========================================================
@@ -481,7 +454,6 @@ class DatabaseHandler:
             return cursor.fetchall()
         finally:
             cursor.close()
-
     # =========================================================
     # Utils
     # =========================================================
@@ -497,7 +469,6 @@ class DatabaseHandler:
             return float(data)
         except Exception:
             return str(data)
-
     def close_connection(self):
         """Close the database connection"""
         if hasattr(self.thread_local, "conn"):
