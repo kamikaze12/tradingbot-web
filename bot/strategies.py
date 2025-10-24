@@ -344,4 +344,4 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             'pattern_details': all_patterns
         }
         
-        return result
+        return result 
