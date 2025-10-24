@@ -6,9 +6,9 @@ from solana.rpc.api import Client
 from solana.rpc.websocket_api import connect
 import json
 import asyncio
-import base58 # Untuk decode pubkey
+import base58  # Untuk decode pubkey
 import os
-import requests # Untuk Alpha Vantage dan DexScreener
+import requests  # Untuk Alpha Vantage dan DexScreener
 import re  # Untuk parse search result
 from datetime import datetime
 
@@ -271,10 +271,23 @@ class YFinanceDataProvider(DataProvider):
                 return None
     def get_popular_assets(self, limit=50):
         if self.market_type == 'saham_id':
-            return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BBRI.JK', 'ANTM.JK', 'UNVR.JK', 'INDF.JK', 'GOTO.JK'][:limit]
+            # Dynamic search for top trending stocks Indonesia
+            search_query = "top trending stocks Indonesia IDX " + datetime.now().strftime("%B %d, %Y")
+            search_result = self.web_search(search_query)
+            # Parse tickers from result (e.g., 'BBCA, TLKM')
+            tickers = re.findall(r'\b[A-Z]{3,5}\b', search_result)  # Extract uppercase tickers 3-5 chars
+            unique_tickers = list(set(tickers))[:limit]
+            return [ticker + '.JK' for ticker in unique_tickers]  # Convert to yfinance format
         elif self.market_type == 'forex':
-            return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X'][:limit]
+            # Dynamic search for top trending forex pairs
+            search_query = "top trending forex pairs " + datetime.now().strftime("%B %d, %Y")
+            search_result = self.web_search(search_query)
+            # Parse pairs like 'EURUSD, GBPUSD'
+            pairs = re.findall(r'\b[A-Z]{6}\b', search_result)  # 6-letter pairs like EURUSD
+            unique_pairs = list(set(pairs))[:limit]
+            return [pair + '=X' for pair in unique_pairs]  # Convert to yfinance format
         return []
+
 class SolanaPumpFunProvider:
     def __init__(self, rpc_url):
         self.client = Client(rpc_url)
