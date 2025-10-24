@@ -11,6 +11,18 @@ except ImportError:
     TALIB_AVAILABLE = False
     print("Warning: TA-LIB not available, using simple calculations")
 
+try:
+    from sklearn.svm import SVC
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import accuracy_score
+    import optuna
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
+    print("Warning: scikit-learn or optuna not available, skipping ML features. Install with pip install scikit-learn optuna")
+
+import yfinance as yf  # Untuk backtest data
+
 class TradingStrategy(ABC):
     @abstractmethod
     def analyze(self, df):
@@ -344,4 +356,4 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             'pattern_details': all_patterns
         }
         
-        return result 
+        return result
