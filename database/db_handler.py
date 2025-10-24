@@ -346,7 +346,7 @@ class DatabaseHandler:
         try:
             cursor.execute(
                 "UPDATE positions SET current_price = %s WHERE symbol = %s AND status = 'active'",
-                (current_price, symbol),
+                (float(current_price), symbol),
             )
             conn.commit()
             print(f"Updated current price for {symbol} to {current_price}")
