@@ -6,10 +6,10 @@ from solana.rpc.api import Client
 from solana.rpc.websocket_api import connect
 import json
 import asyncio
-import base58 # Untuk decode pubkey
+import base58  # Untuk decode pubkey
 import os
-import requests # Untuk Alpha Vantage dan DexScreener
-import re  # Untuk parse search result
+import requests  # Untuk Alpha Vantage dan DexScreener
+from bs4 import BeautifulSoup  # Untuk parse HTML dari situs web
 from datetime import datetime
 
 class DataProvider(ABC):
@@ -271,21 +271,30 @@ class YFinanceDataProvider(DataProvider):
                 return None
     def get_popular_assets(self, limit=50):
         if self.market_type == 'saham_id':
-            # Dynamic search for top trending stocks Indonesia
-            search_query = "top trending stocks Indonesia IDX " + datetime.now().strftime("%B %d, %Y")
-            search_result = self.web_search(search_query)
-            # Parse tickers from result (e.g., 'BBCA, TLKM')
-            tickers = re.findall(r'\b[A-Z]{3,5}\b', search_result)  # Extract uppercase tickers 3-5 chars
-            unique_tickers = list(set(tickers))[:limit]
-            return [ticker + '.JK' for ticker in unique_tickers]  # Convert to yfinance format
+            # Dynamic fetch from IDX or Investing.com
+            try:
+                url = "https://www.investing.com/indices/idx-composite-components"
+                headers = {'User-Agent': 'Mozilla/5.0'}
+                response = requests.get(url, headers=headers)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                tickers = [row.find('a').text for row in soup.find_all('tr')[1:limit+1] if row.find('a')]  # Parse top tickers
+                return [ticker + '.JK' for ticker in tickers if ticker.isupper()]  # Convert to yf format
+            except Exception as e:
+                print(f"Error fetching saham ID: {e}")
+                return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK']  # Emergency fallback
         elif self.market_type == 'forex':
-            # Dynamic search for top trending forex pairs
-            search_query = "top trending forex pairs " + datetime.now().strftime("%B %d, %Y")
-            search_result = self.web_search(search_query)
-            # Parse pairs like 'EURUSD, GBPUSD'
-            pairs = re.findall(r'\b[A-Z]{6}\b', search_result)  # 6-letter pairs like EURUSD
-            unique_pairs = list(set(pairs))[:limit]
-            return [pair + '=X' for pair in unique_pairs]  # Convert to yfinance format
+            # Dynamic fetch from Investing.com top forex
+            try:
+                url = "https://www.investing.com/currencies/"
+                headers = {'User-Agent': 'Mozilla/5.0'}
+                response = requests.get(url, headers=headers)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                pairs = [a['href'].split('/')[-1].upper() for a in soup.find_all('a', class_='js-quote-ticker')[:limit]]
+                unique_pairs = list(set(pairs))
+                return [pair + '=X' for pair in unique_pairs if len(pair) == 6]  # Convert to yf format
+            except Exception as e:
+                print(f"Error fetching forex: {e}")
+                return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X']  # Emergency fallback
         return []
 
 class SolanaPumpFunProvider:
