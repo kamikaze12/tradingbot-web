@@ -10,6 +10,7 @@ import base58  # Untuk decode pubkey
 import os
 import requests  # Untuk Alpha Vantage dan DexScreener
 from bs4 import BeautifulSoup  # Untuk parse HTML dari situs web
+import re  # Untuk parse search result
 from datetime import datetime
 
 class DataProvider(ABC):
@@ -277,8 +278,8 @@ class YFinanceDataProvider(DataProvider):
                 headers = {'User-Agent': 'Mozilla/5.0'}
                 response = requests.get(url, headers=headers)
                 soup = BeautifulSoup(response.text, 'html.parser')
-                tickers = [row.find('a').text for row in soup.find_all('tr')[1:limit+1] if row.find('a')]  # Parse top tickers
-                return [ticker + '.JK' for ticker in tickers if ticker.isupper()]  # Convert to yf format
+                tickers = [td.text.strip() for td in soup.find_all('td', class_='symbol')][:limit]  # Parse symbols
+                return [ticker + '.JK' for ticker in tickers if len(ticker) == 4 and ticker.isupper()]  # Convert to yf, filter valid
             except Exception as e:
                 print(f"Error fetching saham ID: {e}")
                 return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK']  # Emergency fallback
@@ -289,9 +290,9 @@ class YFinanceDataProvider(DataProvider):
                 headers = {'User-Agent': 'Mozilla/5.0'}
                 response = requests.get(url, headers=headers)
                 soup = BeautifulSoup(response.text, 'html.parser')
-                pairs = [a['href'].split('/')[-1].upper() for a in soup.find_all('a', class_='js-quote-ticker')[:limit]]
+                pairs = [a.text.upper() for a in soup.find_all('a', class_='js-quote-ticker-link')[:limit]]
                 unique_pairs = list(set(pairs))
-                return [pair + '=X' for pair in unique_pairs if len(pair) == 6]  # Convert to yf format
+                return [pair.replace('/', '') + '=X' for pair in unique_pairs if len(pair.replace('/', '')) == 6]  # Convert EUR/USD to EURUSD=X
             except Exception as e:
                 print(f"Error fetching forex: {e}")
                 return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X']  # Emergency fallback
