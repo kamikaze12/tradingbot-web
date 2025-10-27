@@ -278,8 +278,15 @@ class YFinanceDataProvider(DataProvider):
                 headers = {'User-Agent': 'Mozilla/5.0'}
                 response = requests.get(url, headers=headers)
                 soup = BeautifulSoup(response.text, 'html.parser')
-                tickers = [td.text.strip() for td in soup.find_all('td', class_='symbol')][:limit]  # Parse symbols
-                return [ticker + '.JK' for ticker in tickers if len(ticker) == 4 and ticker.isupper()]  # Convert to yf format
+                rows = soup.find_all('tr')
+                tickers = []
+                for row in rows[1:]:  # Skip header
+                    cells = row.find_all('td')
+                    if len(cells) > 1:
+                        ticker = cells[1].text.strip()  # Symbol in second column
+                        if len(ticker) == 4 and ticker.isupper():
+                            tickers.append(ticker)
+                return [ticker + '.JK' for ticker in tickers[:limit]]  # Convert to yf format
             except Exception as e:
                 print(f"Error fetching saham ID: {e}")
                 return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK']  # Emergency fallback
