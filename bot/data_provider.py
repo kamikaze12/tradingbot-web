@@ -290,9 +290,9 @@ class YFinanceDataProvider(DataProvider):
                 headers = {'User-Agent': 'Mozilla/5.0'}
                 response = requests.get(url, headers=headers)
                 soup = BeautifulSoup(response.text, 'html.parser')
-                pairs = [a.text.upper() for a in soup.find_all('a', class_='js-quote-ticker-link')[:limit]]
+                pairs = [a.text.upper().replace('/', '') for a in soup.find_all('a', class_='js-quote-ticker-link')[:limit]]  # Replace / to ''
                 unique_pairs = list(set(pairs))
-                return [pair.replace('/', '') + '=X' for pair in unique_pairs if len(pair.replace('/', '')) == 6]  # Convert EUR/USD to EURUSD=X
+                return [pair + '=X' for pair in unique_pairs if len(pair) == 6]  # Convert to EURUSD=X
             except Exception as e:
                 print(f"Error fetching forex: {e}")
                 return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X']  # Emergency fallback
