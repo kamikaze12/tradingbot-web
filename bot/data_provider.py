@@ -8,7 +8,7 @@ import json
 import asyncio
 import base58  # Untuk decode pubkey
 import os
-import requests  # Untuk Alpha Vantag e dan DexScreener
+import requests  # Untuk Alpha Vantage dan DexScreener
 from bs4 import BeautifulSoup  # Untuk parse HTML dari situs web
 import re  # Untuk parse search result
 from datetime import datetime
@@ -286,6 +286,7 @@ class YFinanceDataProvider(DataProvider):
                         ticker = cells[1].text.strip()  # Symbol in second column
                         if len(ticker) == 4 and ticker.isupper():
                             tickers.append(ticker)
+                print(f"Fetched {len(tickers)} saham ID tickers")
                 return [ticker + '.JK' for ticker in tickers[:limit]]  # Convert to yf format
             except Exception as e:
                 print(f"Error fetching saham ID: {e}")
@@ -299,6 +300,7 @@ class YFinanceDataProvider(DataProvider):
                 soup = BeautifulSoup(response.text, 'html.parser')
                 pairs = [a.text.upper().replace('/', '') for a in soup.find_all('a', class_='js-quote-ticker-link')[:limit]]  # Replace / to ''
                 unique_pairs = list(set(pairs))
+                print(f"Fetched {len(unique_pairs)} forex pairs")
                 return [pair + '=X' for pair in unique_pairs if len(pair) == 6]  # Convert to EURUSD=X
             except Exception as e:
                 print(f"Error fetching forex: {e}")
