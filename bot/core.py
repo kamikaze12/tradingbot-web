@@ -63,11 +63,11 @@ class TradingBot:
                 "timeframe": "1h",
                 "atr_multiplier": 1.0,
                 "entry_range_pct": 0.02,
-                "exchange_crypto": "kucoin",  # Ganti default ke kucoin untuk avoid restrict
-                "analysis_coins_limit": 20,  # Naik ke 20 untuk lebih banyak
+                "exchange_crypto": "kucoin",
+                "analysis_coins_limit": 50,  # Naik untuk lebih banyak aset
                 "ohlcv_limit": 200,
                 "min_score": 3,
-                "max_signals": 5,
+                "max_signals": 10,  # Naik untuk lebih banyak sinyal
                 "update_interval": 30,
             }
             self.save_config()
@@ -170,7 +170,7 @@ class TradingBot:
             print("No data provider available.")
             return []
 
-        limit = limit or self.config.get("analysis_coins_limit", 20)
+        limit = limit or self.config.get("analysis_coins_limit", 50)
         try:
             assets = self.data_provider.get_popular_assets(limit)
             if not assets:
