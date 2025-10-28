@@ -8,7 +8,7 @@ import json
 import asyncio
 import base58  # Untuk decode pubkey
 import os
-import requests  # Untuk Alpha Vantage dan DexScreener
+import requests  # Untuk Alpha Vantag e dan DexScreener
 from bs4 import BeautifulSoup  # Untuk parse HTML dari situs web
 import re  # Untuk parse search result
 from datetime import datetime
