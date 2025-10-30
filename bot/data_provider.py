@@ -315,8 +315,8 @@ class YFinanceDataProvider(DataProvider):
                 'open': [1.0] * limit,
                 'high': [1.1] * limit,
                 'low': [0.9] * limit,
-                'close': [1.0] * limit,
-                'volume': [1000] * limit
+                'close': [1.0 + (i / 100) for i in range(limit)],  # Slight upward trend to trigger LONG
+                'volume': [1000 + i for i in range(limit)]  # Increasing volume
             }
             return pd.DataFrame(dummy_data)
 
