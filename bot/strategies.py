@@ -12,16 +12,14 @@ except ImportError:
     print("Warning: TA-LIB not available, using simple calculations")
 
 try:
-    from sklearn.svm import SVC
+    from sklearn.ensemble import RandomForestClassifier
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import accuracy_score
     import optuna
     ML_AVAILABLE = True
 except ImportError:
     ML_AVAILABLE = False
-    print("Warning: scikit-learn or optuna not available, skipping ML features. Install with pip install scikit-learn optuna")
-
-import yfinance as yf  # Untuk backtest data
+    print("Warning: scikit-learn or optuna not available, skipping ML features")
 
 class TradingStrategy(ABC):
     @abstractmethod
@@ -29,331 +27,370 @@ class TradingStrategy(ABC):
         pass
 
 class TechnicalAnalysisStrategy(TradingStrategy):
-    def __init__(self, atr_multiplier=1.0, entry_range_pct=0.02):
+    def __init__(self, atr_multiplier=1.5, entry_range_pct=0.015, use_ml=False):
         self.atr_multiplier = atr_multiplier
         self.entry_range_pct = entry_range_pct
-    
-    def identify_hh_hl_lh_ll(self, df, lookback=20):
-        """Identify Higher High, Higher Low, Lower High, Lower Low patterns"""
-        highs = df['high'].tail(lookback)
-        lows = df['low'].tail(lookback)
+        self.use_ml = use_ml and ML_AVAILABLE
+        self.ml_model = None
         
-        # Initialize patterns
-        hh = hl = lh = ll = False
+    def calculate_technical_indicators(self, df):
+        """Calculate comprehensive technical indicators"""
+        indicators = {}
         
-        # Check for HH/HL (uptrend)
-        if len(highs) >= 5:
-            # Higher High: current high > previous high
-            if highs.iloc[-1] > highs.iloc[-2] > highs.iloc[-3]:
-                hh = True
-            
-            # Higher Low: current low > previous low
-            if lows.iloc[-1] > lows.iloc[-2] > lows.iloc[-3]:
-                hl = True
+        # Price-based indicators
+        close = df['close']
+        high = df['high']
+        low = df['low']
+        volume = df['volume']
         
-        # Check for LH/LL (downtrend)
-        if len(highs) >= 5:
-            # Lower High: current high < previous high
-            if highs.iloc[-1] < highs.iloc[-2] < highs.iloc[-3]:
-                lh = True
-            
-            # Lower Low: current low < previous low
-            if lows.iloc[-1] < lows.iloc[-2] < lows.iloc[-3]:
-                ll = True
-                
-        return hh, hl, lh, ll
-    
-    def analyze_ema_cross(self, df):
-        """Analyze EMA 13 and EMA 21 crossover"""
-        if len(df) < 22:  # Need enough data for EMA 21
-            return "NEUTRAL", 0
-            
-        # Calculate EMAs
-        ema_13 = talib.EMA(df['close'], timeperiod=13) if TALIB_AVAILABLE else df['close'].ewm(span=13).mean()
-        ema_21 = talib.EMA(df['close'], timeperiod=21) if TALIB_AVAILABLE else df['close'].ewm(span=21).mean()
-        
-        # Check crossover
-        ema_trend = "BULLISH" if ema_13.iloc[-1] > ema_21.iloc[-1] else "BEARISH"
-        ema_score = 1 if ema_trend == "BULLISH" else -1
-        
-        return ema_trend, ema_score
-    
-    def calculate_atr(self, df):
-        """Calculate ATR for the given dataframe"""
-        if len(df) < 14:
-            return 0.0
+        # Trend indicators
         if TALIB_AVAILABLE:
-            atr = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
-            return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else 0.0
+            # Moving averages
+            indicators['sma_20'] = talib.SMA(close, timeperiod=20)
+            indicators['ema_12'] = talib.EMA(close, timeperiod=12)
+            indicators['ema_26'] = talib.EMA(close, timeperiod=26)
+            indicators['wma_14'] = talib.WMA(close, timeperiod=14)
+            
+            # MACD
+            macd, macd_signal, macd_hist = talib.MACD(close)
+            indicators['macd'] = macd
+            indicators['macd_signal'] = macd_signal
+            indicators['macd_hist'] = macd_hist
+            
+            # RSI
+            indicators['rsi_14'] = talib.RSI(close, timeperiod=14)
+            indicators['rsi_7'] = talib.RSI(close, timeperiod=7)
+            
+            # Stochastic
+            slowk, slowd = talib.STOCH(high, low, close)
+            indicators['stoch_k'] = slowk
+            indicators['stoch_d'] = slowd
+            
+            # Bollinger Bands
+            bb_upper, bb_middle, bb_lower = talib.BBANDS(close, timeperiod=20)
+            indicators['bb_upper'] = bb_upper
+            indicators['bb_middle'] = bb_middle
+            indicators['bb_lower'] = bb_lower
+            indicators['bb_position'] = (close - bb_lower) / (bb_upper - bb_lower)
+            
+            # ATR
+            indicators['atr_14'] = talib.ATR(high, low, close, timeperiod=14)
+            
+            # ADX
+            indicators['adx_14'] = talib.ADX(high, low, close, timeperiod=14)
+            
+            # OBV
+            indicators['obv'] = talib.OBV(close, volume)
+            
         else:
-            # Fallback pandas calculation
-            high_low = df['high'] - df['low']
-            high_close = np.abs(df['high'] - df['close'].shift())
-            low_close = np.abs(df['low'] - df['close'].shift())
-            ranges = pd.concat([high_low, high_close, low_close], axis=1)
-            true_range = np.max(ranges, axis=1)
-            atr = true_range.rolling(14).sum() / 14
-            return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else 0.0
+            # Fallback calculations
+            indicators['sma_20'] = close.rolling(20).mean()
+            indicators['ema_12'] = close.ewm(span=12).mean()
+            indicators['ema_26'] = close.ewm(span=26).mean()
+            indicators['wma_14'] = close.rolling(14).apply(
+                lambda x: np.average(x, weights=np.arange(1, len(x)+1)), raw=False
+            )
+            
+            # Simple MACD
+            ema12 = close.ewm(span=12).mean()
+            ema26 = close.ewm(span=26).mean()
+            indicators['macd'] = ema12 - ema26
+            indicators['macd_signal'] = indicators['macd'].ewm(span=9).mean()
+            indicators['macd_hist'] = indicators['macd'] - indicators['macd_signal']
+            
+            # Simple RSI
+            delta = close.diff()
+            gain = delta.where(delta > 0, 0).rolling(14).mean()
+            loss = (-delta).where(delta < 0, 0).rolling(14).mean()
+            rs = gain / loss
+            indicators['rsi_14'] = 100 - (100 / (1 + rs))
+            
+            # Simple ATR
+            tr1 = high - low
+            tr2 = abs(high - close.shift())
+            tr3 = abs(low - close.shift())
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            indicators['atr_14'] = tr.rolling(14).mean()
+        
+        # Volume indicators
+        indicators['volume_sma'] = volume.rolling(20).mean()
+        indicators['volume_ratio'] = volume / indicators['volume_sma']
+        
+        # Price momentum
+        indicators['price_change_1d'] = close.pct_change(1)
+        indicators['price_change_5d'] = close.pct_change(5)
+        indicators['price_change_20d'] = close.pct_change(20)
+        
+        # Volatility
+        indicators['volatility_20d'] = close.pct_change().rolling(20).std()
+        
+        return indicators
     
-    def detect_triangle_patterns(self, df, period=20):
-        """Detect various triangle patterns"""
-        patterns = {
-            'symmetrical_triangle': False,
-            'ascending_triangle': False,
-            'descending_triangle': False,
-            'broadening_ascending': False,
-            'broadening_descending': False
-        }
+    def detect_candlestick_patterns(self, df):
+        """Detect Japanese candlestick patterns"""
+        patterns = {}
         
-        if len(df) < period * 2:
-            return patterns
+        if TALIB_AVAILABLE and len(df) >= 5:
+            open_price = df['open']
+            high = df['high']
+            low = df['low']
+            close = df['close']
             
-        # Get recent highs and lows
-        highs = df['high'].tail(period)
-        lows = df['low'].tail(period)
-        
-        # Calculate trendlines for highs and lows
-        high_slope = np.polyfit(range(len(highs)), highs, 1)[0]
-        low_slope = np.polyfit(range(len(lows)), lows, 1)[0]
-        
-        # Symmetrical Triangle: converging trendlines with similar slopes
-        if abs(high_slope) > 0 and abs(low_slope) > 0:
-            if high_slope < 0 and low_slope > 0 and abs(high_slope/low_slope) < 1.5:
-                patterns['symmetrical_triangle'] = True
-        
-        # Ascending Triangle: horizontal resistance, rising support
-        high_std = np.std(highs)
-        if high_std < np.std(highs) * 0.7 and low_slope > 0:
-            patterns['ascending_triangle'] = True
-        
-        # Descending Triangle: horizontal support, falling resistance
-        low_std = np.std(lows)
-        if low_std < np.std(lows) * 0.7 and high_slope < 0:
-            patterns['descending_triangle'] = True
+            # Bullish patterns
+            patterns['hammer'] = talib.CDLHAMMER(open_price, high, low, close).iloc[-1]
+            patterns['inverted_hammer'] = talib.CDLINVERTEDHAMMER(open_price, high, low, close).iloc[-1]
+            patterns['bullish_engulfing'] = talib.CDLENGULFING(open_price, high, low, close).iloc[-1]
+            patterns['morning_star'] = talib.CDLMORNINGSTAR(open_price, high, low, close).iloc[-1]
+            patterns['piercing'] = talib.CDLPIERCING(open_price, high, low, close).iloc[-1]
             
-        # Broadening patterns (expanding volatility)
-        if high_slope > 0 and low_slope < 0:
-            patterns['broadening_ascending'] = True
-        elif high_slope < 0 and low_slope > 0:
-            patterns['broadending_descending'] = True
-            
+            # Bearish patterns
+            patterns['hanging_man'] = talib.CDLHANGINGMAN(open_price, high, low, close).iloc[-1]
+            patterns['shooting_star'] = talib.CDLSHOOTINGSTAR(open_price, high, low, close).iloc[-1]
+            patterns['bearish_engulfing'] = talib.CDLENGULFING(open_price, high, low, close).iloc[-1]
+            patterns['evening_star'] = talib.CDLEVENINGSTAR(open_price, high, low, close).iloc[-1]
+            patterns['dark_cloud_cover'] = talib.CDLDARKCLOUDCOVER(open_price, high, low, close).iloc[-1]
+        
         return patterns
     
-    def detect_channel_wedge_patterns(self, df, period=20):
-        """Detect channel and wedge patterns"""
-        patterns = {
-            'uptrend_channel': False,
-            'downtrend_channel': False,
-            'ranging_channel': False,
-            'rising_wedge': False,
-            'falling_wedge': False
-        }
+    def identify_support_resistance(self, df, window=20):
+        """Identify support and resistance levels"""
+        if len(df) < window * 2:
+            return None, None
+            
+        highs = df['high'].tail(window * 2)
+        lows = df['low'].tail(window * 2)
         
-        if len(df) < period * 2:
-            return patterns
-            
-        highs = df['high'].tail(period)
-        lows = df['low'].tail(period)
-        closes = df['close'].tail(period)
+        # Find local maxima and minima
+        resistance_levels = []
+        support_levels = []
         
-        # Calculate regression channels
-        high_slope = np.polyfit(range(len(highs)), highs, 1)[0]
-        low_slope = np.polyfit(range(len(lows)), lows, 1)[0]
-        close_slope = np.polyfit(range(len(closes)), closes, 1)[0]
+        for i in range(window, len(highs) - window):
+            if highs.iloc[i] == highs.iloc[i-window:i+window].max():
+                resistance_levels.append(highs.iloc[i])
+            if lows.iloc[i] == lows.iloc[i-window:i+window].min():
+                support_levels.append(lows.iloc[i])
         
-        # Uptrend Channel: both highs and lows trending up
-        if high_slope > 0 and low_slope > 0 and close_slope > 0:
-            patterns['uptrend_channel'] = True
-            
-        # Downtrend Channel: both highs and lows trending down
-        if high_slope < 0 and low_slope < 0 and close_slope < 0:
-            patterns['downtrend_channel'] = True
-            
-        # Ranging Channel: minimal slope with consistent range
-        if abs(high_slope) < 0.001 and abs(low_slope) < 0.001:
-            patterns['ranging_channel'] = True
-            
-        # Rising Wedge: highs rising faster than lows
-        if high_slope > 0 and low_slope > 0 and high_slope > low_slope * 1.5:
-            patterns['rising_wedge'] = True
-            
-        # Falling Wedge: lows falling faster than highs
-        if high_slope < 0 and low_slope < 0 and abs(low_slope) > abs(high_slope) * 1.5:
-            patterns['falling_wedge'] = True
-            
-        return patterns
+        current_price = df['close'].iloc[-1]
+        
+        # Find nearest support and resistance
+        nearest_resistance = min([r for r in resistance_levels if r > current_price], default=None)
+        nearest_support = max([s for s in support_levels if s < current_price], default=None)
+        
+        return nearest_support, nearest_resistance
     
-    def detect_harmonic_patterns(self, df, period=50):
-        """Simplified harmonic pattern detection"""
-        patterns = {
-            'gartley': False,
-            'bat': False,
-            'butterfly': False,
-            'crab': False,
-            'shark': False
-        }
+    def calculate_momentum_score(self, df, indicators):
+        """Calculate momentum-based score"""
+        score = 0
         
-        if len(df) < period:
-            return patterns
-            
-        # This is a simplified version - real harmonic pattern detection
-        # requires complex Fibonacci retracement calculations
-        closes = df['close'].tail(period)
-        price_change = (closes.iloc[-1] - closes.iloc[0]) / closes.iloc[0]
+        # RSI scoring
+        rsi_14 = indicators['rsi_14'].iloc[-1] if not pd.isna(indicators['rsi_14'].iloc[-1]) else 50
+        if 30 < rsi_14 < 70:
+            score += 1
+        elif rsi_14 < 30:
+            score += 2  # Oversold
+        elif rsi_14 > 70:
+            score -= 2  # Overbought
         
-        # Very basic pattern detection based on price movements
-        # In a real implementation, this would use proper Fibonacci ratios
-        if abs(price_change) < 0.05:  # Small price change
-            patterns['gartley'] = True
-        elif 0.05 <= abs(price_change) < 0.1:
-            patterns['bat'] = True
-        elif 0.1 <= abs(price_change) < 0.15:
-            patterns['butterfly'] = True
-        elif 0.15 <= abs(price_change) < 0.2:
-            patterns['crab'] = True
+        # MACD scoring
+        macd_hist = indicators['macd_hist'].iloc[-1] if not pd.isna(indicators['macd_hist'].iloc[-1]) else 0
+        if macd_hist > 0:
+            score += 2
         else:
-            patterns['shark'] = True
+            score -= 1
             
-        return patterns
+        # Price momentum
+        price_change_5d = indicators['price_change_5d'].iloc[-1] if not pd.isna(indicators['price_change_5d'].iloc[-1]) else 0
+        if price_change_5d > 0.02:  # +2%
+            score += 2
+        elif price_change_5d < -0.02:  # -2%
+            score -= 2
+            
+        # Volume confirmation
+        volume_ratio = indicators['volume_ratio'].iloc[-1] if not pd.isna(indicators['volume_ratio'].iloc[-1]) else 1
+        if volume_ratio > 1.5:
+            score += 2
+        elif volume_ratio < 0.7:
+            score -= 1
+            
+        return score
+    
+    def calculate_trend_score(self, df, indicators):
+        """Calculate trend-based score"""
+        score = 0
+        
+        # Moving average alignment
+        if len(df) >= 26:
+            ema_12 = indicators['ema_12'].iloc[-1]
+            ema_26 = indicators['ema_26'].iloc[-1]
+            sma_20 = indicators['sma_20'].iloc[-1]
+            current_price = df['close'].iloc[-1]
+            
+            # Bullish: Price > EMA12 > EMA26 > SMA20
+            if current_price > ema_12 > ema_26 > sma_20:
+                score += 3
+            # Bearish: Price < EMA12 < EMA26 < SMA20
+            elif current_price < ema_12 < ema_26 < sma_20:
+                score -= 3
+            # Mixed but positive
+            elif current_price > ema_12 and ema_12 > ema_26:
+                score += 1
+            # Mixed but negative
+            elif current_price < ema_12 and ema_12 < ema_26:
+                score -= 1
+        
+        # ADX for trend strength
+        if 'adx_14' in indicators:
+            adx = indicators['adx_14'].iloc[-1] if not pd.isna(indicators['adx_14'].iloc[-1]) else 0
+            if adx > 25:  # Strong trend
+                score += 2
+        
+        return score
+    
+    def calculate_pattern_score(self, df, indicators):
+        """Calculate score based on chart patterns"""
+        score = 0
+        
+        # Candlestick patterns
+        candle_patterns = self.detect_candlestick_patterns(df)
+        bullish_candle_count = sum(1 for pattern, value in candle_patterns.items() 
+                                 if value > 0 and 'bullish' in pattern.lower())
+        bearish_candle_count = sum(1 for pattern, value in candle_patterns.items() 
+                                 if value > 0 and 'bearish' in pattern.lower())
+        
+        score += bullish_candle_count * 2
+        score -= bearish_candle_count * 2
+        
+        # Support/Resistance analysis
+        support, resistance = self.identify_support_resistance(df)
+        current_price = df['close'].iloc[-1]
+        
+        if support and resistance:
+            price_position = (current_price - support) / (resistance - support)
+            # Near support - potential bounce
+            if price_position < 0.3:
+                score += 2
+            # Near resistance - potential rejection
+            elif price_position > 0.7:
+                score -= 2
+        
+        # Bollinger Band position
+        if 'bb_position' in indicators:
+            bb_pos = indicators['bb_position'].iloc[-1] if not pd.isna(indicators['bb_position'].iloc[-1]) else 0.5
+            if bb_pos < 0.2:  # Near lower band - oversold
+                score += 2
+            elif bb_pos > 0.8:  # Near upper band - overbought
+                score -= 2
+        
+        return score
+    
+    def train_ml_model(self, X, y):
+        """Train ML model for prediction"""
+        if not self.use_ml:
+            return None
+            
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            model = RandomForestClassifier(n_estimators=100, random_state=42)
+            model.fit(X_train, y_train)
+            
+            # Evaluate model
+            y_pred = model.predict(X_test)
+            accuracy = accuracy_score(y_test, y_pred)
+            print(f"ML Model trained with accuracy: {accuracy:.2f}")
+            
+            return model
+        except Exception as e:
+            print(f"ML training failed: {e}")
+            return None
     
     def analyze(self, df):
-        """Main analysis method with enhanced pattern recognition"""
+        """Main analysis method with enhanced technical analysis"""
         if len(df) < 50:
             return None
         
-        current_close = df['close'].iloc[-1]
-        
-        # Calculate RSI with fallback
-        if TALIB_AVAILABLE:
-            current_rsi = talib.RSI(df['close'], timeperiod=14).iloc[-1]
-        else:
-            # Simple RSI fallback
-            price_diff = df['close'].diff()
-            gain = price_diff.where(price_diff > 0, 0).rolling(14).mean()
-            loss = -price_diff.where(price_diff < 0, 0).rolling(14).mean()
-            rs = gain / loss
-            current_rsi = 100 - (100 / (1 + rs)).iloc[-1] if not np.isnan(rs.iloc[-1]) and loss.iloc[-1] != 0 else 50
-        
-        # Get ATR
-        atr = self.calculate_atr(df)
-        
-        # Pattern analysis
-        hh, hl, lh, ll = self.identify_hh_hl_lh_ll(df)
-        
-        # EMA analysis
-        ema_trend, ema_score = self.analyze_ema_cross(df)
-        
-        # Volume ratio
-        vol_mean = df['volume'].rolling(20).mean().iloc[-1]
-        volume_ratio = df['volume'].iloc[-1] / vol_mean if vol_mean > 0 else 1
-        
-        # Enhanced pattern detection
-        triangle_patterns = self.detect_triangle_patterns(df)
-        channel_wedge_patterns = self.detect_channel_wedge_patterns(df)
-        harmonic_patterns = self.detect_harmonic_patterns(df)
-        
-        # Trend determination
-        trend_score = 0
-        if hh or hl:
-            trend_score += 2  # Bullish pattern
-        if lh or ll:
-            trend_score -= 2  # Bearish pattern
-        if ema_trend == "BULLISH":
-            trend_score += ema_score
-        else:
-            trend_score += ema_score
-        
-        # Pattern-based scoring
-        pattern_score = 0
-        
-        # Triangle patterns
-        if triangle_patterns['ascending_triangle']:
-            pattern_score += 3  # Bullish pattern
-        if triangle_patterns['descending_triangle']:
-            pattern_score -= 3  # Bearish pattern
-        if triangle_patterns['symmetrical_triangle']:
-            pattern_score += 1  # Neutral but often continuation
+        try:
+            # Calculate technical indicators
+            indicators = self.calculate_technical_indicators(df)
             
-        # Channel patterns
-        if channel_wedge_patterns['uptrend_channel']:
-            pattern_score += 2
-        if channel_wedge_patterns['downtrend_channel']:
-            pattern_score -= 2
-        if channel_wedge_patterns['falling_wedge']:
-            pattern_score += 2  # Bullish reversal
-        if channel_wedge_patterns['rising_wedge']:
-            pattern_score -= 2  # Bearish reversal
+            # Get current values
+            current_close = df['close'].iloc[-1]
+            current_volume = df['volume'].iloc[-1]
             
-        # Harmonic patterns (simplified scoring)
-        for pattern, detected in harmonic_patterns.items():
-            if detected:
-                pattern_score += 1  # All harmonic patterns get a small boost
-        
-        # RSI score
-        rsi_score = 0
-        if 30 < current_rsi < 70:
-            rsi_score = 1
-        elif current_rsi < 30:
-            rsi_score = 2  # Oversold - good for LONG
-        elif current_rsi > 70:
-            rsi_score = -2  # Overbought - good for SHORT
-        
-        # Volume score
-        volume_score = 1 if volume_ratio > 1.2 else 0 if volume_ratio > 0.8 else -1
-        
-        # Total score with pattern enhancement
-        score = trend_score + rsi_score + volume_score + pattern_score
-        
-        # Determine action
-        action = "LONG" if score > 0 else "SHORT" if score < 0 else "NEUTRAL"
-        
-        # Calculate entry levels if action is LONG or SHORT
-        if action in ["LONG", "SHORT"]:
-            ideal_entry = current_close
-            entry_low = ideal_entry * (1 - self.entry_range_pct)
-            entry_high = ideal_entry * (1 + self.entry_range_pct)
-            if action == "LONG":
-                tp1 = ideal_entry + atr * self.atr_multiplier
-                tp2 = ideal_entry + atr * self.atr_multiplier * 2
-                tp3 = ideal_entry + atr * self.atr_multiplier * 3
-                sl = ideal_entry - atr * self.atr_multiplier
-            elif action == "SHORT":
-                tp1 = ideal_entry - atr * self.atr_multiplier
-                tp2 = ideal_entry - atr * self.atr_multiplier * 2
-                tp3 = ideal_entry - atr * self.atr_multiplier * 3
-                sl = ideal_entry + atr * self.atr_multiplier
-        else:
-            ideal_entry = entry_low = entry_high = tp1 = tp2 = tp3 = sl = None
-        
-        # Compile pattern information
-        all_patterns = {**triangle_patterns, **channel_wedge_patterns, **harmonic_patterns}
-        detected_patterns = [pattern for pattern, detected in all_patterns.items() if detected]
-        
-        # Result
-        result = {
-            'action': action,
-            'ideal_entry': float(ideal_entry) if ideal_entry is not None else None,
-            'entry_low': float(entry_low) if entry_low is not None else None,
-            'entry_high': float(entry_high) if entry_high is not None else None,
-            'tp1': float(tp1) if tp1 is not None else None,
-            'tp2': float(tp2) if tp2 is not None else None,
-            'tp3': float(tp3) if tp3 is not None else None,
-            'sl': float(sl) if sl is not None else None,
-            'current_price': float(current_close),
-            'rsi': float(current_rsi),
-            'trend': 'BULLISH' if trend_score > 0 else 'BEARISH' if trend_score < 0 else 'NEUTRAL',
-            'volume_ratio': float(volume_ratio),
-            'score': int(score),
-            'atr': float(atr),
-            'hh': hh,
-            'hl': hl,
-            'lh': lh,
-            'll': ll,
-            'ema_trend': ema_trend,
-            'ema_score': ema_score,
-            'pattern_score': pattern_score,
-            'detected_patterns': detected_patterns,
-            'pattern_details': all_patterns
-        }
-        
-        return result
+            # Calculate scores from different aspects
+            momentum_score = self.calculate_momentum_score(df, indicators)
+            trend_score = self.calculate_trend_score(df, indicators)
+            pattern_score = self.calculate_pattern_score(df, indicators)
+            
+            # Combined score with weights
+            total_score = (
+                momentum_score * 0.4 +
+                trend_score * 0.4 +
+                pattern_score * 0.2
+            )
+            
+            # Determine action based on score
+            if total_score >= 3:
+                action = "LONG"
+                confidence = min(total_score / 10.0, 1.0)
+            elif total_score <= -3:
+                action = "SHORT" 
+                confidence = min(abs(total_score) / 10.0, 1.0)
+            else:
+                action = "NEUTRAL"
+                confidence = 0.0
+            
+            # Calculate position sizing and levels
+            atr = indicators['atr_14'].iloc[-1] if not pd.isna(indicators['atr_14'].iloc[-1]) else current_close * 0.02
+            
+            if action in ["LONG", "SHORT"]:
+                if action == "LONG":
+                    ideal_entry = current_close
+                    sl = ideal_entry - (atr * self.atr_multiplier)
+                    tp1 = ideal_entry + (atr * self.atr_multiplier)
+                    tp2 = ideal_entry + (atr * self.atr_multiplier * 2)
+                    tp3 = ideal_entry + (atr * self.atr_multiplier * 3)
+                else:  # SHORT
+                    ideal_entry = current_close
+                    sl = ideal_entry + (atr * self.atr_multiplier)
+                    tp1 = ideal_entry - (atr * self.atr_multiplier)
+                    tp2 = ideal_entry - (atr * self.atr_multiplier * 2)
+                    tp3 = ideal_entry - (atr * self.atr_multiplier * 3)
+                
+                entry_low = ideal_entry * (1 - self.entry_range_pct)
+                entry_high = ideal_entry * (1 + self.entry_range_pct)
+            else:
+                ideal_entry = entry_low = entry_high = sl = tp1 = tp2 = tp3 = None
+            
+            # Support/Resistance levels
+            support, resistance = self.identify_support_resistance(df)
+            
+            # Compile results
+            result = {
+                'action': action,
+                'confidence': round(confidence, 2),
+                'ideal_entry': float(ideal_entry) if ideal_entry else None,
+                'entry_low': float(entry_low) if entry_low else None,
+                'entry_high': float(entry_high) if entry_high else None,
+                'tp1': float(tp1) if tp1 else None,
+                'tp2': float(tp2) if tp2 else None,
+                'tp3': float(tp3) if tp3 else None,
+                'sl': float(sl) if sl else None,
+                'current_price': float(current_close),
+                'volume': float(current_volume),
+                'rsi_14': float(indicators['rsi_14'].iloc[-1]) if not pd.isna(indicators['rsi_14'].iloc[-1]) else 50,
+                'macd_hist': float(indicators['macd_hist'].iloc[-1]) if not pd.isna(indicators['macd_hist'].iloc[-1]) else 0,
+                'atr': float(atr),
+                'score': round(total_score, 2),
+                'momentum_score': momentum_score,
+                'trend_score': trend_score,
+                'pattern_score': pattern_score,
+                'support_level': float(support) if support else None,
+                'resistance_level': float(resistance) if resistance else None,
+                'volume_ratio': float(indicators['volume_ratio'].iloc[-1]) if not pd.isna(indicators['volume_ratio'].iloc[-1]) else 1,
+            }
+            
+            return result
+            
+        except Exception as e:
+            print(f"Error in technical analysis: {e}")
+            return None
