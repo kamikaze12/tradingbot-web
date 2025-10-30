@@ -126,7 +126,18 @@ def main():
                             st.write(f"**{res['symbol']}** - Price: {res['ticker']['last']}, "
                                      f"Volume: {res['ticker']['volume']}")
                             if st.button(f"Pilih {res['symbol']}", key=f"select_pump_{res['symbol']}"):
-                                st.session_state.selected_for_entry[res['symbol']] = res
+                                symbol = res['symbol']
+                                analysis = bot.analyze_asset(symbol)
+                                if analysis is None:
+                                    entry_price = res['ticker']['last']
+                                    analysis = bot.calculate_custom_entry(symbol, entry_price)
+                                    if analysis is None:
+                                        st.error(f"Tidak dapat menghitung untuk {symbol}")
+                                        continue
+                                    analysis['action'] = "LONG"
+                                    analysis['score'] = 5
+                                    analysis['ideal_entry'] = analysis['entry_price']
+                                st.session_state.selected_for_entry[symbol] = analysis
                                 st.success(f"Selected {res['symbol']}!")
                                 st.rerun()
                     else:
@@ -171,22 +182,23 @@ def main():
                 with col1:
                     entry_price = st.number_input(
                         "Entry Price",
-                        value=analysis["ideal_entry"],
+                        value=analysis.get("ideal_entry", analysis.get("entry_price", 0.0)),
                         step=0.001,
                         key=f"entry_{symbol}"
                     )
                 
                 with col2:
                     if st.button(f"✅ Tambah Posisi {symbol}", key=f"add_{symbol}"):
+                        ideal_entry = analysis.get("ideal_entry", entry_price)
                         position_id = bot.db.save_position(
                             symbol=symbol,
                             market_type=bot.mode,
                             action=analysis["action"],
                             entry_price=entry_price,
-                            tp1=entry_price + (analysis["tp1"] - analysis["ideal_entry"]),
-                            tp2=entry_price + (analysis["tp2"] - analysis["ideal_entry"]),
-                            tp3=entry_price + (analysis["tp3"] - analysis["ideal_entry"]),
-                            sl=entry_price - (analysis["ideal_entry"] - analysis["sl"]),
+                            tp1=entry_price + (analysis["tp1"] - ideal_entry),
+                            tp2=entry_price + (analysis["tp2"] - ideal_entry),
+                            tp3=entry_price + (analysis["tp3"] - ideal_entry),
+                            sl=entry_price - (ideal_entry - analysis["sl"]),
                             entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
                             entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
                         )
@@ -265,96 +277,73 @@ def main():
     with tab2:
         st.subheader("🔍 Analisis Aset Spesifik")
         
-        # Input untuk simbol tertentu
-        symbol_to_analyze = st.text_input("Masukkan simbol aset:", key="analyze_symbol")
-        
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            if st.button("🚀 Analisis Sekarang", key="analyze_btn"):
-                if symbol_to_analyze:
-                    with st.spinner("Menganalisis..."):
-                        analysis = bot.analyze_asset(symbol_to_analyze)
-                        if analysis:
-                            st.session_state.selected_analysis = analysis
-                            st.success(f"Analisis untuk {symbol_to_analyze} selesai!")
-                        else:
-                            st.error(f"Tidak dapat menganalisis {symbol_to_analyze} atau sinyal tidak cukup kuat.")
+        # Input untuk simbol
+        symbol = st.text_input("Masukkan simbol aset:", key="symbol_input")
+
+        if st.button("Analisis", key="analyze_asset"):
+            with st.spinner("Menganalisis..."):
+                analysis = bot.analyze_asset(symbol)
+                if analysis:
+                    st.session_state.selected_analysis = analysis
+                    st.rerun()
                 else:
-                    st.warning("Masukkan simbol aset terlebih dahulu.")
-        
+                    st.error("Tidak dapat menganalisis aset. Pastikan simbol valid.")
+
         # Tampilkan hasil analisis
         if st.session_state.selected_analysis:
             analysis = st.session_state.selected_analysis
-            st.subheader(f"📊 Hasil Analisis untuk {analysis['symbol']}")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("🎯 Aksi", analysis['action'])
-                st.metric("⭐ Skor Total", analysis['score'])
-                st.metric("💰 Harga Saat Ini", f"{analysis['current_price']:.5f}")
-                st.metric("📈 RSI", f"{analysis['rsi']:.2f}")
-                st.metric("📊 Pattern Score", analysis.get('pattern_score', 0))
-            
-            with col2:
-                st.metric("📈 Trend", analysis['trend'])
-                st.metric("🔊 Volume Ratio", f"{analysis['volume_ratio']:.2f}")
-                st.metric("📏 ATR", f"{analysis['atr']:.5f}")
-                st.metric("📶 EMA Trend", analysis['ema_trend'])
-                st.metric("🎯 EMA Score", analysis['ema_score'])
-            
-            # Tampilkan pola yang terdeteksi
-            if 'detected_patterns' in analysis and analysis['detected_patterns']:
-                st.subheader("📊 Pola Teknikal Terdeteksi")
-                st.write(f"**Pola:** {', '.join(analysis['detected_patterns'])}")
-            
-            # Detail pola
-            if 'pattern_details' in analysis:
-                with st.expander("🔍 Detail Semua Pola"):
-                    pattern_details = analysis['pattern_details']
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write("**✅ Terdeteksi:**")
-                        for pattern, detected in pattern_details.items():
-                            if detected:
-                                st.write(f"🎯 {pattern}")
-                    with col2:
-                        st.write("**❌ Tidak Terdeteksi:**")
-                        for pattern, detected in pattern_details.items():
-                            if not detected:
-                                st.write(f"⚪ {pattern}")
-            
-            # Input untuk entry price dan tombol untuk menambahkan ke posisi
-            st.markdown("---")
-            st.subheader("🎯 Tambah ke Posisi Aktif")
-            
-            entry_price = st.number_input(
-                "Harga Entry",
-                value=analysis.get('ideal_entry', analysis['current_price']),
-                step=0.001,
-                key=f"entry_analysis_{analysis['symbol']}"
-            )
-            
-            if st.button("✅ Tambahkan ke Posisi Aktif", key=f"add_analysis_{analysis['symbol']}"):
-                # Calculate TP and SL based on the entry price and the analysis
-                position_id = bot.db.save_position(
-                    symbol=analysis['symbol'],
-                    market_type=bot.mode,
-                    action=analysis["action"],
-                    entry_price=entry_price,
-                    tp1=entry_price + (analysis["tp1"] - analysis["ideal_entry"]),
-                    tp2=entry_price + (analysis["tp2"] - analysis["ideal_entry"]),
-                    tp3=entry_price + (analysis["tp3"] - analysis["ideal_entry"]),
-                    sl=entry_price - (analysis["ideal_entry"] - analysis["sl"]),
-                    entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
-                    entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
+            if isinstance(analysis, dict) and 'symbol' in analysis:
+                st.subheader(f"📊 Hasil Analisis untuk {analysis['symbol']}")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("💰 Current Price", f"{analysis['current_price']:.5f}")
+                    st.metric("📈 Trend", analysis['trend'])
+                    st.metric("📊 RSI", f"{analysis['rsi']:.2f}")
+                    st.metric("⭐ Score", analysis['score'])
+                
+                with col2:
+                    st.metric("📉 ATR", f"{analysis['atr']:.5f}")
+                    st.metric("🔄 Volume Ratio", f"{analysis['volume_ratio']:.2f}")
+                    st.metric("EMA Trend", analysis['ema_trend'])
+                    st.metric("EMA Score", analysis['ema_score'])
+                
+                # Tampilkan pola terdeteksi
+                if 'detected_patterns' in analysis and analysis['detected_patterns']:
+                    st.write(f"📊 **Pola Terdeteksi:** {', '.join(analysis['detected_patterns'])}")
+                
+                # Tampilkan pattern score
+                if 'pattern_score' in analysis:
+                    st.write(f"⭐ **Pattern Score:** {analysis['pattern_score']}")
+                
+                # Input entry price
+                entry_price = st.number_input(
+                    "Entry Price",
+                    value=analysis["ideal_entry"],
+                    step=0.001,
+                    key="entry_analysis"
                 )
-                if position_id:
-                    st.success(f"Posisi {analysis['symbol']} ditambahkan!")
-                    # Refresh positions data
-                    st.session_state.positions_data = bot.get_active_positions()
-                    st.rerun()
-                else:
-                    st.error("Gagal tambah posisi.")
+                
+                if st.button(f"✅ Tambah Posisi {analysis['symbol']}", key="add_analysis"):
+                    position_id = bot.db.save_position(
+                        symbol=analysis['symbol'],
+                        market_type=bot.mode,
+                        action=analysis["action"],
+                        entry_price=entry_price,
+                        tp1=entry_price + (analysis["tp1"] - analysis["ideal_entry"]),
+                        tp2=entry_price + (analysis["tp2"] - analysis["ideal_entry"]),
+                        tp3=entry_price + (analysis["tp3"] - analysis["ideal_entry"]),
+                        sl=entry_price - (analysis["ideal_entry"] - analysis["sl"]),
+                        entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
+                        entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
+                    )
+                    if position_id:
+                        st.success(f"Posisi {analysis['symbol']} ditambahkan!")
+                        # Refresh positions data
+                        st.session_state.positions_data = bot.get_active_positions()
+                        st.rerun()
+                    else:
+                        st.error("Gagal tambah posisi.")
 
     # ===============================
     # Tab 3: Custom Entry
