@@ -105,7 +105,6 @@ class TradingBot:
     def get_popular_assets(self, limit=None):
         """Get popular assets for the selected market"""
         if not self.data_provider:
-            print("No data provider available")
             return []
 
         limit = limit or self.config.get("analysis_coins_limit", 50)
@@ -114,28 +113,37 @@ class TradingBot:
             print(f"Getting popular assets for {self.mode}...")
             assets = self.data_provider.get_popular_assets(limit)
             
-            # DEBUG: Print what we got
-            print(f"DEBUG: Raw assets from provider: {assets}")
-            print(f"DEBUG: Type of assets: {type(assets)}")
+            # DEBUG: Check what we're getting
+            print(f"DEBUG get_popular_assets - Raw assets: {assets}")
+            print(f"DEBUG get_popular_assets - Type: {type(assets)}")
             
-            # Handle different return types
+            # Handle the case where assets might be an integer
+            if isinstance(assets, int):
+                print(f"CRITICAL: Provider returned integer: {assets}")
+                return self._get_fallback_assets(limit)
+            
+            # If assets is None or empty, use fallback
             if assets is None:
                 print("Provider returned None, using fallback")
                 return self._get_fallback_assets(limit)
-            elif isinstance(assets, int):
-                print(f"Provider returned integer: {assets}, using fallback")
-                return self._get_fallback_assets(limit)
-            elif isinstance(assets, str):
-                print(f"Provider returned string: {assets}, converting to list")
-                return [assets]
-            elif hasattr(assets, '__iter__'):
-                # It's iterable (list, tuple, etc.)
-                assets_list = list(assets)
-                print(f"Converted to list: {assets_list}")
-                return assets_list[:limit]
-            else:
-                print(f"Unexpected type: {type(assets)}, using fallback")
-                return self._get_fallback_assets(limit)
+                
+            # Convert to list if it's not already
+            if not isinstance(assets, list):
+                print(f"Converting non-list to list: {type(assets)}")
+                try:
+                    assets = list(assets)
+                except:
+                    print("Failed to convert to list, using fallback")
+                    return self._get_fallback_assets(limit)
+            
+            # Filter out any non-string items and ensure we have strings
+            cleaned_assets = []
+            for asset in assets:
+                if asset is not None:
+                    cleaned_assets.append(str(asset).strip())
+            
+            print(f"DEBUG get_popular_assets - Cleaned assets: {cleaned_assets}")
+            return cleaned_assets[:limit]
                 
         except Exception as e:
             print(f"Error in get_popular_assets: {e}")
@@ -157,21 +165,27 @@ class TradingBot:
     def scan_potential_assets(self, limit=None):
         """Scan popular assets and return potential trading signals"""
         if not self.data_provider:
-            print("No data provider for scanning")
             return []
 
         print("Starting scan...")
         
-        # Get assets with debugging
+        # Get assets with extra validation
         assets = self.get_popular_assets(limit)
-        print(f"DEBUG: Final assets list: {assets}")
-        print(f"DEBUG: Type of final assets: {type(assets)}")
-        print(f"DEBUG: Length of assets: {len(assets) if hasattr(assets, '__len__') else 'No length'}")
         
-        # Ensure assets is a list
-        if not isinstance(assets, list):
-            print(f"CRITICAL: Assets is not a list! Type: {type(assets)}, Value: {assets}")
+        # CRITICAL FIX: Ensure assets is always a list and has length method
+        if not hasattr(assets, '__len__'):
+            print(f"CRITICAL: Assets has no length! Type: {type(assets)}, Value: {assets}")
             assets = []
+        elif not isinstance(assets, list):
+            print(f"CRITICAL: Assets is not a list! Type: {type(assets)}, Value: {assets}")
+            try:
+                assets = list(assets)
+            except:
+                assets = []
+        
+        print(f"DEBUG scan_potential_assets - Final assets: {assets}")
+        print(f"DEBUG scan_potential_assets - Type: {type(assets)}")
+        print(f"DEBUG scan_potential_assets - Length: {len(assets)}")
         
         if not assets:
             print("No assets to scan")
@@ -185,10 +199,12 @@ class TradingBot:
         
         for i, asset in enumerate(assets, 1):
             try:
-                # Convert to string and validate
+                # Extra validation for each asset
+                if asset is None:
+                    continue
+                    
                 asset_str = str(asset).strip()
                 if not asset_str:
-                    print(f"Skipping empty asset at index {i}")
                     continue
                     
                 print(f"Analyzing {i}/{len(assets)}: {asset_str}")
@@ -249,22 +265,12 @@ class TradingBot:
             
             if analysis['action'] == 'LONG':
                 # For LONG: TP1 < TP2 < TP3
-                if tp1 > tp2:
-                    tp1, tp2 = tp2, tp1
-                if tp2 > tp3:
-                    tp2, tp3 = tp3, tp2
-                if tp1 > tp2:
-                    tp1, tp2 = tp2, tp1
+                sorted_tps = sorted([tp1, tp2, tp3])
+                analysis['tp1'], analysis['tp2'], analysis['tp3'] = sorted_tps
             else:  # SHORT
                 # For SHORT: TP1 > TP2 > TP3
-                if tp1 < tp2:
-                    tp1, tp2 = tp2, tp1
-                if tp2 < tp3:
-                    tp2, tp3 = tp3, tp2
-                if tp1 < tp2:
-                    tp1, tp2 = tp2, tp1
-            
-            analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp1, tp2, tp3
+                sorted_tps = sorted([tp1, tp2, tp3], reverse=True)
+                analysis['tp1'], analysis['tp2'], analysis['tp3'] = sorted_tps
         except Exception as e:
             print(f"Error ensuring TP order: {e}")
 
