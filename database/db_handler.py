@@ -2,14 +2,17 @@ import os
 import psycopg2
 import threading
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
 import streamlit as st
+
 load_dotenv()
+
 class DatabaseHandler:
     def __init__(self):
         self.db_type = "postgresql"
         self.thread_local = threading.local()
         self.create_tables()
+
     # =========================================================
     # Connection - SIMPLIFIED & FIXED
     # =========================================================
@@ -33,6 +36,7 @@ class DatabaseHandler:
                     st.error(f"Database connection failed: {e}")
                 raise
         return self.thread_local.conn
+
     def _get_connection_params(self):
         """Get connection parameters from Streamlit secrets or environment"""
         # Default values
@@ -95,6 +99,7 @@ class DatabaseHandler:
         except Exception as e:
             print(f"Error getting connection params: {e}")
             return None
+
     # =========================================================
     # Schema
     # =========================================================
@@ -185,6 +190,67 @@ class DatabaseHandler:
         finally:
             if cursor:
                 cursor.close()
+
+    # =========================================================
+    # Cleanup Methods - NEW
+    # =========================================================
+    def cleanup_old_signals(self, days=7):
+        """Clean up signals older than specified days"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "DELETE FROM signals WHERE timestamp < NOW() - INTERVAL '%s days'",
+                (days,)
+            )
+            conn.commit()
+            deleted_count = cursor.rowcount
+            print(f"Cleaned up {deleted_count} old signals (older than {days} days)")
+            return deleted_count
+        except Exception as e:
+            print(f"Error cleaning up old signals: {e}")
+            conn.rollback()
+            return 0
+        finally:
+            cursor.close()
+
+    def cleanup_old_data(self, days=7):
+        """Clean up all old data including positions and history"""
+        try:
+            signals_count = self.cleanup_old_signals(days)
+            
+            # Clean up old positions
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM positions WHERE created_at < NOW() - INTERVAL '%s days' AND status = 'closed'",
+                (days,)
+            )
+            positions_count = cursor.rowcount
+            
+            # Clean up old trade history
+            cursor.execute(
+                "DELETE FROM trade_history WHERE timestamp < NOW() - INTERVAL '%s days'",
+                (days,)
+            )
+            history_count = cursor.rowcount
+            
+            conn.commit()
+            print(f"Cleaned up {signals_count} signals, {positions_count} positions, {history_count} history records")
+            return {
+                'signals': signals_count,
+                'positions': positions_count,
+                'history': history_count
+            }
+        except Exception as e:
+            print(f"Error cleaning up old data: {e}")
+            if conn:
+                conn.rollback()
+            return {'signals': 0, 'positions': 0, 'history': 0}
+        finally:
+            if cursor:
+                cursor.close()
+
     # =========================================================
     # Signals
     # =========================================================
@@ -249,6 +315,7 @@ class DatabaseHandler:
             raise
         finally:
             cursor.close()
+
     def get_all_signals(self, market_type):
         """Get all signals for a market"""
         conn = self.get_connection()
@@ -261,6 +328,7 @@ class DatabaseHandler:
             return cursor.fetchall()
         finally:
             cursor.close()
+
     def delete_signal_by_symbol(self, symbol, market_type):
         """Delete signal by symbol"""
         conn = self.get_connection()
@@ -279,6 +347,7 @@ class DatabaseHandler:
             return False
         finally:
             cursor.close()
+
     # =========================================================
     # Positions
     # =========================================================
@@ -339,6 +408,7 @@ class DatabaseHandler:
             return None
         finally:
             cursor.close()
+
     def update_position_current_price(self, symbol, current_price):
         """Update current price for a position"""
         conn = self.get_connection()
@@ -357,6 +427,7 @@ class DatabaseHandler:
             return False
         finally:
             cursor.close()
+
     def get_active_positions(self, market_type=None):
         """Get active positions from database"""
         conn = self.get_connection()
@@ -379,6 +450,7 @@ class DatabaseHandler:
             return cursor.fetchall()
         finally:
             cursor.close()
+
     def close_position(self, position_id, close_price, exit_type):
         """Close a position and save to history"""
         conn = self.get_connection()
@@ -429,6 +501,7 @@ class DatabaseHandler:
             return False
         finally:
             cursor.close()
+
     # =========================================================
     # Trade History
     # =========================================================
@@ -454,6 +527,7 @@ class DatabaseHandler:
             return cursor.fetchall()
         finally:
             cursor.close()
+
     # =========================================================
     # Utils
     # =========================================================
@@ -469,6 +543,7 @@ class DatabaseHandler:
             return float(data)
         except Exception:
             return str(data)
+
     def close_connection(self):
         """Close the database connection"""
         if hasattr(self.thread_local, "conn"):
