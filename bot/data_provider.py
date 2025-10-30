@@ -216,7 +216,7 @@ class CCXTDataProvider(DataProvider):
                 return filtered_markets[:limit]
         except:
             print("Falling back to hardcoded popular assets")
-            return []
+            return ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'SOL/USDT', 'DOT/USDT', 'DOGE/USDT', 'LTC/USDT', 'LINK/USDT']  # Expanded hardcoded
 
 class YFinanceDataProvider(DataProvider):
     def __init__(self, market_type='saham_id'):
@@ -271,12 +271,18 @@ class YFinanceDataProvider(DataProvider):
             except:
                 return None
     def get_popular_assets(self, limit=50):
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.google.com/',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        }
         if self.market_type == 'saham_id':
-            # Dynamic fetch from IDX or Investing.com
+            # Dynamic fetch from IDX or Investing.com with better headers
             try:
                 url = "https://www.investing.com/indices/idx-composite-components"
-                headers = {'User-Agent': 'Mozilla/5.0'}
-                response = requests.get(url, headers=headers)
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
                 soup = BeautifulSoup(response.text, 'html.parser')
                 rows = soup.find_all('tr')
                 tickers = []
@@ -286,23 +292,35 @@ class YFinanceDataProvider(DataProvider):
                         ticker = cells[1].text.strip()  # Symbol in second column
                         if len(ticker) == 4 and ticker.isupper():
                             tickers.append(ticker)
-                return [ticker + '.JK' for ticker in tickers[:limit]]  # Convert to yf format
+                assets = [ticker + '.JK' for ticker in tickers[:limit]]  # Convert to yf format
+                if assets:
+                    return assets
+                else:
+                    print("No tickers found, falling back to hardcoded.")
             except Exception as e:
                 print(f"Error fetching saham ID: {e}")
-                return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK']  # Emergency fallback
+            # Expanded hardcoded fallback
+            return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK', 'ADRO.JK', 'UNTR.JK', 'PGAS.JK', 'ANTM.JK',
+                    'INDF.JK', 'CPIN.JK', 'KLBF.JK', 'UNVR.JK', 'HMSP.JK', 'GGRM.JK', 'MDKA.JK', 'TPIA.JK', 'EXCL.JK', 'ISAT.JK'][:limit]
         elif self.market_type == 'forex':
-            # Dynamic fetch from Investing.com top forex
+            # Dynamic fetch from Investing.com with better headers
             try:
                 url = "https://www.investing.com/currencies/"
-                headers = {'User-Agent': 'Mozilla/5.0'}
-                response = requests.get(url, headers=headers)
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
                 soup = BeautifulSoup(response.text, 'html.parser')
                 pairs = [a.text.upper().replace('/', '') for a in soup.find_all('a', class_='js-quote-ticker-link')[:limit]]  # Replace / to ''
                 unique_pairs = list(set(pairs))
-                return [pair + '=X' for pair in unique_pairs if len(pair) == 6]  # Convert to EURUSD=X
+                assets = [pair + '=X' for pair in unique_pairs if len(pair) == 6]  # Convert to EURUSD=X
+                if assets:
+                    return assets
+                else:
+                    print("No pairs found, falling back to hardcoded.")
             except Exception as e:
                 print(f"Error fetching forex: {e}")
-                return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X']  # Emergency fallback
+            # Expanded hardcoded fallback
+            return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 'NZDUSD=X', 'USDCHF=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+                    'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'NZDCAD=X', 'EURAUD=X', 'GBPAUD=X', 'NZDJPY=X'][:limit]
         return []
 
 class SolanaPumpFunProvider:
