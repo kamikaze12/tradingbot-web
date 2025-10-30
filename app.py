@@ -117,15 +117,22 @@ def main():
                         else:
                             st.info("No Pump Fun tokens found.")
                     else:
-                        # Standard scan
-                        st.session_state.scanned_results = bot.scan_potential_assets(50)
-                        if st.session_state.scanned_results:
-                            st.success(f"Found {len(st.session_state.scanned_results)} signals!")
-                        else:
-                            st.info("No signals found in this scan.")
+                        # Standard scan dengan error handling
+                        try:
+                            st.session_state.scanned_results = bot.scan_potential_assets(50)
+                            if st.session_state.scanned_results:
+                                st.success(f"Found {len(st.session_state.scanned_results)} signals!")
+                            else:
+                                st.info("No signals found in this scan.")
+                        except Exception as scan_error:
+                            st.error(f"Scanning error: {str(scan_error)}")
+                            st.session_state.scanned_results = []
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error during scanning: {str(e)}")
+                    # Reset results on error
+                    st.session_state.scanned_results = []
+                    st.session_state.pump_fun_results = []
 
         # Tampilkan hasil scan Pump Fun
         if st.session_state.pump_fun_results and bot.mode == "crypto" and scan_option == "Pump Fun Tokens":
