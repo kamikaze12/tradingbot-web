@@ -134,92 +134,147 @@ class TradingBot:
     def get_popular_assets(self, limit=None):
         """Get popular assets with enhanced error handling"""
         if not self.data_provider:
-            print("No data provider available")
+            print("❌ No data provider available")
             return []
 
         limit = limit or self.config.get("analysis_coins_limit", 50)
         
         try:
+            print(f"🔍 Fetching popular assets for {self.mode}...")
             assets = self.data_provider.get_popular_assets(limit)
             
-            # Pastikan assets adalah list
+            # DEBUG: Print type and value for debugging
+            print(f"DEBUG: get_popular_assets returned type: {type(assets)}, value: {assets}")
+            
+            # Handle different return types
             if assets is None:
-                assets = []
-            elif isinstance(assets, (int, float, str)):
+                print("⚠️ get_popular_assets returned None, using fallback")
+                assets = self._get_fallback_assets(limit)
+            elif isinstance(assets, (int, float)):
+                print(f"⚠️ get_popular_assets returned number: {assets}, using fallback")
+                assets = self._get_fallback_assets(limit)
+            elif isinstance(assets, str):
+                print(f"⚠️ get_popular_assets returned string: {assets}, converting to list")
                 assets = [assets]
-            elif not isinstance(assets, list):
-                assets = list(assets)
+            elif not isinstance(assets, (list, tuple)):
+                print(f"⚠️ get_popular_assets returned unexpected type: {type(assets)}, using fallback")
+                assets = self._get_fallback_assets(limit)
+            elif len(assets) == 0:
+                print("⚠️ get_popular_assets returned empty list, using fallback")
+                assets = self._get_fallback_assets(limit)
                 
-            if not assets and self.backup_provider:
-                backup_assets = self.backup_provider.get_popular_assets(limit)
-                if backup_assets:
-                    assets = backup_assets
+            # Try backup provider if primary fails
+            if (not assets or len(assets) == 0) and self.backup_provider:
+                print("🔄 Trying backup provider...")
+                try:
+                    backup_assets = self.backup_provider.get_popular_assets(limit)
+                    if backup_assets and len(backup_assets) > 0:
+                        assets = backup_assets
+                        print(f"✅ Backup provider returned {len(assets)} assets")
+                except Exception as e:
+                    print(f"❌ Backup provider failed: {e}")
+            
+            # Final fallback
+            if not assets or len(assets) == 0:
+                print("🔄 Using final fallback assets")
+                assets = self._get_fallback_assets(limit)
+            
+            # Ensure we have a list and limit the results
+            if isinstance(assets, (list, tuple)):
+                assets = list(assets)[:limit]
+            else:
+                assets = [assets][:limit]
                 
-            return assets[:limit] if assets else []
+            print(f"✅ Final assets list: {len(assets)} items")
+            return assets
             
         except Exception as e:
-            print(f"Error fetching popular assets: {e}")
+            print(f"❌ Error in get_popular_assets: {e}")
             return self._get_fallback_assets(limit)
 
     def _get_fallback_assets(self, limit):
         """Get fallback assets when primary source fails"""
+        print(f"🔄 Using fallback assets for {self.mode}")
+        
         if self.mode == "saham_id":
-            return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBRI.JK'][:limit]
+            fallback = ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBRI.JK', 
+                       'UNVR.JK', 'INDF.JK', 'ICBP.JK', 'ADRO.JK', 'ANTM.JK']
         elif self.mode == "forex":
-            return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X'][:limit]
+            fallback = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X',
+                       'USDCHF=X', 'NZDUSD=X', 'EURJPY=X', 'GBPJPY=X', 'AUDJPY=X']
         else:  # crypto
-            return ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT'][:limit]
+            fallback = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT',
+                       'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'DOGE/USDT', 'MATIC/USDT']
+        
+        return fallback[:limit]
 
     def scan_potential_assets(self, limit=None):
         """Enhanced asset scanning with proper error handling"""
         if not self.data_provider:
-            print("No data provider for scanning")
+            print("❌ No data provider for scanning")
             return []
 
         start_time = time.time()
+        
+        # Get assets with extra validation
         assets = self.get_popular_assets(limit)
         
-        # Pastikan assets adalah list dan bisa di-iterate
+        # DOUBLE CHECK: Ensure assets is a list and has length
         if not isinstance(assets, list):
-            print(f"Warning: assets is not a list, type: {type(assets)}")
+            print(f"❌ CRITICAL: assets is not a list, type: {type(assets)}, value: {assets}")
             assets = []
+        
+        if not assets:
+            print("❌ No assets to scan")
+            return []
+            
+        print(f"🔍 Starting scan of {len(assets)} {self.mode} assets...")
         
         max_signals = self.config.get("max_signals", 10)
         min_score = self.config.get("min_score", 2)
-        
-        print(f"🔍 Scanning {len(assets)} {self.mode} assets...")
         
         results = []
         successful_scans = 0
         
         for i, asset in enumerate(assets, 1):
             try:
-                if not asset or not isinstance(asset, (str, int)):
+                # Extra validation for each asset
+                if asset is None:
                     continue
                     
-                print(f"Analyzing {i}/{len(assets)}: {asset}")
-                analysis = self.analyze_asset(str(asset))
+                asset_str = str(asset).strip()
+                if not asset_str:
+                    continue
+                    
+                print(f"Analyzing {i}/{len(assets)}: {asset_str}")
+                
+                analysis = self.analyze_asset(asset_str)
                 
                 if (analysis and 
                     analysis.get('action') in ['LONG', 'SHORT'] and 
                     abs(analysis.get('score', 0)) >= min_score):
                     
-                    analysis['symbol'] = str(asset)
+                    analysis['symbol'] = asset_str
                     analysis['market_type'] = self.mode
                     
-                    # Pastikan TP levels dalam urutan yang benar
+                    # Ensure TP levels are in correct order
                     if analysis['action'] == 'LONG':
-                        # Untuk LONG: TP1 < TP2 < TP3
+                        # For LONG: TP1 < TP2 < TP3
                         tp_levels = sorted([analysis['tp1'], analysis['tp2'], analysis['tp3']])
                         analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
                     else:  # SHORT
-                        # Untuk SHORT: TP1 > TP2 > TP3
+                        # For SHORT: TP1 > TP2 > TP3  
                         tp_levels = sorted([analysis['tp1'], analysis['tp2'], analysis['tp3']], reverse=True)
                         analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
                     
-                    self.db.save_signal(analysis)
+                    # Save to database
+                    try:
+                        self.db.save_signal(analysis)
+                    except Exception as e:
+                        print(f"⚠️ Failed to save signal to DB: {e}")
+                    
                     results.append(analysis)
-                    print(f"✅ Signal found: {asset} - {analysis['action']} (Score: {analysis['score']})")
+                    print(f"✅ Signal found: {asset_str} - {analysis['action']} (Score: {analysis['score']})")
 
                 successful_scans += 1
                 time.sleep(0.1)  # Rate limiting
@@ -257,11 +312,12 @@ class TradingBot:
             try:
                 df = provider.get_ohlcv(symbol, self.timeframe, self.config.get("ohlcv_limit", 200))
                 
-                # Pastikan df adalah DataFrame yang valid
+                # Validate DataFrame
                 if (df is not None and 
                     isinstance(df, pd.DataFrame) and 
                     len(df) >= 50 and
-                    not df.empty):
+                    not df.empty and
+                    'close' in df.columns):
                     
                     analysis = self.strategy.analyze(df)
                     if analysis and isinstance(analysis, dict):
@@ -359,56 +415,6 @@ class TradingBot:
             return self.backup_provider
         
         return self.data_provider
-
-    def start_background_tasks(self):
-        """Start background tasks for automated operations"""
-        if self.scheduler_thread and self.scheduler_thread.is_alive():
-            self.stop_background_tasks()
-            
-        self.stop_scheduler = False
-        self.scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
-        self.scheduler_thread.start()
-        print("✓ Background tasks started")
-
-    def stop_background_tasks(self):
-        """Stop all background tasks"""
-        self.stop_scheduler = True
-        if self.scheduler_thread:
-            self.scheduler_thread.join(timeout=5)
-        print("✓ Background tasks stopped")
-
-    def _run_scheduler(self):
-        """Run scheduled tasks in background thread"""
-        update_interval = self.config.get("update_interval", 60)
-        
-        schedule.every(update_interval).seconds.do(self.update_all_prices)
-        
-        while not self.stop_scheduler:
-            try:
-                schedule.run_pending()
-                time.sleep(1)
-            except Exception as e:
-                print(f"Scheduler error: {e}")
-
-    def update_all_prices(self):
-        """Update prices for all active positions"""
-        if not self.data_provider:
-            return
-            
-        try:
-            active_positions = self.get_active_positions()
-            for position in active_positions:
-                symbol = position[1]
-                try:
-                    provider = self.get_data_provider(symbol)
-                    if provider:
-                        ticker = provider.get_ticker(symbol)
-                        if ticker and 'last' in ticker:
-                            self.db.update_position_current_price(symbol, ticker['last'])
-                except Exception as e:
-                    print(f"Error updating price for {symbol}: {e}")
-        except Exception as e:
-            print(f"Error in update_all_prices: {e}")
 
     # Pump Fun integration placeholder
     async def scan_pump_fun(self):
