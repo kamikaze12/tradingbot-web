@@ -155,6 +155,15 @@ def main():
 
                 else:
                     st.session_state.scanned_results = bot.scan_potential_assets(50)
+                    if not st.session_state.scanned_results:
+                        st.warning("Tidak ada hasil scan. Menggunakan aset fallback.")
+                        fallback_assets = bot.get_popular_assets(5)
+                        fallback_results = []
+                        for asset in fallback_assets:
+                            analysis = bot.analyze_asset(asset)
+                            if analysis and analysis["action"] in ["LONG", "SHORT"]:
+                                fallback_results.append(analysis)
+                        st.session_state.scanned_results = fallback_results
                     st.rerun()
 
         # Tampilkan hasil scan
@@ -162,29 +171,32 @@ def main():
             st.subheader("Top Aset Potensial:")
 
             for i, res in enumerate(st.session_state.scanned_results, 1):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.write(f"{i}. **{res['symbol']}** - {res['action']} (Score: {res['score']})")
-                    st.write(f"Entry Range: {res['entry_low']:.5f} - {res['entry_high']:.5f} | "
-                             f"SL: {res['sl']:.5f}")
-                    st.write(f"TP1: {res['tp1']:.5f} | TP2: {res['tp2']:.5f} | TP3: {res['tp3']:.5f}")
-                    
-                    # Tampilkan pola yang terdeteksi
-                    if 'detected_patterns' in res and res['detected_patterns']:
-                        st.write(f"📊 **Pola Terdeteksi:** {', '.join(res['detected_patterns'])}")
-                    
-                    # Tampilkan pattern score
-                    if 'pattern_score' in res:
-                        st.write(f"⭐ **Pattern Score:** {res['pattern_score']}")
+                if isinstance(res, dict) and 'symbol' in res:
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.write(f"{i}. **{res['symbol']}** - {res['action']} (Score: {res['score']})")
+                        st.write(f"Entry Range: {res['entry_low']:.5f} - {res['entry_high']:.5f} | "
+                                 f"SL: {res['sl']:.5f}")
+                        st.write(f"TP1: {res['tp1']:.5f} | TP2: {res['tp2']:.5f} | TP3: {res['tp3']:.5f}")
                         
-                with col2:
-                    if st.button(f"Pilih {i}", key=f"select_{res['symbol']}"):
-                        st.session_state.selected_for_entry[res['symbol']] = res
-                        st.success(f"Selected {res['symbol']}!")
-                        st.rerun()
+                        # Tampilkan pola yang terdeteksi
+                        if 'detected_patterns' in res and res['detected_patterns']:
+                            st.write(f"📊 **Pola Terdeteksi:** {', '.join(res['detected_patterns'])}")
+                        
+                        # Tampilkan pattern score
+                        if 'pattern_score' in res:
+                            st.write(f"⭐ **Pattern Score:** {res['pattern_score']}")
+                            
+                    with col2:
+                        if st.button(f"Pilih {i}", key=f"select_{res['symbol']}"):
+                            st.session_state.selected_for_entry[res['symbol']] = res
+                            st.success(f"Selected {res['symbol']}!")
+                            st.rerun()
+                else:
+                    st.warning("Data analisis tidak valid untuk salah satu aset.")
 
             # Tampilkan input entry untuk setiap simbol yang dipilih
-            for symbol, analysis in st.session_state.selected_for_entry.items():
+            for symbol, analysis in list(st.session_state.selected_for_entry.items()):
                 if isinstance(analysis, dict) and 'symbol' in analysis:
                     st.markdown("---")
                     st.subheader(f"📈 Input Entry untuk {symbol}")
@@ -245,6 +257,11 @@ def main():
                         if symbol in st.session_state.selected_for_entry:
                             del st.session_state.selected_for_entry[symbol]
                         st.rerun()
+                else:
+                    st.warning(f"Data analisis tidak valid untuk {symbol}. Menghapus dari pilihan.")
+                    if symbol in st.session_state.selected_for_entry:
+                        del st.session_state.selected_for_entry[symbol]
+                    st.rerun()
 
             # --- Kelola sinyal
             st.markdown("---")
@@ -266,6 +283,9 @@ def main():
                 ]
                 st.rerun()
 
+        else:
+            st.info("Tidak ada hasil scan. Periksa koneksi, API key, atau coba mode lain.")
+
         # --- Auto Rescan
         st.markdown("---")
         if st.checkbox("🔄 Auto Rescan (30s)"):
@@ -278,9 +298,10 @@ def main():
             if "latest_results" in st.session_state:
                 st.subheader("📡 Latest Scan Results:")
                 for res in st.session_state["latest_results"]:
-                    st.write(f"**{res['symbol']}** - {res['action']} (Score: {res['score']})")
-                    if 'detected_patterns' in res and res['detected_patterns']:
-                        st.write(f"📊 Pola: {', '.join(res['detected_patterns'])}")
+                    if isinstance(res, dict) and 'symbol' in res:
+                        st.write(f"**{res['symbol']}** - {res['action']} (Score: {res['score']})")
+                        if 'detected_patterns' in res and res['detected_patterns']:
+                            st.write(f"📊 Pola: {', '.join(res['detected_patterns'])}")
 
     # ===============================
     # Tab 2: Analisis Aset
@@ -294,12 +315,12 @@ def main():
         if st.button("Analisis", key="analyze_asset"):
             with st.spinner("Menganalisis..."):
                 analysis = bot.analyze_asset(symbol)
-                if analysis:
+                if analysis and isinstance(analysis, dict) and 'symbol' in analysis:
                     st.session_state.selected_analysis = analysis
                     st.rerun()
                 else:
                     st.session_state.selected_analysis = None
-                    st.error("Tidak dapat menganalisis aset. Pastikan simbol valid atau coba custom entry.")
+                    st.error("Tidak dapat menganalisis aset. Pastikan simbol valid atau coba custom entry. Periksa juga API key dan koneksi data provider.")
 
         # Tampilkan hasil analisis
         if st.session_state.selected_analysis:
@@ -309,16 +330,16 @@ def main():
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("💰 Current Price", f"{analysis['current_price']:.5f}")
-                    st.metric("📈 Trend", analysis['trend'])
-                    st.metric("📊 RSI", f"{analysis['rsi']:.2f}")
-                    st.metric("⭐ Score", analysis['score'])
+                    st.metric("💰 Current Price", f"{analysis.get('current_price', 0):.5f}")
+                    st.metric("📈 Trend", analysis.get('trend', 'NEUTRAL'))
+                    st.metric("📊 RSI", f"{analysis.get('rsi', 0):.2f}")
+                    st.metric("⭐ Score", analysis.get('score', 0))
                 
                 with col2:
-                    st.metric("📉 ATR", f"{analysis['atr']:.5f}")
-                    st.metric("🔄 Volume Ratio", f"{analysis['volume_ratio']:.2f}")
-                    st.metric("EMA Trend", analysis['ema_trend'])
-                    st.metric("EMA Score", analysis['ema_score'])
+                    st.metric("📉 ATR", f"{analysis.get('atr', 0):.5f}")
+                    st.metric("🔄 Volume Ratio", f"{analysis.get('volume_ratio', 0):.2f}")
+                    st.metric("EMA Trend", analysis.get('ema_trend', 'NEUTRAL'))
+                    st.metric("EMA Score", analysis.get('ema_score', 0))
                 
                 # Tampilkan pola terdeteksi
                 if 'detected_patterns' in analysis and analysis['detected_patterns']:
@@ -341,12 +362,12 @@ def main():
                     position_id = bot.db.save_position(
                         symbol=analysis['symbol'],
                         market_type=bot.mode,
-                        action=analysis["action"],
+                        action=analysis.get("action", "LONG"),
                         entry_price=entry_price,
-                        tp1=entry_price + (analysis["tp1"] - ideal_entry),
-                        tp2=entry_price + (analysis["tp2"] - ideal_entry),
-                        tp3=entry_price + (analysis["tp3"] - ideal_entry),
-                        sl=entry_price - (ideal_entry - analysis["sl"]),
+                        tp1=entry_price + (analysis.get("tp1", 0) - ideal_entry),
+                        tp2=entry_price + (analysis.get("tp2", 0) - ideal_entry),
+                        tp3=entry_price + (analysis.get("tp3", 0) - ideal_entry),
+                        sl=entry_price - (ideal_entry - analysis.get("sl", 0)),
                         entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
                         entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
                     )
@@ -356,6 +377,8 @@ def main():
                         st.rerun()
                     else:
                         st.error("Gagal tambah posisi.")
+            else:
+                st.error("Data analisis tidak valid. Coba analisis ulang.")
 
     # ===============================
     # Tab 3: Custom Entry
@@ -370,7 +393,7 @@ def main():
             if symbol_custom and entry_price_custom > 0:
                 with st.spinner("Menghitung..."):
                     result = bot.calculate_custom_entry(symbol_custom, entry_price_custom)
-                    if result:
+                    if result and isinstance(result, dict) and 'symbol' in result:
                         st.session_state.custom_result = result
                         st.success("Perhitungan selesai!")
                     else:
@@ -425,6 +448,8 @@ def main():
                         st.rerun()
                     else:
                         st.error("Gagal tambah posisi.")
+            else:
+                st.error("Data hasil custom tidak valid.")
 
     # ===============================
     # Tab 4: Posisi Aktif
@@ -444,12 +469,12 @@ def main():
             st.write(f"**📈 Total Posisi Aktif:** {len(st.session_state.positions_data)}")
             
             for pos in st.session_state.positions_data:
-                # Unpack position data
+                # Unpack position data with defaults
                 pos_id = pos[0]
-                symbol = pos[1]
-                market_type = pos[2]
-                action = pos[3]
-                entry_price = pos[4]
+                symbol = pos[1] if len(pos) > 1 else "Unknown"
+                market_type = pos[2] if len(pos) > 2 else bot.mode
+                action = pos[3] if len(pos) > 3 else "LONG"
+                entry_price = pos[4] if len(pos) > 4 else 0
                 current_price = pos[11] if len(pos) > 11 else entry_price
                 sl = pos[9] if len(pos) > 9 else 0
                 tp1 = pos[6] if len(pos) > 6 else 0
@@ -458,10 +483,10 @@ def main():
                 
                 # Calculate P/L
                 if action == "LONG":
-                    pl_pct = ((current_price - entry_price) / entry_price) * 100
+                    pl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
                     pl_color = "green" if pl_pct >= 0 else "red"
                 else:  # SHORT
-                    pl_pct = ((entry_price - current_price) / entry_price) * 100
+                    pl_pct = ((entry_price - current_price) / entry_price) * 100 if entry_price != 0 else 0
                     pl_color = "green" if pl_pct >= 0 else "red"
                 
                 st.markdown("---")
@@ -482,6 +507,8 @@ def main():
                             st.success(f"Harga {symbol} diperbarui!")
                             st.session_state.positions_data = bot.get_active_positions()
                             st.rerun()
+                        else:
+                            st.error(f"Gagal mengambil harga terbaru untuk {symbol}.")
                 
                 with col3:
                     # Close position
@@ -517,16 +544,16 @@ def main():
             st.write(f"**📊 Total Trade:** {len(st.session_state.history_data)}")
             
             for trade in st.session_state.history_data:
-                # Unpack trade data
-                trade_id = trade[0]
-                symbol = trade[1]
-                market_type = trade[2]
-                action = trade[3]
-                entry_price = trade[4]
-                exit_price = trade[5]
-                profit_loss = trade[6]
-                trade_type = trade[7]
-                timestamp = trade[8]
+                # Unpack with defaults
+                trade_id = trade[0] if len(trade) > 0 else 0
+                symbol = trade[1] if len(trade) > 1 else "Unknown"
+                market_type = trade[2] if len(trade) > 2 else bot.mode
+                action = trade[3] if len(trade) > 3 else "LONG"
+                entry_price = trade[4] if len(trade) > 4 else 0
+                exit_price = trade[5] if len(trade) > 5 else 0
+                profit_loss = trade[6] if len(trade) > 6 else 0
+                trade_type = trade[7] if len(trade) > 7 else "manual"
+                timestamp = trade[8] if len(trade) > 8 else datetime.now()
                 
                 # Determine color based on profit/loss
                 color = "green" if profit_loss > 0 else "red"
@@ -556,16 +583,16 @@ def main():
             if st.session_state.positions_data:
                 st.subheader("📊 Posisi Aktif - Live")
                 for pos in st.session_state.positions_data:
-                    symbol = pos[1]
-                    entry_price = pos[4]
+                    symbol = pos[1] if len(pos) > 1 else "Unknown"
+                    entry_price = pos[4] if len(pos) > 4 else 0
                     current_price = pos[11] if len(pos) > 11 else entry_price
                     
                     # Get latest price
                     ticker = bot.data_provider.get_ticker(symbol)
                     if ticker and 'last' in ticker:
                         latest_price = ticker['last']
-                        price_change = ((latest_price - current_price) / current_price) * 100
-                        total_change = ((latest_price - entry_price) / entry_price) * 100
+                        price_change = ((latest_price - current_price) / current_price) * 100 if current_price != 0 else 0
+                        total_change = ((latest_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
                         
                         color = "green" if price_change >= 0 else "red"
                         total_color = "green" if total_change >= 0 else "red"
@@ -575,6 +602,8 @@ def main():
                         st.write(f"📈 Change: <span style='color:{color}'>{price_change:+.2f}%</span>", unsafe_allow_html=True)
                         st.write(f"💰 Total P/L: <span style='color:{total_color}'>{total_change:+.2f}%</span>", unsafe_allow_html=True)
                         st.markdown("---")
+                    else:
+                        st.warning(f"Gagal mengambil harga live untuk {symbol}.")
             
             # Auto refresh checkbox
             st_auto_refresh = st.checkbox("🔄 Auto Refresh (30s)")
