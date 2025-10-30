@@ -1,370 +1,447 @@
-import time
-import asyncio
-import streamlit as st
-from dotenv import load_dotenv
-import sys
 import os
+import time
+import json
+import warnings
+from datetime import datetime, timedelta
+import threading
+import schedule
+import asyncio
+import pandas as pd
+import numpy as np
 
-# Fix import path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from dotenv import load_dotenv
 
-from bot.core import TradingBot
+# Import relative untuk package bot
+from .strategies import TechnicalAnalysisStrategy
+from .data_provider import (
+    CCXTDataProvider,
+    YFinanceDataProvider,
+    AlphaVantageProvider,
+    DexScreenerProvider
+)
+from .notifier import SoundNotifier
+from database.db_handler import DatabaseHandler
 
-# ====================================
-# Setup
-# ====================================
+warnings.filterwarnings("ignore")
 load_dotenv()
-st.set_page_config(page_title="TradingBot Web", layout="wide")
 
-@st.cache_resource
-def init_bot():
-    """Inisialisasi TradingBot (cached)."""
-    return TradingBot()
+class TradingBot:
+    def __init__(self, config_path="config/config.json"):
+        # === Config & Setup ===
+        self.config_path = config_path
+        self.load_config()
 
-# ====================================
-# Main App
-# ====================================
-def main():
-    st.title("🤖 TradingBot Multi-Market Dashboard")
-    
-    try:
-        bot = init_bot()
-    except Exception as e:
-        st.error(f"Error initializing bot: {e}")
-        return
+        self.mode = None
+        self.data_provider = None
+        self.backup_provider = None
+        self.pump_provider = None
 
-    # -------------------------------
-    # Init session state
-    # -------------------------------
-    defaults = {
-        "positions_data": [],
-        "history_data": [],
-        "scanned_results": [],
-        "selected_analysis": None,
-        "selected_for_entry": {},
-        "custom_result": None,
-        "pump_fun_results": [],
-    }
-    for key, val in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = val
+        # === Core Modules ===
+        self.strategy = TechnicalAnalysisStrategy(
+            atr_multiplier=self.config.get("atr_multiplier", 1.5),
+            entry_range_pct=self.config.get("entry_range_pct", 0.015)
+        )
+        self.notifier = SoundNotifier()
+        self.db = DatabaseHandler()
 
-    # -------------------------------
-    # Sidebar: pilih market
-    # -------------------------------
-    with st.sidebar:
-        st.header("Pilih Market")
-        mode_choice = st.selectbox("Market:", ["Crypto", "Forex", "Saham Indonesia"], key="mode")
+        # === State ===
+        self.timeframe = self.config.get("timeframe", "4h")
+        self.alert_active = False
+        self.scanner_active = False
+        
+        # === Background Tasks ===
+        self.scheduler_thread = None
+        self.stop_scheduler = False
 
-        if st.button("Set Market"):
-            try:
-                if mode_choice == "Crypto":
-                    success = bot.set_mode("crypto")
-                elif mode_choice == "Forex":
-                    success = bot.set_mode("forex")
-                elif mode_choice == "Saham Indonesia":
-                    success = bot.set_mode("saham_id")
-                else:
-                    success = False
+    def load_config(self):
+        """Load configuration from config.json"""
+        try:
+            os.makedirs("config", exist_ok=True)
+            with open(self.config_path, "r") as f:
+                self.config = json.load(f)
+        except FileNotFoundError:
+            self.config = {
+                "timeframe": "4h",
+                "atr_multiplier": 1.5,
+                "entry_range_pct": 0.015,
+                "exchange_crypto": "binance",
+                "analysis_coins_limit": 50,
+                "ohlcv_limit": 200,
+                "min_score": 2,
+                "max_signals": 10,
+                "update_interval": 60,
+            }
+            self.save_config()
 
-                if success:
-                    st.session_state.scanned_results = []
-                    st.session_state.selected_analysis = None
-                    st.session_state.selected_for_entry = {}
-                    st.session_state.pump_fun_results = []
-                    st.success(f"Mode {mode_choice} berhasil diatur!")
-                    st.rerun()
-                else:
-                    st.error(f"Gagal mengatur mode {mode_choice}")
-            except Exception as e:
-                st.error(f"Error setting mode: {e}")
+    def save_config(self):
+        """Save configuration to config.json"""
+        os.makedirs("config", exist_ok=True)
+        with open(self.config_path, "w") as f:
+            json.dump(self.config, f, indent=4)
 
-        if bot.mode:
-            st.success(f"Mode: {bot.mode.upper()}")
+    def set_mode(self, mode):
+        """Set market mode (crypto, forex, saham_id)"""
+        self.mode = mode.lower()
+        
+        try:
+            if self.mode == "crypto":
+                exchange_id = self.config.get("exchange_crypto", "binance")
+                self.data_provider = CCXTDataProvider(exchange_id, "", "")
+                self.pump_provider = DexScreenerProvider()
+            elif self.mode == "forex":
+                self.data_provider = YFinanceDataProvider(market_type="forex")
+            elif self.mode == "saham_id":
+                self.data_provider = YFinanceDataProvider(market_type="saham_id")
+            else:
+                raise ValueError(f"Unsupported mode: {mode}")
+            
+            print(f"Mode set to: {self.mode.upper()}")
+            return True
+            
+        except Exception as e:
+            print(f"Failed to set mode {mode}: {e}")
+            return False
 
-    if not bot.mode:
-        st.warning("Pilih market di sidebar!")
-        return
+    def get_popular_assets(self, limit=None):
+        """Get popular assets for the selected market with robust error handling"""
+        if not self.data_provider:
+            print("No data provider available")
+            return self._get_fallback_assets(limit)
 
-    # -------------------------------
-    # Tabs
-    # -------------------------------
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["Top Aset", "Analisis Aset", "Custom Entry", "Posisi Aktif", "History"]
-    )
-
-    # ===============================
-    # Tab 1: Top Aset
-    # ===============================
-    with tab1:
-        st.subheader("Scan Top Aset")
-
-        # Tampilkan opsi scan khusus untuk crypto
-        if bot.mode == "crypto":
-            scan_option = st.radio("Pilih jenis scan:", ["Standard Crypto", "Pump Fun Tokens"], key="scan_option")
-        else:
-            scan_option = "Standard"
-            st.info("Mode Standard untuk Forex dan Saham Indonesia")
-
-        if st.button("Scan Aset", key="scan_assets"):
-            with st.spinner("Scanning..."):
+        limit = limit or self.config.get("analysis_coins_limit", 50)
+        
+        try:
+            print(f"Getting popular assets for {self.mode}...")
+            assets = self.data_provider.get_popular_assets(limit)
+            
+            # FIX: Comprehensive type checking and conversion
+            if assets is None:
+                print("Provider returned None, using fallback")
+                return self._get_fallback_assets(limit)
+                
+            # Handle case where assets is an integer
+            if isinstance(assets, int):
+                print(f"Provider returned integer: {assets}, using fallback")
+                return self._get_fallback_assets(limit)
+                
+            # Convert to list if it's not already
+            if not isinstance(assets, list):
+                print(f"Converting non-list to list: {type(assets)}")
                 try:
-                    if bot.mode == "crypto" and scan_option == "Pump Fun Tokens":
-                        # Scan Pump Fun tokens
-                        st.session_state.pump_fun_results = asyncio.run(bot.scan_pump_fun(10))
-                        if st.session_state.pump_fun_results:
-                            st.success(f"Found {len(st.session_state.pump_fun_results)} Pump Fun tokens!")
-                        else:
-                            st.info("No Pump Fun tokens found.")
+                    # Handle pandas Series, tuples, etc.
+                    if hasattr(assets, '__iter__') and not isinstance(assets, str):
+                        assets = list(assets)
                     else:
-                        # Standard scan dengan error handling
-                        try:
-                            st.session_state.scanned_results = bot.scan_potential_assets(50)
-                            if st.session_state.scanned_results:
-                                st.success(f"Found {len(st.session_state.scanned_results)} signals!")
-                            else:
-                                st.info("No signals found in this scan.")
-                        except Exception as scan_error:
-                            st.error(f"Scanning error: {str(scan_error)}")
-                            st.session_state.scanned_results = []
-                    st.rerun()
+                        print(f"Cannot convert {type(assets)} to list, using fallback")
+                        return self._get_fallback_assets(limit)
                 except Exception as e:
-                    st.error(f"Error during scanning: {str(e)}")
-                    # Reset results on error
-                    st.session_state.scanned_results = []
-                    st.session_state.pump_fun_results = []
-
-        # Tampilkan hasil scan Pump Fun
-        if st.session_state.pump_fun_results and bot.mode == "crypto" and scan_option == "Pump Fun Tokens":
-            st.subheader("🚀 Pump Fun Tokens Baru")
+                    print(f"Failed to convert to list: {e}, using fallback")
+                    return self._get_fallback_assets(limit)
             
-            for i, token in enumerate(st.session_state.pump_fun_results, 1):
-                col1, col2, col3 = st.columns([3, 2, 1])
+            # Filter out any non-string items and ensure we have strings
+            cleaned_assets = []
+            for asset in assets:
+                if asset is not None:
+                    asset_str = str(asset).strip()
+                    if asset_str:  # Only add non-empty strings
+                        cleaned_assets.append(asset_str)
+            
+            print(f"Found {len(cleaned_assets)} assets after cleaning")
+            
+            if not cleaned_assets:
+                print("No valid assets found, using fallback")
+                return self._get_fallback_assets(limit)
                 
-                with col1:
-                    st.write(f"**{i}. {token['symbol']}**")
-                    st.write(f"Address: `{token['address'][:10]}...`")
-                    if token.get('pair_url'):
-                        st.write(f"[View on DexScreener]({token['pair_url']})")
+            return cleaned_assets[:limit]
                 
-                with col2:
-                    st.write(f"Price: ${token['price_usd']:.6f}")
-                    st.write(f"Volume 24h: ${token['volume_24h']:,.2f}")
-                    st.write(f"Liquidity: ${token['liquidity']:,.2f}")
-                
-                with col3:
-                    if st.button(f"Analisis", key=f"analyze_pump_{token['symbol']}"):
-                        st.session_state.selected_analysis = {
-                            'symbol': token['symbol'],
-                            'current_price': token['price_usd'],
-                            'action': 'NEUTRAL',
-                            'score': 0,
-                            'volume': token['volume_24h']
-                        }
-                        st.rerun()
+        except Exception as e:
+            print(f"Error in get_popular_assets: {e}")
+            return self._get_fallback_assets(limit)
 
-        # Tampilkan hasil scan standard
-        if st.session_state.scanned_results:
-            st.subheader("Top Aset Potensial:")
+    def _get_fallback_assets(self, limit):
+        """Get fallback assets when primary source fails"""
+        print(f"Using fallback assets for {self.mode}")
+        
+        if self.mode == "saham_id":
+            fallback = [
+                'BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBRI.JK',
+                'BBNI.JK', 'UNVR.JK', 'INDF.JK', 'ICBP.JK', 'ADRO.JK'
+            ]
+        elif self.mode == "forex":
+            fallback = [
+                'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X',
+                'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X'
+            ]
+        else:  # crypto
+            fallback = [
+                'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT',
+                'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'DOGE/USDT', 'MATIC/USDT'
+            ]
+        
+        limit = limit or 10
+        return fallback[:limit]
 
-            for i, res in enumerate(st.session_state.scanned_results, 1):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.write(f"{i}. **{res['symbol']}** - {res['action']} (Score: {res.get('score', 'N/A')})")
+    def scan_potential_assets(self, limit=None):
+        """Scan popular assets and return potential trading signals with robust error handling"""
+        if not self.data_provider:
+            print("No data provider available for scanning")
+            return []
+
+        print("Starting scan...")
+        
+        # Get assets with extra validation
+        assets = self.get_popular_assets(limit)
+        
+        # FIX: Ensure assets is always a proper list
+        if not isinstance(assets, list):
+            print(f"CRITICAL: Assets is not a list! Type: {type(assets)}, Value: {assets}")
+            assets = []
+        
+        if not assets:
+            print("No assets to scan")
+            return []
+            
+        print(f"Scanning {len(assets)} assets for {self.mode}")
+
+        results = []
+        max_signals = self.config.get("max_signals", 10)
+        min_score = self.config.get("min_score", 2)
+        
+        for i, asset in enumerate(assets, 1):
+            try:
+                # Extra validation for each asset
+                if asset is None:
+                    continue
                     
-                    # Format TP levels dengan urutan yang benar
-                    if res['action'] == "LONG":
-                        st.write(f"Entry: {res['entry_low']:.5f} - {res['entry_high']:.5f}")
-                        st.write(f"SL: {res['sl']:.5f}")
-                        st.write(f"TP1: {res['tp1']:.5f} | TP2: {res['tp2']:.5f} | TP3: {res['tp3']:.5f}")
-                    else:  # SHORT
-                        st.write(f"Entry: {res['entry_low']:.5f} - {res['entry_high']:.5f}")
-                        st.write(f"SL: {res['sl']:.5f}")
-                        st.write(f"TP1: {res['tp1']:.5f} | TP2: {res['tp2']:.5f} | TP3: {res['tp3']:.5f}")
-                        
-                with col2:
-                    if st.button(f"Pilih {i}", key=f"select_{res['symbol']}"):
-                        st.session_state.selected_for_entry[res['symbol']] = res
-                        st.success(f"Selected {res['symbol']}!")
-                        st.rerun()
-
-    # ===============================
-    # Tab 2: Analisis Aset
-    # ===============================
-    with tab2:
-        st.subheader("Analisis Aset Spesifik")
-        
-        symbol_to_analyze = st.text_input("Masukkan simbol aset:", key="analyze_symbol")
-        
-        if st.button("Analisis Sekarang", key="analyze_btn"):
-            if symbol_to_analyze:
-                with st.spinner("Menganalisis..."):
+                asset_str = str(asset).strip()
+                if not asset_str:
+                    continue
+                    
+                print(f"Analyzing {i}/{len(assets)}: {asset_str}")
+                
+                # Analyze asset
+                analysis = self.analyze_asset(asset_str)
+                
+                # Validate analysis result
+                if not analysis:
+                    print(f"No analysis result for {asset_str}")
+                    continue
+                    
+                if not isinstance(analysis, dict):
+                    print(f"Analysis is not a dict for {asset_str}: {type(analysis)}")
+                    continue
+                    
+                # Check if we have required fields
+                required_fields = ['action', 'score']
+                missing_fields = [field for field in required_fields if field not in analysis]
+                if missing_fields:
+                    print(f"Missing fields in analysis for {asset_str}: {missing_fields}")
+                    continue
+                
+                # Check action and score
+                if (analysis.get('action') in ['LONG', 'SHORT'] and 
+                    abs(analysis.get('score', 0)) >= min_score):
+                    
+                    analysis['symbol'] = asset_str
+                    analysis['market_type'] = self.mode
+                    
+                    # Ensure TP levels are in correct order
+                    self._ensure_correct_tp_order(analysis)
+                    
+                    # Save to database
                     try:
-                        analysis = bot.analyze_asset(symbol_to_analyze)
-                        if analysis:
-                            st.session_state.selected_analysis = analysis
-                            st.success(f"Analisis untuk {symbol_to_analyze} selesai!")
-                        else:
-                            st.error(f"Tidak dapat menganalisis {symbol_to_analyze}")
+                        self.db.save_signal(analysis)
                     except Exception as e:
-                        st.error(f"Error analyzing {symbol_to_analyze}: {e}")
-            else:
-                st.warning("Masukkan simbol aset terlebih dahulu.")
-        
-        if st.session_state.selected_analysis:
-            analysis = st.session_state.selected_analysis
-            st.subheader(f"Hasil Analisis untuk {analysis['symbol']}")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Aksi", analysis['action'])
-                st.metric("Skor Total", analysis.get('score', 'N/A'))
-                st.metric("Harga Saat Ini", f"{analysis['current_price']:.5f}")
-            
-            with col2:
-                st.metric("RSI", f"{analysis.get('rsi', 'N/A'):.2f}")
-                st.metric("ATR", f"{analysis.get('atr', 'N/A'):.5f}")
-                st.metric("Volume Ratio", f"{analysis.get('volume_ratio', 'N/A'):.2f}")
+                        print(f"Failed to save signal: {e}")
+                    
+                    results.append(analysis)
+                    print(f"Signal found: {asset_str} - {analysis['action']} (Score: {analysis['score']})")
 
-    # ===============================
-    # Tab 3: Custom Entry
-    # ===============================
-    with tab3:
-        st.subheader("Custom Entry")
-        
-        symbol_custom = st.text_input("Masukkan simbol aset:", key="custom_symbol")
-        entry_price_custom = st.number_input("Harga Entry:", value=0.0, step=0.0001, key="custom_entry")
-        
-        if st.button("Hitung TP/SL", key="calculate_custom"):
-            if symbol_custom and entry_price_custom > 0:
-                with st.spinner("Menghitung..."):
-                    try:
-                        result = bot.calculate_custom_entry(symbol_custom, entry_price_custom)
-                        if result:
-                            st.session_state.custom_result = result
-                            st.success("Perhitungan selesai!")
-                        else:
-                            st.error("Tidak dapat menghitung TP/SL.")
-                    except Exception as e:
-                        st.error(f"Error calculating TP/SL: {e}")
-            else:
-                st.warning("Masukkan simbol dan harga entry yang valid.")
-        
-        if st.session_state.custom_result:
-            result = st.session_state.custom_result
-            st.subheader(f"Hasil untuk {result['symbol']}")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Entry Price", f"{result['entry_price']:.5f}")
-                st.metric("TP1", f"{result['tp1']:.5f}")
-                st.metric("TP2", f"{result['tp2']:.5f}")
-            
-            with col2:
-                st.metric("TP3", f"{result['tp3']:.5f}")
-                st.metric("SL", f"{result['sl']:.5f}")
-
-    # ===============================
-    # Tab 4: Posisi Aktif
-    # ===============================
-    with tab4:
-        st.subheader("Posisi Aktif")
-        
-        if st.button("Refresh Posisi", key="refresh_positions"):
-            try:
-                st.session_state.positions_data = bot.get_active_positions()
-                st.success("Posisi diperbarui!")
-                st.rerun()
+                time.sleep(0.1)  # Rate limiting
+                
             except Exception as e:
-                st.error(f"Error refreshing positions: {e}")
-        
-        if not st.session_state.positions_data:
-            st.info("Tidak ada posisi aktif.")
-        else:
-            st.write(f"Total Posisi Aktif: {len(st.session_state.positions_data)}")
+                print(f"Error analyzing {asset}: {e}")
+                continue
+
+        # Sort by absolute score (highest first)
+        results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
+        print(f"Scan complete. Found {len(results)} signals.")
+        return results[:max_signals]
+
+    def _ensure_correct_tp_order(self, analysis):
+        """Ensure TP levels are in correct order based on action"""
+        try:
+            if 'tp1' not in analysis or 'tp2' not in analysis or 'tp3' not in analysis:
+                return
+                
+            tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
             
-            for pos in st.session_state.positions_data:
-                pos_id = pos[0]
-                symbol = pos[1]
-                action = pos[3]
-                entry_price = pos[4]
-                current_price = pos[11] if len(pos) > 11 else entry_price
-                sl = pos[9] if len(pos) > 9 else 0
-                tp1 = pos[6] if len(pos) > 6 else 0
-                tp2 = pos[7] if len(pos) > 7 else 0
-                tp3 = pos[8] if len(pos) > 8 else 0
-                
-                # Calculate P/L
-                if action == "LONG":
-                    pl_pct = ((current_price - entry_price) / entry_price) * 100
-                else:  # SHORT
-                    pl_pct = ((entry_price - current_price) / entry_price) * 100
-                pl_color = "green" if pl_pct >= 0 else "red"
-                
-                st.markdown("---")
-                col1, col2 = st.columns([3, 1])
-                
-                with col1:
-                    st.write(f"**{symbol}** - {action}")
-                    st.write(f"Entry: `{entry_price:.5f}` | Current: `{current_price:.5f}`")
-                    st.write(f"SL: `{sl:.5f}`")
-                    st.write(f"TP1: `{tp1:.5f}` | TP2: `{tp2:.5f}` | TP3: `{tp3:.5f}`")
-                    st.write(f"P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
+            if analysis['action'] == 'LONG':
+                # For LONG: TP1 < TP2 < TP3
+                sorted_tps = sorted([tp1, tp2, tp3])
+                analysis['tp1'], analysis['tp2'], analysis['tp3'] = sorted_tps
+            else:  # SHORT
+                # For SHORT: TP1 > TP2 > TP3
+                sorted_tps = sorted([tp1, tp2, tp3], reverse=True)
+                analysis['tp1'], analysis['tp2'], analysis['tp3'] = sorted_tps
+        except Exception as e:
+            print(f"Error ensuring TP order: {e}")
 
-                with col2:
-                    exit_price = st.number_input(
-                        "Exit Price",
-                        value=float(current_price),
-                        step=0.0001,
-                        key=f"exit_{symbol}"
-                    )
-                    if st.button("Tutup", key=f"close_{symbol}"):
-                        try:
-                            if bot.close_position(pos_id, exit_price):
-                                st.success(f"Posisi {symbol} ditutup!")
-                                st.session_state.positions_data = bot.get_active_positions()
-                                st.rerun()
-                            else:
-                                st.error("Gagal menutup posisi.")
-                        except Exception as e:
-                            st.error(f"Error closing position: {e}")
-
-    # ===============================
-    # Tab 5: History
-    # ===============================
-    with tab5:
-        st.subheader("History Trading")
-        
-        if st.button("Refresh History", key="refresh_history"):
-            try:
-                st.session_state.history_data = bot.get_trade_history(20)
-                st.success("History diperbarui!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error refreshing history: {e}")
-        
-        if not st.session_state.history_data:
-            st.info("Tidak ada history trading.")
-        else:
-            st.write(f"Total Trade: {len(st.session_state.history_data)}")
+    def analyze_asset(self, symbol):
+        """Analyze a specific asset and return signal with robust error handling"""
+        if not self.data_provider or not symbol:
+            return None
             
-            for trade in st.session_state.history_data:
-                symbol = trade[1]
-                action = trade[3]
-                entry_price = trade[4]
-                exit_price = trade[5]
-                profit_loss = trade[6]
-                timestamp = trade[8]
+        try:
+            print(f"Fetching OHLCV data for {symbol}")
+            df = self.data_provider.get_ohlcv(
+                symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
+            )
+            
+            # Validate DataFrame
+            if df is None:
+                print(f"No data returned for {symbol}")
+                return None
                 
-                color = "green" if profit_loss > 0 else "red"
-                emoji = "✅" if profit_loss > 0 else "❌"
+            if not isinstance(df, pd.DataFrame):
+                print(f"Data is not DataFrame for {symbol}: {type(df)}")
+                return None
                 
-                st.markdown("---")
-                st.write(f"{emoji} **{symbol}** - {action}")
-                st.write(f"Entry: `{entry_price:.5f}` | Exit: `{exit_price:.5f}`")
-                st.write(f"P/L: <span style='color:{color}'>{profit_loss:.5f}</span>", unsafe_allow_html=True)
-                st.write(f"Waktu: {timestamp}")
+            if len(df) < 50:
+                print(f"Insufficient data for {symbol}: {len(df)} rows")
+                return None
+                
+            if df.empty:
+                print(f"Empty DataFrame for {symbol}")
+                return None
+            
+            print(f"Performing analysis for {symbol}")
+            analysis = self.strategy.analyze(df)
+            
+            # Validate analysis result
+            if analysis is None:
+                print(f"No analysis returned for {symbol}")
+                return None
+                
+            if not isinstance(analysis, dict):
+                print(f"Analysis is not dict for {symbol}: {type(analysis)}")
+                return None
+                
+            print(f"Analysis successful for {symbol}")
+            return analysis
+            
+        except Exception as e:
+            print(f"Error analyzing {symbol}: {e}")
+            return None
 
+    async def scan_pump_fun(self, limit=10):
+        """Scan new tokens on Solana Pump Fun"""
+        if not self.pump_provider:
+            print("No Pump Fun provider available")
+            return []
+            
+        try:
+            print("Scanning Pump Fun tokens...")
+            # Search for new tokens on Solana
+            pairs = self.pump_provider.search_pairs("solana")
+            
+            if not pairs:
+                print("No pairs found from Pump Fun")
+                return []
+                
+            results = []
+            for i, pair in enumerate(pairs[:limit]):
+                try:
+                    symbol = pair.get('baseToken', {}).get('symbol', 'Unknown')
+                    token_address = pair.get('baseToken', {}).get('address', '')
+                    
+                    print(f"Processing token {i+1}/{min(len(pairs), limit)}: {symbol}")
+                    
+                    # Get token info
+                    ticker_info = self.pump_provider.get_ticker('solana', token_address)
+                    
+                    if ticker_info:
+                        result = {
+                            'symbol': symbol,
+                            'address': token_address,
+                            'ticker': ticker_info,
+                            'price_usd': ticker_info.get('last', 0),
+                            'volume_24h': ticker_info.get('volume', 0),
+                            'liquidity': ticker_info.get('liquidity', 0),
+                            'pair_url': pair.get('url', '')
+                        }
+                        results.append(result)
+                        print(f"Added token: {symbol}")
+                except Exception as e:
+                    print(f"Error processing token: {e}")
+                    continue
+            
+            print(f"Pump Fun scan complete. Found {len(results)} tokens.")
+            return results
+        except Exception as e:
+            print(f"Error scanning Pump Fun: {e}")
+            return []
 
-if __name__ == "__main__":
-    main()
+    def calculate_custom_entry(self, symbol, entry_price):
+        """Calculate TP/SL for a custom entry price"""
+        if not self.data_provider:
+            return None
+            
+        try:
+            df = self.data_provider.get_ohlcv(
+                symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
+            )
+            
+            if df is not None and len(df) >= 50:
+                # Use strategy's ATR calculation
+                indicators = self.strategy.calculate_technical_indicators(df)
+                atr = indicators['atr_14'].iloc[-1] if 'atr_14' in indicators else entry_price * 0.02
+                
+                # Calculate TP levels
+                tp1 = entry_price + (atr * self.strategy.atr_multiplier)
+                tp2 = entry_price + (atr * self.strategy.atr_multiplier * 2)
+                tp3 = entry_price + (atr * self.strategy.atr_multiplier * 3)
+                sl = entry_price - (atr * self.strategy.atr_multiplier)
+                
+                # Ensure correct TP order
+                tp_levels = sorted([tp1, tp2, tp3])
+                
+                return {
+                    "symbol": symbol,
+                    "entry_price": float(entry_price),
+                    "tp1": float(tp_levels[0]),
+                    "tp2": float(tp_levels[1]),
+                    "tp3": float(tp_levels[2]),
+                    "sl": float(sl),
+                }
+                
+            return None
+        except Exception as e:
+            print(f"Error calculating custom entry for {symbol}: {e}")
+            return None
+
+    def get_active_positions(self):
+        """Get active positions from database"""
+        try:
+            positions = self.db.get_active_positions(self.mode)
+            return positions if positions else []
+        except Exception as e:
+            print(f"Error fetching active positions: {e}")
+            return []
+
+    def get_trade_history(self, limit=10):
+        """Get trade history from database"""
+        try:
+            history = self.db.get_trade_history(self.mode, limit)
+            return history if history else []
+        except Exception as e:
+            print(f"Error fetching trade history: {e}")
+            return []
+
+    def close_position(self, position_id, exit_price=None, exit_type="manual"):
+        """Close a position with the given exit price"""
+        try:
+            return self.db.close_position(position_id, exit_price, exit_type)
+        except Exception as e:
+            print(f"Error closing position: {e}")
+            return False
