@@ -63,12 +63,12 @@ class TradingBot:
                 "timeframe": "1h",
                 "atr_multiplier": 1.0,
                 "entry_range_pct": 0.02,
-                "exchange_crypto": "binance",
-                "analysis_coins_limit": 50,
+                "exchange_crypto": "kucoin",  # Ganti default ke kucoin untuk avoid restrict
+                "analysis_coins_limit": 20,  # Naik ke 20 untuk lebih banyak
                 "ohlcv_limit": 200,
-                "min_score": 3,  # Reduced from 5 to 3 to get more signals
+                "min_score": 3,
                 "max_signals": 5,
-                "update_interval": 30,  # Add update interval for background tasks
+                "update_interval": 30,
             }
             self.save_config()
 
@@ -85,8 +85,9 @@ class TradingBot:
         """Set market mode (crypto, forex, saham_id)"""
         self.mode = mode.lower()
         if self.mode == "crypto":
+            exchange_id = self.config.get("exchange_crypto", "kucoin")
             self.data_provider = CCXTDataProvider(
-                self.config.get("exchange_crypto", "binance"), "", ""
+                exchange_id, "", ""
             )
             self.pump_provider = SolanaPumpFunProvider(
                 os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com")
@@ -101,7 +102,7 @@ class TradingBot:
             print(f"Invalid mode: {mode}")
             return False
 
-        print(f"Mode set to: {self.mode.upper()} with data provider: {self.data_provider}")
+        print(f"Mode set to: {self.mode.upper()} with data provider: {self.data_provider.__class__.__name__}")
         
         # Start background tasks when mode is set
         self.start_background_tasks()
@@ -169,25 +170,11 @@ class TradingBot:
             print("No data provider available.")
             return []
 
-        limit = limit or self.config.get("analysis_coins_limit", 50)
+        limit = limit or self.config.get("analysis_coins_limit", 20)
         try:
             assets = self.data_provider.get_popular_assets(limit)
             if not assets:
                 print(f"No popular assets found for {self.mode}")
-                # Return fallback assets based on mode
-                if self.mode == "crypto":
-                    assets = [
-                        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
-                        'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT'
-                    ][:limit]
-                elif self.mode == "forex":
-                    assets = [
-                        'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X'
-                    ][:limit]
-                elif self.mode == "saham_id":
-                    assets = [
-                        'BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK'
-                    ][:limit]
             return assets
         except Exception as e:
             print(f"Error fetching popular assets: {e}")
