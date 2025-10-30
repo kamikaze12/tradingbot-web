@@ -215,17 +215,32 @@ class DexScreenerProvider:
 
 class CCXTDataProvider(DataProvider):
     def __init__(self, exchange_id='binance', api_key='', secret=''):
-        try:
-            exchange_class = getattr(ccxt, exchange_id)
-            self.exchange = exchange_class({
-                'apiKey': api_key,
-                'secret': secret,
-                'enableRateLimit': True,
-            })
-            self.exchange.load_markets()
-        except Exception as e:
-            print(f"Error initializing {exchange_id}: {e}")
-            self.exchange = None
+        self.exchange = None
+        self.exchange_id = exchange_id
+        
+        # List of exchanges to try (in order)
+        exchange_priority = ['bybit', 'kucoin', 'okx', 'gateio', 'binance']
+        
+        for exchange_name in exchange_priority:
+            try:
+                print(f"Trying to initialize {exchange_name}...")
+                exchange_class = getattr(ccxt, exchange_name)
+                self.exchange = exchange_class({
+                    'apiKey': api_key,
+                    'secret': secret,
+                    'enableRateLimit': True,
+                    'timeout': 30000,
+                })
+                self.exchange.load_markets()
+                self.exchange_id = exchange_name
+                print(f"✓ Successfully initialized {exchange_name}")
+                break
+            except Exception as e:
+                print(f"✗ Failed to initialize {exchange_name}: {e}")
+                continue
+                
+        if self.exchange is None:
+            print("⚠️ All exchanges failed, using fallback providers only")
             
         self.fallback_yf = YFinanceDataProvider()
         self.fallback_av = AlphaVantageProvider()
@@ -244,7 +259,7 @@ class CCXTDataProvider(DataProvider):
         return symbol
 
     def get_ohlcv(self, symbol, timeframe, limit=200):
-        # Try CCXT first
+        # Try CCXT first if exchange is available
         if self.exchange:
             try:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -252,7 +267,7 @@ class CCXTDataProvider(DataProvider):
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 return df
             except Exception as e:
-                print(f"CCXT error for {symbol}: {e}")
+                print(f"CCXT error for {symbol} on {self.exchange_id}: {e}")
 
         # Fallback to yfinance for forex and stocks
         if '=X' in symbol or '.JK' in symbol:
@@ -282,7 +297,7 @@ class CCXTDataProvider(DataProvider):
             try:
                 return self.exchange.fetch_ticker(symbol)
             except Exception as e:
-                print(f"CCXT ticker error for {symbol}: {e}")
+                print(f"CCXT ticker error for {symbol} on {self.exchange_id}: {e}")
 
         # Fallback logic similar to OHLCV
         if '=X' in symbol or '.JK' in symbol:
@@ -306,29 +321,36 @@ class CCXTDataProvider(DataProvider):
         return None
 
     def get_popular_assets(self, limit=100):
+        """Get popular assets with multiple fallback strategies"""
         try:
-            if not self.exchange:
-                return self._get_hardcoded_crypto_pairs(limit)
+            # If exchange is available, try to get popular assets
+            if self.exchange:
+                markets = self.exchange.load_markets()
+                usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
                 
-            markets = self.exchange.load_markets()
-            usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
-            
-            # Filter out stablecoins
-            excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST']
-            filtered_markets = [
-                symbol for symbol in usdt_markets 
-                if not any(excluded in symbol for excluded in excluded_coins)
-            ]
-            
-            # Sort by volume if available
-            try:
-                tickers = self.exchange.fetch_tickers(filtered_markets[:50])  # Limit to avoid rate limits
-                filtered_markets.sort(key=lambda x: tickers[x]['quoteVolume'] if x in tickers else 0, reverse=True)
-            except:
-                # If volume sorting fails, use hardcoded popular pairs
-                pass
+                # Filter out stablecoins
+                excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST']
+                filtered_markets = [
+                    symbol for symbol in usdt_markets 
+                    if not any(excluded in symbol for excluded in excluded_coins)
+                ]
                 
-            return filtered_markets[:limit]
+                # Sort by volume if available
+                try:
+                    markets_to_check = filtered_markets[:min(50, len(filtered_markets))]
+                    tickers = self.exchange.fetch_tickers(markets_to_check)
+                    
+                    filtered_markets.sort(
+                        key=lambda x: tickers[x]['quoteVolume'] if x in tickers and 'quoteVolume' in tickers[x] else 0, 
+                        reverse=True
+                    )
+                    return filtered_markets[:limit]
+                except Exception as e:
+                    print(f"Volume sorting failed: {e}")
+                    return filtered_markets[:limit]
+            
+            # If exchange failed, use hardcoded popular pairs
+            return self._get_hardcoded_crypto_pairs(limit)
             
         except Exception as e:
             print(f"Error getting popular assets from CCXT: {e}")
@@ -339,7 +361,8 @@ class CCXTDataProvider(DataProvider):
         popular_pairs = [
             'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT',
             'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'DOGE/USDT', 'MATIC/USDT',
-            'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'UNI/USDT', 'XLM/USDT'
+            'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'UNI/USDT', 'XLM/USDT',
+            'BCH/USDT', 'ETC/USDT', 'FIL/USDT', 'EOS/USDT', 'XTZ/USDT'
         ]
         return popular_pairs[:limit]
 
