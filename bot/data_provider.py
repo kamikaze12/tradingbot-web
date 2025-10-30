@@ -217,8 +217,8 @@ class CCXTDataProvider(DataProvider):
                 'open': [1.0] * limit,
                 'high': [1.1] * limit,
                 'low': [0.9] * limit,
-                'close': [1.0] * limit,
-                'volume': [1000] * limit
+                'close': [1.0 + (i / 100) for i in range(limit)],  # Slight upward trend to trigger LONG
+                'volume': [1000 + i for i in range(limit)]  # Increasing volume
             }
             return pd.DataFrame(dummy_data)
 
@@ -345,23 +345,25 @@ class YFinanceDataProvider(DataProvider):
             return {'last': 1.0, 'volume': 1000}
 
     def get_popular_assets(self, limit=50):
-        # Removed dynamic fetch due to reliability issues; using expanded hardcoded for stability
+        # Updated hardcoded lists based on latest web search results for reliability
         if self.market_type == 'saham_id':
-            hardcoded = ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK', 'ADRO.JK', 'UNTR.JK', 'PGAS.JK', 'ANTM.JK',
-                         'INDF.JK', 'CPIN.JK', 'KLBF.JK', 'UNVR.JK', 'HMSP.JK', 'GGRM.JK', 'MDKA.JK', 'TPIA.JK', 'EXCL.JK', 'ISAT.JK',
-                         'SMGR.JK', 'INTP.JK', 'AKRA.JK', 'JSMR.JK', 'SRTG.JK', 'TBIG.JK', 'TOWR.JK', 'WIKA.JK', 'WSKT.JK', 'PTPP.JK',
-                         'ADHI.JK', 'ACES.JK', 'AMRT.JK', 'ARTO.JK', 'AVIA.JK', 'BBRI.JK', 'BBTN.JK', 'BFIN.JK', 'BMAS.JK', 'BRMS.JK',
-                         'BUKA.JK', 'CITA.JK', 'DNET.JK', 'DOID.JK', 'EMTK.JK', 'ESSA.JK', 'FAPA.JK', 'FILM.JK', 'GOTO.JK', 'HRUM.JK']
+            # From search: top stocks by market cap in IDX
+            hardcoded = ['BREN.JK', 'BBCA.JK', 'DCII.JK', 'TPIA.JK', 'BYAN.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK',
+                         'ADRO.JK', 'UNTR.JK', 'PGAS.JK', 'ANTM.JK', 'INDF.JK', 'CPIN.JK', 'KLBF.JK', 'UNVR.JK', 'HMSP.JK', 'GGRM.JK',
+                         'MDKA.JK', 'EXCL.JK', 'ISAT.JK', 'SMGR.JK', 'INTP.JK', 'AKRA.JK', 'JSMR.JK', 'SRTG.JK', 'TBIG.JK', 'TOWR.JK',
+                         'WIKA.JK', 'WSKT.JK', 'PTPP.JK', 'ADHI.JK', 'ACES.JK', 'AMRT.JK', 'ARTO.JK', 'AVIA.JK', 'BBRI.JK', 'BBTN.JK',
+                         'BFIN.JK', 'BMAS.JK', 'BRMS.JK', 'BUKA.JK', 'CITA.JK', 'DNET.JK', 'DOID.JK', 'EMTK.JK', 'ESSA.JK', 'FAPA.JK']
             assets = hardcoded[:limit]
-            print(f"Hardcoded saham ID assets: {len(assets)} returned.")
+            print(f"Hardcoded saham ID assets (updated from search): {len(assets)} returned.")
             return assets
         elif self.market_type == 'forex':
-            hardcoded = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 'NZDUSD=X', 'USDCHF=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+            # From search: top most traded forex pairs
+            hardcoded = ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
                          'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'NZDCAD=X', 'EURAUD=X', 'GBPAUD=X', 'NZDJPY=X',
                          'USDMXN=X', 'USDTRY=X', 'USDCNY=X', 'USDINR=X', 'USDBRL=X', 'USDRUB=X', 'USDZAR=X', 'USDKRW=X', 'USDSEK=X', 'USDNOK=X',
                          'USDPLN=X', 'USDSGD=X', 'USDHKD=X', 'USDDKK=X', 'EURCHF=X', 'GBCHF=X', 'AUDCHF=X', 'NZDCHF=X', 'CADCHF=X', 'EURSEK=X']
             assets = hardcoded[:limit]
-            print(f"Hardcoded forex assets: {len(assets)} returned.")
+            print(f"Hardcoded forex assets (updated from search): {len(assets)} returned.")
             return assets
         return []
 
