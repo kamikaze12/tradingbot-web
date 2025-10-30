@@ -34,6 +34,7 @@ class TradingBot:
         self.mode = None
         self.data_provider = None
         self.backup_provider = None
+        self.pump_provider = None
 
         # === Core Modules ===
         self.strategy = TechnicalAnalysisStrategy(
@@ -102,6 +103,7 @@ class TradingBot:
             if self.mode == "crypto":
                 exchange_id = self.config.get("exchange_crypto", "binance")
                 self.data_provider = CCXTDataProvider(exchange_id, "", "")
+                self.pump_provider = DexScreenerProvider()
                 if self.config.get("enable_backup_provider", True):
                     self.backup_provider = YFinanceDataProvider(market_type="crypto")
                     
@@ -118,65 +120,55 @@ class TradingBot:
             else:
                 raise ValueError(f"Unsupported mode: {mode}")
             
-            print(f"✓ Mode set to: {self.mode.upper()}")
-            print(f"  Primary Provider: {self.data_provider.__class__.__name__}")
+            print(f"Mode set to: {self.mode.upper()}")
+            print(f"Primary Provider: {self.data_provider.__class__.__name__}")
             if self.backup_provider:
-                print(f"  Backup Provider: {self.backup_provider.__class__.__name__}")
+                print(f"Backup Provider: {self.backup_provider.__class__.__name__}")
+            if self.pump_provider:
+                print(f"Pump Fun Provider: {self.pump_provider.__class__.__name__}")
             
             return True
             
         except Exception as e:
-            print(f"✗ Failed to set mode {mode}: {e}")
+            print(f"Failed to set mode {mode}: {e}")
             self.data_provider = None
             self.backup_provider = None
+            self.pump_provider = None
             return False
 
     def get_popular_assets(self, limit=None):
         """Get popular assets with enhanced error handling"""
         if not self.data_provider:
-            print("❌ No data provider available")
             return []
 
         limit = limit or self.config.get("analysis_coins_limit", 50)
         
         try:
-            print(f"🔍 Fetching popular assets for {self.mode}...")
             assets = self.data_provider.get_popular_assets(limit)
-            
-            # DEBUG: Print type and value for debugging
-            print(f"DEBUG: get_popular_assets returned type: {type(assets)}, value: {assets}")
             
             # Handle different return types
             if assets is None:
-                print("⚠️ get_popular_assets returned None, using fallback")
                 assets = self._get_fallback_assets(limit)
             elif isinstance(assets, (int, float)):
-                print(f"⚠️ get_popular_assets returned number: {assets}, using fallback")
                 assets = self._get_fallback_assets(limit)
             elif isinstance(assets, str):
-                print(f"⚠️ get_popular_assets returned string: {assets}, converting to list")
                 assets = [assets]
             elif not isinstance(assets, (list, tuple)):
-                print(f"⚠️ get_popular_assets returned unexpected type: {type(assets)}, using fallback")
                 assets = self._get_fallback_assets(limit)
             elif len(assets) == 0:
-                print("⚠️ get_popular_assets returned empty list, using fallback")
                 assets = self._get_fallback_assets(limit)
                 
             # Try backup provider if primary fails
             if (not assets or len(assets) == 0) and self.backup_provider:
-                print("🔄 Trying backup provider...")
                 try:
                     backup_assets = self.backup_provider.get_popular_assets(limit)
                     if backup_assets and len(backup_assets) > 0:
                         assets = backup_assets
-                        print(f"✅ Backup provider returned {len(assets)} assets")
                 except Exception as e:
-                    print(f"❌ Backup provider failed: {e}")
+                    print(f"Backup provider failed: {e}")
             
             # Final fallback
             if not assets or len(assets) == 0:
-                print("🔄 Using final fallback assets")
                 assets = self._get_fallback_assets(limit)
             
             # Ensure we have a list and limit the results
@@ -185,17 +177,14 @@ class TradingBot:
             else:
                 assets = [assets][:limit]
                 
-            print(f"✅ Final assets list: {len(assets)} items")
             return assets
             
         except Exception as e:
-            print(f"❌ Error in get_popular_assets: {e}")
+            print(f"Error fetching popular assets: {e}")
             return self._get_fallback_assets(limit)
 
     def _get_fallback_assets(self, limit):
         """Get fallback assets when primary source fails"""
-        print(f"🔄 Using fallback assets for {self.mode}")
-        
         if self.mode == "saham_id":
             fallback = ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBRI.JK', 
                        'UNVR.JK', 'INDF.JK', 'ICBP.JK', 'ADRO.JK', 'ANTM.JK']
@@ -211,7 +200,6 @@ class TradingBot:
     def scan_potential_assets(self, limit=None):
         """Enhanced asset scanning with proper error handling"""
         if not self.data_provider:
-            print("❌ No data provider for scanning")
             return []
 
         start_time = time.time()
@@ -219,16 +207,14 @@ class TradingBot:
         # Get assets with extra validation
         assets = self.get_popular_assets(limit)
         
-        # DOUBLE CHECK: Ensure assets is a list and has length
+        # Ensure assets is a list and has length
         if not isinstance(assets, list):
-            print(f"❌ CRITICAL: assets is not a list, type: {type(assets)}, value: {assets}")
             assets = []
         
         if not assets:
-            print("❌ No assets to scan")
             return []
             
-        print(f"🔍 Starting scan of {len(assets)} {self.mode} assets...")
+        print(f"Scanning {len(assets)} {self.mode} assets...")
         
         max_signals = self.config.get("max_signals", 10)
         min_score = self.config.get("min_score", 2)
@@ -238,7 +224,6 @@ class TradingBot:
         
         for i, asset in enumerate(assets, 1):
             try:
-                # Extra validation for each asset
                 if asset is None:
                     continue
                     
@@ -246,41 +231,55 @@ class TradingBot:
                 if not asset_str:
                     continue
                     
-                print(f"Analyzing {i}/{len(assets)}: {asset_str}")
-                
                 analysis = self.analyze_asset(asset_str)
                 
-                if (analysis and 
-                    analysis.get('action') in ['LONG', 'SHORT'] and 
+                # Validasi bahwa analysis adalah dictionary yang valid
+                if not analysis or not isinstance(analysis, dict):
+                    successful_scans += 1
+                    continue
+                    
+                # Validasi bahwa analysis memiliki kunci yang diperlukan
+                required_keys = ['action', 'score', 'tp1', 'tp2', 'tp3', 'sl', 'current_price']
+                missing_keys = [key for key in required_keys if key not in analysis]
+                if missing_keys:
+                    successful_scans += 1
+                    continue
+            
+                # Validasi bahwa nilai TP/SL adalah numerik
+                if not all(isinstance(analysis.get(key), (int, float)) for key in ['tp1', 'tp2', 'tp3', 'sl']):
+                    successful_scans += 1
+                    continue
+            
+                if (analysis.get('action') in ['LONG', 'SHORT'] and 
                     abs(analysis.get('score', 0)) >= min_score):
                     
                     analysis['symbol'] = asset_str
                     analysis['market_type'] = self.mode
                     
-                    # Ensure TP levels are in correct order
-                    if analysis['action'] == 'LONG':
-                        # For LONG: TP1 < TP2 < TP3
-                        tp_levels = sorted([analysis['tp1'], analysis['tp2'], analysis['tp3']])
-                        analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
-                    else:  # SHORT
-                        # For SHORT: TP1 > TP2 > TP3  
-                        tp_levels = sorted([analysis['tp1'], analysis['tp2'], analysis['tp3']], reverse=True)
-                        analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
-                    
+                    # Pastikan TP levels dalam urutan yang benar
+                    try:
+                        if analysis['action'] == 'LONG':
+                            tp_levels = sorted([analysis['tp1'], analysis['tp2'], analysis['tp3']])
+                            analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
+                        else:  # SHORT
+                            tp_levels = sorted([analysis['tp1'], analysis['tp2'], analysis['tp3']], reverse=True)
+                            analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
+                    except Exception as e:
+                        print(f"Error sorting TP levels for {asset_str}: {e}")
+                
                     # Save to database
                     try:
                         self.db.save_signal(analysis)
                     except Exception as e:
-                        print(f"⚠️ Failed to save signal to DB: {e}")
+                        print(f"Failed to save signal to DB: {e}")
                     
                     results.append(analysis)
-                    print(f"✅ Signal found: {asset_str} - {analysis['action']} (Score: {analysis['score']})")
 
                 successful_scans += 1
                 time.sleep(0.1)  # Rate limiting
                 
             except Exception as e:
-                print(f"❌ Error analyzing {asset}: {e}")
+                print(f"Error analyzing {asset}: {e}")
                 continue
 
         # Sort by absolute score (highest first)
@@ -295,7 +294,7 @@ class TradingBot:
             'last_scan_time': datetime.now()
         })
         
-        print(f"📊 Scan complete: {successful_scans}/{len(assets)} successful, "
+        print(f"Scan complete: {successful_scans}/{len(assets)} successful, "
               f"{len(results)} signals found in {self.scan_stats['last_scan_duration']:.1f}s")
         
         return results[:max_signals]
@@ -317,11 +316,19 @@ class TradingBot:
                     isinstance(df, pd.DataFrame) and 
                     len(df) >= 50 and
                     not df.empty and
-                    'close' in df.columns):
+                    all(col in df.columns for col in ['open', 'high', 'low', 'close', 'volume'])):
                     
                     analysis = self.strategy.analyze(df)
-                    if analysis and isinstance(analysis, dict):
+                    
+                    # Validasi bahwa analysis adalah dictionary yang valid
+                    if (analysis and 
+                        isinstance(analysis, dict) and 
+                        'action' in analysis and 
+                        'score' in analysis and
+                        all(key in analysis for key in ['tp1', 'tp2', 'tp3', 'sl', 'current_price'])):
                         return analysis
+                    else:
+                        continue
                         
             except Exception as e:
                 print(f"Analysis failed for {symbol} with {provider.__class__.__name__}: {e}")
@@ -361,6 +368,48 @@ class TradingBot:
             print(f"Error calculating custom entry for {symbol}: {e}")
             
         return None
+
+    async def scan_pump_fun(self, limit=10):
+        """Scan new tokens on Solana Pump Fun using DexScreener"""
+        if not self.pump_provider:
+            return []
+            
+        try:
+            # Search for new tokens on Solana
+            query = "solana"
+            pairs = self.pump_provider.search_pairs(query)
+            
+            results = []
+            for pair in pairs[:limit]:
+                try:
+                    # Extract token information
+                    symbol = pair.get('baseToken', {}).get('symbol', 'Unknown')
+                    token_address = pair.get('baseToken', {}).get('address', '')
+                    
+                    # Get detailed token info
+                    ticker_info = self.pump_provider.get_ticker('solana', token_address)
+                    
+                    if ticker_info:
+                        result = {
+                            'symbol': symbol,
+                            'address': token_address,
+                            'ticker': ticker_info,
+                            'pair_address': pair.get('pairAddress', ''),
+                            'price_usd': ticker_info.get('last', 0),
+                            'volume_24h': ticker_info.get('volume', 0),
+                            'liquidity': ticker_info.get('liquidity', 0),
+                            'fdv': ticker_info.get('fdv', 0),
+                            'pair_url': pair.get('url', '')
+                        }
+                        results.append(result)
+                except Exception as e:
+                    print(f"Error processing Pump Fun token: {e}")
+                    continue
+            
+            return results
+        except Exception as e:
+            print(f"Error scanning Pump Fun: {e}")
+            return []
 
     def get_active_positions(self):
         """Get active positions from database"""
@@ -416,8 +465,52 @@ class TradingBot:
         
         return self.data_provider
 
-    # Pump Fun integration placeholder
-    async def scan_pump_fun(self):
-        """Scan new tokens on Solana Pump Fun"""
-        print("Pump.fun monitoring requires WebSocket connection setup...")
-        return []
+    def start_background_tasks(self):
+        """Start background tasks for automated operations"""
+        if self.scheduler_thread and self.scheduler_thread.is_alive():
+            self.stop_background_tasks()
+            
+        self.stop_scheduler = False
+        self.scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
+        self.scheduler_thread.start()
+        print("Background tasks started")
+
+    def stop_background_tasks(self):
+        """Stop all background tasks"""
+        self.stop_scheduler = True
+        if self.scheduler_thread:
+            self.scheduler_thread.join(timeout=5)
+        print("Background tasks stopped")
+
+    def _run_scheduler(self):
+        """Run scheduled tasks in background thread"""
+        update_interval = self.config.get("update_interval", 60)
+        
+        schedule.every(update_interval).seconds.do(self.update_all_prices)
+        
+        while not self.stop_scheduler:
+            try:
+                schedule.run_pending()
+                time.sleep(1)
+            except Exception as e:
+                print(f"Scheduler error: {e}")
+
+    def update_all_prices(self):
+        """Update prices for all active positions"""
+        if not self.data_provider:
+            return
+            
+        try:
+            active_positions = self.get_active_positions()
+            for position in active_positions:
+                symbol = position[1]
+                try:
+                    provider = self.get_data_provider(symbol)
+                    if provider:
+                        ticker = provider.get_ticker(symbol)
+                        if ticker and 'last' in ticker:
+                            self.db.update_position_current_price(symbol, ticker['last'])
+                except Exception as e:
+                    print(f"Error updating price for {symbol}: {e}")
+        except Exception as e:
+            print(f"Error in update_all_prices: {e}")
