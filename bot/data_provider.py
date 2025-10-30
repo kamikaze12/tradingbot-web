@@ -6,11 +6,13 @@ from solana.rpc.api import Client
 from solana.rpc.websocket_api import connect
 import json
 import asyncio
-import base58 # Untuk decode pubkey
+import base58
 import os
-import requests # Untuk Alpha Vantage dan DexScreener
-import re  # Untuk parse search result
+import requests
+from bs4 import BeautifulSoup
+import re
 from datetime import datetime
+import time
 
 class DataProvider(ABC):
     @abstractmethod
@@ -29,87 +31,30 @@ class AlphaVantageProvider(DataProvider):
     def __init__(self, api_key=None):
         self.api_key = api_key or os.getenv('ALPHA_VANTAGE_KEY')
         if not self.api_key:
-            print("Warning: Alpha Vantage API key not found. Skipping Alpha fallback - get one at https://www.alphavantage.co/support/#api-key")
+            print("Warning: Alpha Vantage API key not found. Skipping Alpha fallback")
             self.api_key = None
         self.base_url = "https://www.alphavantage.co/query"
 
-    def _convert_symbol(self, symbol, market_type='crypto'):
-        if '/' in symbol:
+    def _convert_symbol(self, symbol):
+        """Convert symbol to Alpha Vantage format"""
+        if '=X' in symbol:  # Forex format like EURUSD=X
+            base = symbol.replace('=X', '')
+            return f"{base[:3]}/{base[3:]}"
+        elif '.JK' in symbol:  # Indonesian stock
+            return symbol.replace('.JK', '.JK')
+        elif '/' in symbol:  # Crypto format like BTC/USDT
             base, quote = symbol.split('/')
-        elif '=X' in symbol:
-            base = symbol.split('=')[0]
-            return f"{base[:3]}/{base[3:]}"
-        elif '.JK' in symbol:
-            return symbol
+            return base
         else:
-            base = symbol.upper()
-        if market_type == 'forex':
-            return f"{base[:3]}/{base[3:]}"
-        return base
+            return symbol
 
-    def get_ohlcv(self, symbol, timeframe, limit=200):
-        if not self.api_key:
-            return None
-        try:
-            symbol_av = self._convert_symbol(symbol)
-            if '/' in symbol_av:  # Forex
-                function = "FX_DAILY"
-            else:
-                function = "DIGITAL_CURRENCY_DAILY" if 'crypto' in market_type else "TIME_SERIES_DAILY"
-            params = {
-                "function": function,
-                "symbol": symbol_av,
-                "market": "USD" if function == "DIGITAL_CURRENCY_DAILY" else None,
-                "apikey": self.api_key,
-                "outputsize": "full" if limit > 100 else "compact"
-            }
-            if function.startswith("FX_"):
-                params["from_symbol"], params["to_symbol"] = symbol_av.split('/')
-            response = requests.get(self.base_url, params=params)
-            data = response.json()
-            time_series_key = next((k for k in data if "Time Series" in k), None)
-            if time_series_key:
-                ohlcv_data = data[time_series_key]
-                df = pd.DataFrame.from_dict(ohlcv_data, orient='index')
-                df = df.astype(float)
-                df['timestamp'] = pd.to_datetime(df.index)
-                df = df[['timestamp', '1. open', '2. high', '3. low', '4. close', '5. volume' if '5. volume' in df else '4. close']]
-                if '5. volume' not in df.columns:
-                    df['volume'] = 0
-                df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-                return df.sort_index().tail(limit)
-            else:
-                print(f"Error in Alpha Vantage response: {data}")
-                return None
-        except Exception as e:
-            print(f"Error getting OHLCV from Alpha Vantage for {symbol}: {e}")
-            return None
+    def get_ohlcv(self, symbol, timeframe='1d', limit=200):
+        # Skip Alpha Vantage for now as it's causing issues
+        return None
 
     def get_ticker(self, symbol):
-        if not self.api_key:
-            return None
-        try:
-            symbol_av = self._convert_symbol(symbol)
-            function = "CURRENCY_EXCHANGE_RATE" if '/' in symbol_av else "GLOBAL_QUOTE"
-            params = {
-                "function": function,
-                "symbol": symbol_av,
-                "apikey": self.api_key
-            }
-            if function == "CURRENCY_EXCHANGE_RATE":
-                params["from_currency"], params["to_currency"] = symbol_av.split('/')
-            response = requests.get(self.base_url, params=params)
-            data = response.json()
-            if "Realtime Currency Exchange Rate" in data:
-                rate = data["Realtime Currency Exchange Rate"]
-                return {'last': float(rate['5. Exchange Rate']), 'volume': 0}
-            elif "Global Quote" in data:
-                quote = data["Global Quote"]
-                return {'last': float(quote['05. price']), 'volume': float(quote.get('06. volume', 0))}
-            return None
-        except Exception as e:
-            print(f"Error getting ticker from Alpha Vantage for {symbol}: {e}")
-            return None
+        # Skip Alpha Vantage for now
+        return None
 
     def get_popular_assets(self, limit=100):
         return []
@@ -117,9 +62,9 @@ class AlphaVantageProvider(DataProvider):
 class DexScreenerProvider:
     def __init__(self):
         self.base_url = "https://api.dexscreener.com/latest/dex"
+        
     def get_ticker(self, chain, token_address):
         try:
-            # Example: Fetch pairs for token, ambil first pair untuk ticker
             url = f"{self.base_url}/tokens/{chain}/{token_address}"
             response = requests.get(url)
             data = response.json()
@@ -135,6 +80,7 @@ class DexScreenerProvider:
         except Exception as e:
             print(f"Error getting ticker from DexScreener for {token_address}: {e}")
             return None
+            
     def search_pairs(self, query):
         try:
             url = f"{self.base_url}/search?q={query}"
@@ -146,166 +92,268 @@ class DexScreenerProvider:
             return []
 
 class CCXTDataProvider(DataProvider):
-    def __init__(self, exchange_id='kucoin', api_key='', secret=''):
-        exchange_class = getattr(ccxt, exchange_id)
-        self.exchange = exchange_class({
-            'apiKey': api_key,
-            'secret': secret,
-            'enableRateLimit': True,
-        })
-        self.fallback_yf = YFinanceDataProvider(market_type='crypto')
-        self.fallback_av = AlphaVantageProvider() # Last untuk hemat limit 25/day
-
-    def _convert_symbol(self, symbol, target='yf'):
-        base = symbol.split('/')[0] if '/' in symbol else symbol.upper()
-        if target == 'yf':
-            return f"{base}-USD"
-        elif target == 'av':
-            return base
-        return symbol
+    def __init__(self, exchange_id='binance', api_key='', secret=''):
+        try:
+            exchange_class = getattr(ccxt, exchange_id)
+            self.exchange = exchange_class({
+                'apiKey': api_key,
+                'secret': secret,
+                'enableRateLimit': True,
+            })
+            self.exchange.load_markets()
+        except Exception as e:
+            print(f"Error initializing {exchange_id}: {e}")
+            self.exchange = None
+            
+        self.fallback_yf = YFinanceDataProvider()
 
     def get_ohlcv(self, symbol, timeframe, limit=200):
-        try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            return df
-        except Exception as e:
-            print(f"Error getting data from CCXT for {symbol}: {e}")
-            # Fallback chain: yf → av (hemat av)
-            for fallback, target in [(self.fallback_yf, 'yf'), (self.fallback_av, 'av')]:
-                try:
-                    conv_symbol = self._convert_symbol(symbol, target)
-                    print(f"Falling back to {fallback.__class__.__name__} with symbol: {conv_symbol}")
-                    df = fallback.get_ohlcv(conv_symbol, timeframe, limit)
-                    if df is not None:
-                        return df
-                except:
-                    pass
-            return None
+        # Try CCXT first
+        if self.exchange:
+            try:
+                ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                return df
+            except Exception as e:
+                print(f"CCXT error for {symbol}: {e}")
+
+        # Fallback to yfinance for forex and stocks
+        if '=X' in symbol or '.JK' in symbol:
+            return self.fallback_yf.get_ohlcv(symbol, timeframe, limit)
+                
+        return None
 
     def get_ticker(self, symbol):
-        try:
-            return self.exchange.fetch_ticker(symbol)
-        except Exception as e:
-            print(f"Error getting ticker from CCXT for {symbol}: {e}")
-            for fallback, target in [(self.fallback_yf, 'yf'), (self.fallback_av, 'av')]:
-                try:
-                    conv_symbol = self._convert_symbol(symbol, target)
-                    print(f"Falling back to {fallback.__class__.__name__} with symbol: {conv_symbol}")
-                    ticker = fallback.get_ticker(conv_symbol)
-                    if ticker is not None:
-                        return ticker
-                except:
-                    pass
-            return None
+        if self.exchange:
+            try:
+                return self.exchange.fetch_ticker(symbol)
+            except Exception as e:
+                print(f"CCXT ticker error for {symbol}: {e}")
+
+        # Fallback to yfinance for non-crypto
+        if '=X' in symbol or '.JK' in symbol:
+            return self.fallback_yf.get_ticker(symbol)
+                
+        return None
 
     def get_popular_assets(self, limit=100):
+        """Get popular crypto assets - NO FALLBACK to ensure crypto only"""
         try:
+            if not self.exchange:
+                return self._get_hardcoded_crypto_pairs(limit)
+                
             markets = self.exchange.load_markets()
-            if self.exchange.id in ['binance', 'bybit', 'kucoin']:
-                usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
-                excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST']
-                filtered_markets = [symbol for symbol in usdt_markets if not any(excluded in symbol for excluded in excluded_coins)]
-                try:
-                    tickers = self.exchange.fetch_tickers()
-                    filtered_markets.sort(key=lambda x: tickers[x]['quoteVolume'] if x in tickers else 0, reverse=True)
-                except:
-                    pass
-                return filtered_markets[:limit]
-        except:
-            print("Falling back to hardcoded popular assets")
-            return []
+            usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
+            
+            # Filter out stablecoins and low volume pairs
+            excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST', 'FDUSD']
+            filtered_markets = [
+                symbol for symbol in usdt_markets 
+                if not any(excluded in symbol for excluded in excluded_coins)
+            ]
+            
+            # Get tickers for volume sorting
+            try:
+                # Limit to top 100 by default to avoid rate limits
+                sample_markets = filtered_markets[:100]
+                tickers = self.exchange.fetch_tickers(sample_markets)
+                
+                # Sort by volume
+                filtered_markets.sort(
+                    key=lambda x: tickers[x]['quoteVolume'] if x in tickers and tickers[x]['quoteVolume'] else 0, 
+                    reverse=True
+                )
+            except Exception as e:
+                print(f"Volume sorting failed, using default order: {e}")
+                # Use hardcoded popular pairs if sorting fails
+                return self._get_hardcoded_crypto_pairs(limit)
+                
+            return filtered_markets[:limit]
+            
+        except Exception as e:
+            print(f"Error getting popular assets from CCXT: {e}")
+            return self._get_hardcoded_crypto_pairs(limit)
+
+    def _get_hardcoded_crypto_pairs(self, limit):
+        """Fallback popular crypto pairs - EXTENDED LIST"""
+        popular_pairs = [
+            'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT',
+            'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'DOGE/USDT', 'MATIC/USDT',
+            'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'UNI/USDT', 'XLM/USDT',
+            'ETC/USDT', 'XMR/USDT', 'EOS/USDT', 'AAVE/USDT', 'ALGO/USDT',
+            'NEAR/USDT', 'FIL/USDT', 'SAND/USDT', 'AXS/USDT', 'THETA/USDT',
+            'EGLD/USDT', 'FTM/USDT', 'XTZ/USDT', 'HBAR/USDT', 'MANA/USDT',
+            'APE/USDT', 'GALA/USDT', 'CHZ/USDT', 'ENJ/USDT', 'FLOW/USDT',
+            'ICP/USDT', 'VET/USDT', 'TRX/USDT', 'EOS/USDT', 'XEM/USDT'
+        ]
+        return popular_pairs[:limit]
 
 class YFinanceDataProvider(DataProvider):
-    def __init__(self, market_type='saham_id'):
+    def __init__(self, market_type='auto'):
         self.market_type = market_type
-        self.fallback_av = AlphaVantageProvider() # Only fallback ke Alpha
-    def _convert_symbol(self, symbol, target='av'):
-        base = symbol.split('=')[0] if '=X' in symbol else symbol.split('.')[0] if '.JK' in symbol else symbol
-        if target == 'av':
-            if self.market_type == 'forex':
-                from_curr, to_curr = base[:3], base[3:]
-                return f"{from_curr}/{to_curr}"
-            return base
-        return symbol
-    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
+        
+    def _detect_symbol_type(self, symbol):
+        """Auto-detect symbol type for proper handling"""
+        if '=X' in symbol:
+            return 'forex'
+        elif '.JK' in symbol:
+            return 'saham_id'
+        elif '/' in symbol:
+            return 'crypto'
+        else:
+            return 'stock'
+
+    def get_ohlcv(self, symbol, timeframe='1d', limit=200):
         try:
-            interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
-            interval = interval_map.get(timeframe, '1h')
-            period = '5d' if interval == '1h' and limit <= 120 else '2mo' if interval == '1h' else '1y'
+            # Map timeframe to yfinance format
+            interval_map = {
+                '1m': '1m', '2m': '2m', '5m': '5m', '15m': '15m', '30m': '30m',
+                '1h': '1h', '1d': '1d', '5d': '5d', '1wk': '1wk', '1mo': '1mo'
+            }
+            interval = interval_map.get(timeframe, '1d')
+            
+            # Determine period based on timeframe and limit
+            if interval in ['1m', '2m', '5m', '15m', '30m']:
+                period = '7d' if limit <= 1000 else '60d'
+            elif interval == '1h':
+                period = '60d'
+            else:
+                period = '1y' if limit <= 252 else '2y'
+
             ticker = yf.Ticker(symbol)
             df = ticker.history(period=period, interval=interval)
-            if len(df) > limit:
-                df = df.tail(limit)
-            df.reset_index(inplace=True)
-            df.columns = [col.lower() for col in df.columns]
-            if 'date' in df.columns:
-                df.rename(columns={'date': 'timestamp'}, inplace=True)
-            elif 'datetime' in df.columns:
-                df.rename(columns={'datetime': 'timestamp'}, inplace=True)
-            df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-            return df
-        except Exception as e:
-            print(f"Error getting data from yfinance for {symbol}: {e}")
-            try:
-                conv_symbol = self._convert_symbol(symbol, 'av')
-                print(f"Falling back to AlphaVantageProvider with symbol: {conv_symbol}")
-                return self.fallback_av.get_ohlcv(conv_symbol, timeframe, limit)
-            except:
+            
+            if df.empty:
+                print(f"No data returned from yfinance for {symbol}")
                 return None
+                
+            # Reset index and rename columns
+            df.reset_index(inplace=True)
+            if 'Date' in df.columns:
+                df.rename(columns={'Date': 'timestamp'}, inplace=True)
+            elif 'Datetime' in df.columns:
+                df.rename(columns={'Datetime': 'timestamp'}, inplace=True)
+                
+            # Ensure all required columns exist
+            required_cols = ['open', 'high', 'low', 'close', 'volume']
+            for col in required_cols:
+                if col not in df.columns:
+                    df[col] = 0
+                    
+            df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+            
+            # Handle timezone-naive timestamps
+            if hasattr(df['timestamp'].iloc[0], 'tz') and df['timestamp'].iloc[0].tz is not None:
+                df['timestamp'] = df['timestamp'].dt.tz_localize(None)
+                
+            return df.tail(limit)
+            
+        except Exception as e:
+            print(f"Error getting OHLCV from yfinance for {symbol}: {e}")
+            return None
+
     def get_ticker(self, symbol):
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
+            
+            # Try to get current price
             hist = ticker.history(period='1d', interval='1m')
-            last_price = hist['Close'].iloc[-1] if not hist.empty else info.get('regularMarketPrice', 0)
-            return {'last': last_price, 'volume': info.get('volume', 0)}
+            if not hist.empty:
+                last_price = hist['Close'].iloc[-1]
+                volume = hist['Volume'].iloc[-1] if 'Volume' in hist.columns else info.get('volume', 0)
+            else:
+                last_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                volume = info.get('volume', 0)
+                
+            return {
+                'last': last_price,
+                'volume': volume,
+                'high': info.get('dayHigh', 0),
+                'low': info.get('dayLow', 0)
+            }
+            
         except Exception as e:
             print(f"Error getting ticker from yfinance for {symbol}: {e}")
-            try:
-                conv_symbol = self._convert_symbol(symbol, 'av')
-                print(f"Falling back to AlphaVantageProvider with symbol: {conv_symbol}")
-                return self.fallback_av.get_ticker(conv_symbol)
-            except:
-                return None
+            return None
+
     def get_popular_assets(self, limit=50):
-        if self.market_type == 'saham_id':
-            return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BBRI.JK', 'ANTM.JK', 'UNVR.JK', 'INDF.JK', 'GOTO.JK'][:limit]
-        elif self.market_type == 'forex':
-            return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X'][:limit]
-        return []
+        symbol_type = self.market_type if self.market_type != 'auto' else 'stock'
+        
+        if symbol_type == 'saham_id':
+            return self._get_indonesian_stocks(limit)
+        elif symbol_type == 'forex':
+            return self._get_forex_pairs(limit)
+        else:
+            return self._get_international_stocks(limit)
+
+    def _get_indonesian_stocks(self, limit):
+        """Get popular Indonesian stocks - EXTENDED LIST"""
+        # Extended list of popular Indonesian stocks (LQ45 and more)
+        popular_id_stocks = [
+            'BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK',
+            'BBRI.JK', 'UNVR.JK', 'INDF.JK', 'ICBP.JK', 'ADRO.JK',
+            'ANTM.JK', 'AKRA.JK', 'ASSA.JK', 'BUKA.JK', 'CPIN.JK',
+            'EMTK.JK', 'ERAA.JK', 'EXCL.JK', 'GGRM.JK', 'HMSP.JK',
+            'ICBP.JK', 'INCO.JK', 'INDF.JK', 'JPFA.JK', 'KLBF.JK',
+            'MDKA.JK', 'MIKA.JK', 'MNCN.JK', 'PGAS.JK', 'PTBA.JK',
+            'PTPP.JK', 'SMGR.JK', 'TBIG.JK', 'TINS.JK', 'TKIM.JK',
+            'TLKM.JK', 'TOWR.JK', 'TPIA.JK', 'UNTR.JK', 'UNVR.JK',
+            'WIKA.JK', 'WSKT.JK', 'WTON.JK', 'ACES.JK', 'ADMR.JK',
+            'AMRT.JK', 'ARTO.JK', 'ASRI.JK', 'BACA.JK', 'BESS.JK',
+            'BRIS.JK', 'BRMS.JK', 'BSDE.JK', 'BTPS.JK', 'CLEO.JK',
+            'CMNP.JK', 'CPRO.JK', 'CTRA.JK', 'DMAS.JK', 'DNET.JK',
+            'DOID.JK', 'ELSA.JK', 'ESSA.JK', 'ESTI.JK', 'EXCL.JK',
+            'FIRE.JK', 'GJTL.JK', 'GOTO.JK', 'HRUM.JK', 'ICON.JK',
+            'INCO.JK', 'INTP.JK', 'ITMG.JK', 'JPFA.JK', 'KAEF.JK',
+            'KINO.JK', 'KLBF.JK', 'LINK.JK', 'LPPF.JK', 'MAPI.JK',
+            'MDKA.JK', 'MEDC.JK', 'MIKA.JK', 'MLPT.JK', 'MNCN.JK',
+            'MPMX.JK', 'MTEL.JK', 'MYOR.JK', 'PBSA.JK', 'PGAS.JK',
+            'PTBA.JK', 'PTPP.JK', 'PWON.JK', 'SIDO.JK', 'SILO.JK',
+            'SMGR.JK', 'SRIL.JK', 'SRTG.JK', 'TINS.JK', 'TKIM.JK',
+            'TLKM.JK', 'TOWR.JK', 'TPIA.JK', 'UNTR.JK', 'UNVR.JK',
+            'WIKA.JK', 'WSKT.JK', 'WTON.JK'
+        ]
+        return popular_id_stocks[:limit]
+
+    def _get_forex_pairs(self, limit):
+        """Get popular forex pairs - EXTENDED LIST"""
+        # Extended list of popular forex pairs
+        popular_forex = [
+            'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'USDCHF=X', 'AUDUSD=X',
+            'USDCAD=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+            'EURCHF=X', 'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X',
+            'EURAUD=X', 'GBPCHF=X', 'AUDCAD=X', 'AUDCHF=X', 'AUDNZD=X',
+            'NZDJPY=X', 'GBPAUD=X', 'GBPCAD=X', 'EURSEK=X', 'EURNOK=X',
+            'USDSEK=X', 'USDNOK=X', 'USDSGD=X', 'USDHKD=X', 'USDCNY=X',
+            'USDMXN=X', 'USDZAR=X', 'USDTRY=X', 'USDINR=X', 'USDBRL=X',
+            'USDRUB=X', 'USDKRW=X', 'USDTWD=X', 'USDTHB=X', 'USDPHP=X'
+        ]
+        return popular_forex[:limit]
+
+    def _get_international_stocks(self, limit):
+        """Get popular international stocks"""
+        popular_stocks = [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 
+            'META', 'NVDA', 'JPM', 'JNJ', 'V',
+            'PG', 'UNH', 'HD', 'DIS', 'PYPL',
+            'NFLX', 'ADBE', 'CRM', 'INTC', 'CSCO',
+            'PFE', 'WMT', 'VZ', 'KO', 'PEP',
+            'T', 'ABT', 'TMO', 'COST', 'AVGO',
+            'LLY', 'XOM', 'CVX', 'MRK', 'ABBV',
+            'BAC', 'WFC', 'C', 'GS', 'MS',
+            'SPY', 'QQQ', 'IWM', 'DIA', 'VIXY'
+        ]
+        return popular_stocks[:limit]
+
 class SolanaPumpFunProvider:
-    def __init__(self, rpc_url):
-        self.client = Client(rpc_url)
-        self.program_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
-        self.dex_provider = DexScreenerProvider() # Integrasi DexScreener
-   
+    def __init__(self, rpc_url=None):
+        self.rpc_url = rpc_url or "https://api.mainnet-beta.solana.com"
+        self.client = Client(self.rpc_url)
+        self.dex_provider = DexScreenerProvider()
+
     async def monitor_new_tokens(self, limit=10):
-        results = []
-        try:
-            async with connect(self.client._provider.endpoint_uri + "/") as websocket:
-                await websocket.logs_subscribe(
-                    {"mentions": [self.program_id]},
-                    commitment="finalized"
-                )
-                async for msg in websocket:
-                    if "create" in str(msg.result.value.logs): # Simplified
-                        token_mint = self.extract_token_mint(msg)
-                        if token_mint:
-                            ticker = await self.get_solana_ticker(token_mint)
-                            results.append({'symbol': token_mint, 'ticker': ticker})
-                            if len(results) >= limit:
-                                break
-        except Exception as e:
-            print(f"Error monitoring Pump.fun: {e}")
-        return results
-   
-    def extract_token_mint(self, msg):
-        # Placeholder (real: parse logs untuk dapat mint address)
-        return "EXAMPLE_MINT_TOKEN" # Ganti dengan parsing real dari logs
-    async def get_solana_ticker(self, mint):
-        # Gunakan DexScreener untuk fetch real ticker (misal search pair dengan mint)
-        # Asumsi mint adalah tokenAddress, chain 'solana'
-        # Contoh: Search pair 'mint USDC' atau fetch token pairs
-        return self.dex_provider.get_ticker('solana', mint) # Return {'last': price, 'volume': vol}
+        """Monitor new tokens on Pump.fun"""
+        print("Pump.fun monitoring requires WebSocket connection setup...")
+        return []
