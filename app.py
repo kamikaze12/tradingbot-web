@@ -71,6 +71,7 @@ def main():
         "latest_results": [],
         "selected_for_entry": {},
         "custom_result": None,
+        "debug_info": "",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -109,6 +110,16 @@ def main():
         if bot.mode:
             st.success(f"Mode: {bot.mode.upper()}")
 
+            # Debug info
+            if st.checkbox("Show Debug Info"):
+                try:
+                    assets = bot.get_popular_assets(5)
+                    st.session_state.debug_info = f"Debug - Assets type: {type(assets)}, length: {len(assets) if hasattr(assets, '__len__') else 'N/A'}, sample: {assets[:3] if assets else 'None'}"
+                    st.write(st.session_state.debug_info)
+                except Exception as e:
+                    st.session_state.debug_info = f"Debug Error: {e}"
+                    st.write(st.session_state.debug_info)
+
             if st.button("🔄 Refresh Semua Data", key="refresh_all"):
                 try:
                     st.session_state.positions_data = bot.get_active_positions()
@@ -139,7 +150,13 @@ def main():
         if st.button("Scan Aset", key="scan_assets"):
             with st.spinner("Scanning..."):
                 try:
+                    # Test get_popular_assets first
+                    test_assets = bot.get_popular_assets(5)
+                    st.info(f"Test: Found {len(test_assets) if hasattr(test_assets, '__len__') else 'N/A'} assets")
+                    
+                    # Now do the actual scan
                     st.session_state.scanned_results = bot.scan_potential_assets(50)
+                    
                     if st.session_state.scanned_results:
                         st.success(f"Found {len(st.session_state.scanned_results)} signals!")
                     else:
@@ -147,6 +164,8 @@ def main():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error during scanning: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
         # Tampilkan hasil scan
         if st.session_state.scanned_results:
