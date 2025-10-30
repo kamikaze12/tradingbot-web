@@ -71,7 +71,7 @@ def main():
         "latest_results": [],
         "selected_for_entry": {},
         "custom_result": None,
-        "debug_info": "",
+        "pump_fun_results": [],
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -100,6 +100,7 @@ def main():
                     st.session_state.selected_symbols = []
                     st.session_state.selected_analysis = None
                     st.session_state.selected_for_entry = {}
+                    st.session_state.pump_fun_results = []
                     st.success(f"Mode {mode_choice} berhasil diatur!")
                     st.rerun()
                 else:
@@ -109,16 +110,6 @@ def main():
 
         if bot.mode:
             st.success(f"Mode: {bot.mode.upper()}")
-
-            # Debug info
-            if st.checkbox("Show Debug Info"):
-                try:
-                    assets = bot.get_popular_assets(5)
-                    st.session_state.debug_info = f"Debug - Assets type: {type(assets)}, length: {len(assets) if hasattr(assets, '__len__') else 'N/A'}, sample: {assets[:3] if assets else 'None'}"
-                    st.write(st.session_state.debug_info)
-                except Exception as e:
-                    st.session_state.debug_info = f"Debug Error: {e}"
-                    st.write(st.session_state.debug_info)
 
             if st.button("🔄 Refresh Semua Data", key="refresh_all"):
                 try:
@@ -147,27 +138,61 @@ def main():
     with tab1:
         st.subheader("Scan Top Aset")
 
+        # Tampilkan opsi scan khusus untuk crypto
+        if bot.mode == "crypto":
+            scan_option = st.radio("Pilih jenis scan:", ["Standard Crypto", "Pump Fun Tokens"], key="scan_option")
+        else:
+            scan_option = "Standard"
+            st.info("Mode Standard untuk Forex dan Saham Indonesia")
+
         if st.button("Scan Aset", key="scan_assets"):
             with st.spinner("Scanning..."):
                 try:
-                    # Test get_popular_assets first
-                    test_assets = bot.get_popular_assets(5)
-                    st.info(f"Test: Found {len(test_assets) if hasattr(test_assets, '__len__') else 'N/A'} assets")
-                    
-                    # Now do the actual scan
-                    st.session_state.scanned_results = bot.scan_potential_assets(50)
-                    
-                    if st.session_state.scanned_results:
-                        st.success(f"Found {len(st.session_state.scanned_results)} signals!")
+                    if bot.mode == "crypto" and scan_option == "Pump Fun Tokens":
+                        # Scan Pump Fun tokens
+                        st.session_state.pump_fun_results = asyncio.run(bot.scan_pump_fun(10))
+                        st.success(f"Found {len(st.session_state.pump_fun_results)} Pump Fun tokens!")
                     else:
-                        st.info("No signals found in this scan.")
+                        # Standard scan
+                        st.session_state.scanned_results = bot.scan_potential_assets(50)
+                        if st.session_state.scanned_results:
+                            st.success(f"Found {len(st.session_state.scanned_results)} signals!")
+                        else:
+                            st.info("No signals found in this scan.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error during scanning: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
 
-        # Tampilkan hasil scan
+        # Tampilkan hasil scan Pump Fun
+        if st.session_state.pump_fun_results and bot.mode == "crypto" and scan_option == "Pump Fun Tokens":
+            st.subheader("🚀 Pump Fun Tokens Baru")
+            
+            for i, token in enumerate(st.session_state.pump_fun_results, 1):
+                col1, col2, col3 = st.columns([3, 2, 1])
+                
+                with col1:
+                    st.write(f"**{i}. {token['symbol']}**")
+                    st.write(f"Address: `{token['address'][:10]}...`")
+                    if token.get('pair_url'):
+                        st.write(f"[View on DexScreener]({token['pair_url']})")
+                
+                with col2:
+                    st.write(f"Price: ${token['price_usd']:.6f}")
+                    st.write(f"Volume 24h: ${token['volume_24h']:,.2f}")
+                    st.write(f"Liquidity: ${token['liquidity']:,.2f}")
+                
+                with col3:
+                    if st.button(f"Analisis", key=f"analyze_pump_{token['symbol']}"):
+                        st.session_state.selected_analysis = {
+                            'symbol': token['symbol'],
+                            'current_price': token['price_usd'],
+                            'action': 'NEUTRAL',
+                            'score': 0,
+                            'volume': token['volume_24h']
+                        }
+                        st.rerun()
+
+        # Tampilkan hasil scan standard
         if st.session_state.scanned_results:
             st.subheader("Top Aset Potensial:")
 
@@ -252,6 +277,98 @@ def main():
                                 st.error("Gagal tambah posisi.")
                         except Exception as e:
                             st.error(f"Error adding position: {e}")
+
+    # ===============================
+    # Tab 2: Analisis Aset
+    # ===============================
+    with tab2:
+        st.subheader("🔍 Analisis Aset Spesifik")
+        
+        # Input untuk simbol tertentu
+        symbol_to_analyze = st.text_input("Masukkan simbol aset:", key="analyze_symbol")
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            if st.button("🚀 Analisis Sekarang", key="analyze_btn"):
+                if symbol_to_analyze:
+                    with st.spinner("Menganalisis..."):
+                        try:
+                            analysis = bot.analyze_asset(symbol_to_analyze)
+                            if analysis:
+                                st.session_state.selected_analysis = analysis
+                                st.success(f"Analisis untuk {symbol_to_analyze} selesai!")
+                            else:
+                                st.error(f"Tidak dapat menganalisis {symbol_to_analyze} atau sinyal tidak cukup kuat.")
+                        except Exception as e:
+                            st.error(f"Error analyzing {symbol_to_analyze}: {e}")
+                else:
+                    st.warning("Masukkan simbol aset terlebih dahulu.")
+        
+        # Tampilkan hasil analisis
+        if st.session_state.selected_analysis:
+            analysis = st.session_state.selected_analysis
+            st.subheader(f"📊 Hasil Analisis untuk {analysis['symbol']}")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("🎯 Aksi", analysis['action'])
+                st.metric("⭐ Skor Total", analysis.get('score', 'N/A'))
+                st.metric("💰 Harga Saat Ini", f"{analysis['current_price']:.5f}")
+                st.metric("📈 RSI", f"{analysis.get('rsi', 'N/A'):.2f}")
+            
+            with col2:
+                st.metric("📈 Trend", analysis.get('trend', 'N/A'))
+                st.metric("🔊 Volume Ratio", f"{analysis.get('volume_ratio', 'N/A'):.2f}")
+                st.metric("📏 ATR", f"{analysis.get('atr', 'N/A'):.5f}")
+                st.metric("📶 EMA Trend", analysis.get('ema_trend', 'N/A'))
+            
+            # Input untuk entry price dan tombol untuk menambahkan ke posisi
+            if analysis['action'] in ['LONG', 'SHORT']:
+                st.markdown("---")
+                st.subheader("🎯 Tambah ke Posisi Aktif")
+                
+                entry_price = st.number_input(
+                    "Harga Entry",
+                    value=analysis.get('ideal_entry', analysis['current_price']),
+                    step=0.001,
+                    key=f"entry_analysis_{analysis['symbol']}"
+                )
+                
+                if st.button("✅ Tambahkan ke Posisi Aktif", key=f"add_analysis_{analysis['symbol']}"):
+                    try:
+                        # Calculate TP and SL based on the entry price and the analysis
+                        if analysis["action"] == "LONG":
+                            tp1 = entry_price + (analysis["tp1"] - analysis["ideal_entry"])
+                            tp2 = entry_price + (analysis["tp2"] - analysis["ideal_entry"])
+                            tp3 = entry_price + (analysis["tp3"] - analysis["ideal_entry"])
+                            sl = entry_price - (analysis["ideal_entry"] - analysis["sl"])
+                        else:  # SHORT
+                            tp1 = entry_price - (analysis["ideal_entry"] - analysis["tp1"])
+                            tp2 = entry_price - (analysis["ideal_entry"] - analysis["tp2"])
+                            tp3 = entry_price - (analysis["ideal_entry"] - analysis["tp3"])
+                            sl = entry_price + (analysis["sl"] - analysis["ideal_entry"])
+                        
+                        position_id = bot.db.save_position(
+                            symbol=analysis['symbol'],
+                            market_type=bot.mode,
+                            action=analysis["action"],
+                            entry_price=entry_price,
+                            tp1=tp1,
+                            tp2=tp2,
+                            tp3=tp3,
+                            sl=sl,
+                            entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
+                            entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
+                        )
+                        if position_id:
+                            st.success(f"Posisi {analysis['symbol']} ditambahkan!")
+                            # Refresh positions data
+                            st.session_state.positions_data = bot.get_active_positions()
+                            st.rerun()
+                        else:
+                            st.error("Gagal tambah posisi.")
+                    except Exception as e:
+                        st.error(f"Error adding position: {e}")
 
     # ===============================
     # Tab 3: Custom Entry (Fixed TP Order)
