@@ -64,7 +64,7 @@ class TradingBot:
                 "timeframe": "4h",
                 "atr_multiplier": 1.5,
                 "entry_range_pct": 0.015,
-                "exchange_crypto": "binance",
+                "exchange_crypto": "bybit",  # Changed from binance to bybit
                 "analysis_coins_limit": 50,
                 "ohlcv_limit": 200,
                 "min_score": 2,
@@ -85,21 +85,25 @@ class TradingBot:
         
         try:
             if self.mode == "crypto":
-                exchange_id = self.config.get("exchange_crypto", "binance")
+                exchange_id = self.config.get("exchange_crypto", "bybit")  # Default to bybit
+                print(f"Initializing crypto provider with exchange: {exchange_id}")
                 self.data_provider = CCXTDataProvider(exchange_id, "", "")
                 self.pump_provider = DexScreenerProvider()
+                print(f"✓ Crypto provider initialized with {getattr(self.data_provider, 'exchange_id', 'fallback')}")
             elif self.mode == "forex":
                 self.data_provider = YFinanceDataProvider(market_type="forex")
+                print("✓ Forex provider initialized")
             elif self.mode == "saham_id":
                 self.data_provider = YFinanceDataProvider(market_type="saham_id")
+                print("✓ Saham Indonesia provider initialized")
             else:
                 raise ValueError(f"Unsupported mode: {mode}")
             
-            print(f"Mode set to: {self.mode.upper()}")
+            print(f"✓ Mode set to: {self.mode.upper()}")
             return True
             
         except Exception as e:
-            print(f"Failed to set mode {mode}: {e}")
+            print(f"✗ Failed to set mode {mode}: {e}")
             return False
 
     def get_popular_assets(self, limit=None):
@@ -445,3 +449,11 @@ class TradingBot:
         except Exception as e:
             print(f"Error closing position: {e}")
             return False
+
+    def cleanup_old_data(self, days=7):
+        """Clean up old data from database"""
+        try:
+            return self.db.cleanup_old_data(days)
+        except Exception as e:
+            print(f"Error cleaning up old data: {e}")
+            return {'signals': 0, 'positions': 0, 'history': 0}
