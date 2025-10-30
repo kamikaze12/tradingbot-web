@@ -209,9 +209,9 @@ class CCXTDataProvider(DataProvider):
                         return df
                 except Exception as fb_e:
                     print(f"Fallback error for {conv_symbol}: {fb_e}")
-            # Ultimate fallback: dummy data if all fail (for testing)
-            print(f"All providers failed for {symbol}. Returning dummy DF.")
-            dates = pd.date_range(end=pd.Timestamp.now(), periods=limit, freq='H')
+            # Ultimate dummy fallback
+            print(f"All failed for OHLCV {symbol}. Returning dummy DF.")
+            dates = pd.date_range(end=pd.Timestamp.now(), periods=limit, freq='D')
             dummy_data = {
                 'timestamp': dates,
                 'open': [1.0] * limit,
@@ -238,8 +238,8 @@ class CCXTDataProvider(DataProvider):
                         return fb_ticker
                 except Exception as fb_e:
                     print(f"Fallback ticker error for {conv_symbol}: {fb_e}")
-            # Ultimate fallback: dummy ticker
-            print(f"All providers failed for ticker {symbol}. Returning dummy.")
+            # Dummy fallback
+            print(f"All failed for ticker {symbol}. Returning dummy.")
             return {'last': 1.0, 'volume': 1000}
 
     def get_popular_assets(self, limit=100):
@@ -345,62 +345,24 @@ class YFinanceDataProvider(DataProvider):
             return {'last': 1.0, 'volume': 1000}
 
     def get_popular_assets(self, limit=50):
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.google.com/',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-        }
+        # Removed dynamic fetch due to reliability issues; using expanded hardcoded for stability
         if self.market_type == 'saham_id':
-            try:
-                url = "https://www.investing.com/indices/idx-composite-components"
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                soup = BeautifulSoup(response.text, 'html.parser')
-                rows = soup.find_all('tr')
-                tickers = []
-                for row in rows[1:]:
-                    cells = row.find_all('td')
-                    if len(cells) > 1:
-                        ticker = cells[1].text.strip()
-                        if len(ticker) == 4 and ticker.isupper():
-                            tickers.append(ticker)
-                assets = [ticker + '.JK' for ticker in tickers[:limit]]
-                if assets:
-                    print(f"Investing.com saham ID: {len(assets)} fetched.")
-                    return assets
-                else:
-                    print("No tickers found in saham ID fetch.")
-            except Exception as e:
-                print(f"Error fetching saham ID from investing.com: {e}")
-            # Hardcoded fallback expanded
             hardcoded = ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK', 'ADRO.JK', 'UNTR.JK', 'PGAS.JK', 'ANTM.JK',
                          'INDF.JK', 'CPIN.JK', 'KLBF.JK', 'UNVR.JK', 'HMSP.JK', 'GGRM.JK', 'MDKA.JK', 'TPIA.JK', 'EXCL.JK', 'ISAT.JK',
-                         'SMGR.JK', 'INTP.JK', 'AKRA.JK', 'JSMR.JK', 'SRTG.JK', 'TBIG.JK', 'TOWR.JK', 'WIKA.JK', 'WSKT.JK', 'PTPP.JK']
-            print(f"Falling back to hardcoded saham ID: {len(hardcoded[:limit])}")
-            return hardcoded[:limit]
+                         'SMGR.JK', 'INTP.JK', 'AKRA.JK', 'JSMR.JK', 'SRTG.JK', 'TBIG.JK', 'TOWR.JK', 'WIKA.JK', 'WSKT.JK', 'PTPP.JK',
+                         'ADHI.JK', 'ACES.JK', 'AMRT.JK', 'ARTO.JK', 'AVIA.JK', 'BBRI.JK', 'BBTN.JK', 'BFIN.JK', 'BMAS.JK', 'BRMS.JK',
+                         'BUKA.JK', 'CITA.JK', 'DNET.JK', 'DOID.JK', 'EMTK.JK', 'ESSA.JK', 'FAPA.JK', 'FILM.JK', 'GOTO.JK', 'HRUM.JK']
+            assets = hardcoded[:limit]
+            print(f"Hardcoded saham ID assets: {len(assets)} returned.")
+            return assets
         elif self.market_type == 'forex':
-            try:
-                url = "https://www.investing.com/currencies/"
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                soup = BeautifulSoup(response.text, 'html.parser')
-                pairs = [a.text.upper().replace('/', '') for a in soup.find_all('a', class_='js-quote-ticker-link') if a.text]
-                unique_pairs = list(set(pairs))
-                assets = [pair + '=X' for pair in unique_pairs if len(pair) == 6][:limit]
-                if assets:
-                    print(f"Investing.com forex: {len(assets)} fetched.")
-                    return assets
-                else:
-                    print("No pairs found in forex fetch.")
-            except Exception as e:
-                print(f"Error fetching forex from investing.com: {e}")
-            # Hardcoded fallback expanded
             hardcoded = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 'NZDUSD=X', 'USDCHF=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
                          'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'NZDCAD=X', 'EURAUD=X', 'GBPAUD=X', 'NZDJPY=X',
-                         'USDMXN=X', 'USDTRY=X', 'USDCNY=X', 'USDINR=X', 'USDBRL=X', 'USDRUB=X', 'USDZAR=X', 'USDKRW=X', 'USDSEK=X', 'USDNOK=X']
-            print(f"Falling back to hardcoded forex: {len(hardcoded[:limit])}")
-            return hardcoded[:limit]
+                         'USDMXN=X', 'USDTRY=X', 'USDCNY=X', 'USDINR=X', 'USDBRL=X', 'USDRUB=X', 'USDZAR=X', 'USDKRW=X', 'USDSEK=X', 'USDNOK=X',
+                         'USDPLN=X', 'USDSGD=X', 'USDHKD=X', 'USDDKK=X', 'EURCHF=X', 'GBCHF=X', 'AUDCHF=X', 'NZDCHF=X', 'CADCHF=X', 'EURSEK=X']
+            assets = hardcoded[:limit]
+            print(f"Hardcoded forex assets: {len(assets)} returned.")
+            return assets
         return []
 
 class SolanaPumpFunProvider:
