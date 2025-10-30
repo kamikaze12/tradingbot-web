@@ -39,8 +39,7 @@ class TradingBot:
         # === Core Modules ===
         self.strategy = TechnicalAnalysisStrategy(
             atr_multiplier=self.config.get("atr_multiplier", 1.5),
-            entry_range_pct=self.config.get("entry_range_pct", 0.015),
-            use_ml=self.config.get("use_ml", False)
+            entry_range_pct=self.config.get("entry_range_pct", 0.015)
         )
         self.notifier = SoundNotifier()
         self.db = DatabaseHandler()
@@ -49,9 +48,6 @@ class TradingBot:
         self.timeframe = self.config.get("timeframe", "4h")
         self.alert_active = False
         self.scanner_active = False
-        self.entry_positions = {}
-        self.position_ids = {}
-        self.last_scan_time = None
         
         # === Background Tasks ===
         self.scheduler_thread = None
@@ -109,48 +105,76 @@ class TradingBot:
     def get_popular_assets(self, limit=None):
         """Get popular assets for the selected market"""
         if not self.data_provider:
+            print("No data provider available")
             return []
 
         limit = limit or self.config.get("analysis_coins_limit", 50)
         
         try:
+            print(f"Getting popular assets for {self.mode}...")
             assets = self.data_provider.get_popular_assets(limit)
             
-            # Ensure we return a list
+            # DEBUG: Print what we got
+            print(f"DEBUG: Raw assets from provider: {assets}")
+            print(f"DEBUG: Type of assets: {type(assets)}")
+            
+            # Handle different return types
             if assets is None:
+                print("Provider returned None, using fallback")
                 return self._get_fallback_assets(limit)
-            elif isinstance(assets, (list, tuple)):
-                return list(assets)[:limit]
+            elif isinstance(assets, int):
+                print(f"Provider returned integer: {assets}, using fallback")
+                return self._get_fallback_assets(limit)
+            elif isinstance(assets, str):
+                print(f"Provider returned string: {assets}, converting to list")
+                return [assets]
+            elif hasattr(assets, '__iter__'):
+                # It's iterable (list, tuple, etc.)
+                assets_list = list(assets)
+                print(f"Converted to list: {assets_list}")
+                return assets_list[:limit]
             else:
-                # If it's a single item, convert to list
-                return [assets][:limit]
+                print(f"Unexpected type: {type(assets)}, using fallback")
+                return self._get_fallback_assets(limit)
                 
         except Exception as e:
-            print(f"Error fetching popular assets: {e}")
+            print(f"Error in get_popular_assets: {e}")
             return self._get_fallback_assets(limit)
 
     def _get_fallback_assets(self, limit):
         """Get fallback assets when primary source fails"""
+        print(f"Using fallback assets for {self.mode}")
+        
         if self.mode == "saham_id":
-            return ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBRI.JK'][:limit]
+            fallback = ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBRI.JK']
         elif self.mode == "forex":
-            return ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X'][:limit]
+            fallback = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X']
         else:  # crypto
-            return ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT'][:limit]
+            fallback = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT']
+        
+        return fallback[:limit]
 
     def scan_potential_assets(self, limit=None):
         """Scan popular assets and return potential trading signals"""
         if not self.data_provider:
+            print("No data provider for scanning")
             return []
 
-        # Get assets
+        print("Starting scan...")
+        
+        # Get assets with debugging
         assets = self.get_popular_assets(limit)
+        print(f"DEBUG: Final assets list: {assets}")
+        print(f"DEBUG: Type of final assets: {type(assets)}")
+        print(f"DEBUG: Length of assets: {len(assets) if hasattr(assets, '__len__') else 'No length'}")
         
         # Ensure assets is a list
         if not isinstance(assets, list):
+            print(f"CRITICAL: Assets is not a list! Type: {type(assets)}, Value: {assets}")
             assets = []
         
         if not assets:
+            print("No assets to scan")
             return []
             
         print(f"Scanning {len(assets)} assets for {self.mode}")
@@ -161,18 +185,37 @@ class TradingBot:
         
         for i, asset in enumerate(assets, 1):
             try:
-                asset_str = str(asset)
+                # Convert to string and validate
+                asset_str = str(asset).strip()
+                if not asset_str:
+                    print(f"Skipping empty asset at index {i}")
+                    continue
+                    
                 print(f"Analyzing {i}/{len(assets)}: {asset_str}")
                 
                 # Analyze asset
                 analysis = self.analyze_asset(asset_str)
                 
-                # Check if analysis is valid and meets minimum score
-                if (analysis and 
-                    analysis.get('action') in ['LONG', 'SHORT'] and 
+                # Validate analysis result
+                if not analysis:
+                    print(f"No analysis result for {asset_str}")
+                    continue
+                    
+                if not isinstance(analysis, dict):
+                    print(f"Analysis is not a dict for {asset_str}: {type(analysis)}")
+                    continue
+                    
+                # Check if we have required fields
+                required_fields = ['action', 'score', 'tp1', 'tp2', 'tp3', 'sl']
+                missing_fields = [field for field in required_fields if field not in analysis]
+                if missing_fields:
+                    print(f"Missing fields in analysis for {asset_str}: {missing_fields}")
+                    continue
+                
+                # Check action and score
+                if (analysis.get('action') in ['LONG', 'SHORT'] and 
                     abs(analysis.get('score', 0)) >= min_score):
                     
-                    # Add symbol to analysis
                     analysis['symbol'] = asset_str
                     analysis['market_type'] = self.mode
                     
@@ -196,51 +239,76 @@ class TradingBot:
 
         # Sort by absolute score (highest first)
         results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
+        print(f"Scan complete. Found {len(results)} signals.")
         return results[:max_signals]
 
     def _ensure_correct_tp_order(self, analysis):
         """Ensure TP levels are in correct order based on action"""
         try:
+            tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
+            
             if analysis['action'] == 'LONG':
                 # For LONG: TP1 < TP2 < TP3
-                tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
-                sorted_tps = sorted([tp1, tp2, tp3])
-                analysis['tp1'], analysis['tp2'], analysis['tp3'] = sorted_tps
+                if tp1 > tp2:
+                    tp1, tp2 = tp2, tp1
+                if tp2 > tp3:
+                    tp2, tp3 = tp3, tp2
+                if tp1 > tp2:
+                    tp1, tp2 = tp2, tp1
             else:  # SHORT
                 # For SHORT: TP1 > TP2 > TP3
-                tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
-                sorted_tps = sorted([tp1, tp2, tp3], reverse=True)
-                analysis['tp1'], analysis['tp2'], analysis['tp3'] = sorted_tps
+                if tp1 < tp2:
+                    tp1, tp2 = tp2, tp1
+                if tp2 < tp3:
+                    tp2, tp3 = tp3, tp2
+                if tp1 < tp2:
+                    tp1, tp2 = tp2, tp1
+            
+            analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp1, tp2, tp3
         except Exception as e:
             print(f"Error ensuring TP order: {e}")
 
     def analyze_asset(self, symbol):
         """Analyze a specific asset and return signal"""
-        if not self.data_provider:
+        if not self.data_provider or not symbol:
             return None
             
         try:
+            print(f"Fetching OHLCV data for {symbol}")
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
             
             # Validate DataFrame
-            if (df is None or 
-                not isinstance(df, pd.DataFrame) or 
-                len(df) < 50 or 
-                df.empty):
+            if df is None:
+                print(f"No data returned for {symbol}")
+                return None
+                
+            if not isinstance(df, pd.DataFrame):
+                print(f"Data is not DataFrame for {symbol}: {type(df)}")
+                return None
+                
+            if len(df) < 50:
+                print(f"Insufficient data for {symbol}: {len(df)} rows")
+                return None
+                
+            if df.empty:
+                print(f"Empty DataFrame for {symbol}")
                 return None
             
-            # Perform analysis
+            print(f"Performing analysis for {symbol}")
             analysis = self.strategy.analyze(df)
             
             # Validate analysis result
-            if (not analysis or 
-                not isinstance(analysis, dict) or
-                'action' not in analysis or
-                'score' not in analysis):
+            if analysis is None:
+                print(f"No analysis returned for {symbol}")
                 return None
                 
+            if not isinstance(analysis, dict):
+                print(f"Analysis is not dict for {symbol}: {type(analysis)}")
+                return None
+                
+            print(f"Analysis successful for {symbol}")
             return analysis
             
         except Exception as e:
@@ -250,17 +318,25 @@ class TradingBot:
     async def scan_pump_fun(self, limit=10):
         """Scan new tokens on Solana Pump Fun"""
         if not self.pump_provider:
+            print("No Pump Fun provider available")
             return []
             
         try:
+            print("Scanning Pump Fun tokens...")
             # Search for new tokens on Solana
             pairs = self.pump_provider.search_pairs("solana")
             
+            if not pairs:
+                print("No pairs found from Pump Fun")
+                return []
+                
             results = []
-            for pair in pairs[:limit]:
+            for i, pair in enumerate(pairs[:limit]):
                 try:
                     symbol = pair.get('baseToken', {}).get('symbol', 'Unknown')
                     token_address = pair.get('baseToken', {}).get('address', '')
+                    
+                    print(f"Processing token {i+1}/{min(len(pairs), limit)}: {symbol}")
                     
                     # Get token info
                     ticker_info = self.pump_provider.get_ticker('solana', token_address)
@@ -276,10 +352,12 @@ class TradingBot:
                             'pair_url': pair.get('url', '')
                         }
                         results.append(result)
+                        print(f"Added token: {symbol}")
                 except Exception as e:
                     print(f"Error processing token: {e}")
                     continue
             
+            print(f"Pump Fun scan complete. Found {len(results)} tokens.")
             return results
         except Exception as e:
             print(f"Error scanning Pump Fun: {e}")
