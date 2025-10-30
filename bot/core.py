@@ -8,14 +8,16 @@ import schedule
 import asyncio
 
 from dotenv import load_dotenv
-from strategies import TechnicalAnalysisStrategy
-from data_provider import (
+
+# Import relative untuk package bot
+from .strategies import TechnicalAnalysisStrategy
+from .data_provider import (
     CCXTDataProvider,
     YFinanceDataProvider,
     AlphaVantageProvider,
     DexScreenerProvider
 )
-from notifier import SoundNotifier
+from .notifier import SoundNotifier
 from database.db_handler import DatabaseHandler
 
 warnings.filterwarnings("ignore")
@@ -533,34 +535,47 @@ class TradingBot:
             }
         }
 
-# Utility function for quick testing
-def test_market_modes():
-    """Test function to verify all market modes work"""
-    bot = TradingBot()
-    
-    test_modes = ['crypto', 'forex', 'saham_id']
-    
-    for mode in test_modes:
-        print(f"\n{'='*50}")
-        print(f"Testing {mode.upper()} mode")
-        print(f"{'='*50}")
-        
-        if bot.set_mode(mode):
-            # Test popular assets
-            assets = bot.get_popular_assets(5)
-            print(f"Popular assets: {assets}")
+    # =========================================================
+    # Custom Entry Calculation (Fixed TP Order)
+    # =========================================================
+    def calculate_custom_entry(self, symbol, entry_price):
+        """Calculate TP/SL for custom entry with correct TP order"""
+        if not self.data_provider:
+            return None
             
-            # Test analysis
-            if assets:
-                test_asset = assets[0]
-                print(f"Analyzing {test_asset}...")
-                analysis = bot.analyze_asset(test_asset)
-                if analysis:
-                    print(f"Action: {analysis['action']}, Score: {analysis['score']}, Confidence: {analysis['confidence']}")
-                else:
-                    print("Analysis failed")
-        
-        time.sleep(2)  # Rate limiting between modes
+        try:
+            df = self.data_provider.get_ohlcv(symbol, self.timeframe, self.config.get("ohlcv_limit", 200))
+            if df is not None and len(df) >= 50:
+                atr = self.strategy.calculate_atr(df)
+                
+                # Ensure correct TP order: TP1 < TP2 < TP3 for LONG, TP1 > TP2 > TP3 for SHORT
+                tp1 = entry_price + (atr * self.strategy.atr_multiplier)
+                tp2 = entry_price + (atr * self.strategy.atr_multiplier * 2)
+                tp3 = entry_price + (atr * self.strategy.atr_multiplier * 3)
+                sl = entry_price - (atr * self.strategy.atr_multiplier)
+                
+                # Sort TP levels to ensure correct order
+                tp_levels = sorted([tp1, tp2, tp3])
+                
+                return {
+                    "symbol": symbol,
+                    "entry_price": float(entry_price),
+                    "tp1": float(tp_levels[0]),  # Smallest
+                    "tp2": float(tp_levels[1]),  # Middle
+                    "tp3": float(tp_levels[2]),  # Largest
+                    "sl": float(sl),
+                }
+                
+            print(f"Insufficient data for ATR calculation on {symbol}")
+            return None
+        except Exception as e:
+            print(f"Error calculating custom entry for {symbol}: {e}")
+            return None
 
-if __name__ == "__main__":
-    test_market_modes()
+    # =========================================================
+    # Pump Fun Integration
+    # =========================================================
+    async def scan_pump_fun(self):
+        """Scan new tokens on Solana Pump Fun"""
+        print("Pump.fun monitoring requires WebSocket connection setup...")
+        return []
