@@ -103,9 +103,10 @@ class TradingBot:
             return False
 
     def get_popular_assets(self, limit=None):
-        """Get popular assets for the selected market"""
+        """Get popular assets for the selected market with robust error handling"""
         if not self.data_provider:
-            return []
+            print("No data provider available")
+            return self._get_fallback_assets(limit)
 
         limit = limit or self.config.get("analysis_coins_limit", 50)
         
@@ -113,36 +114,44 @@ class TradingBot:
             print(f"Getting popular assets for {self.mode}...")
             assets = self.data_provider.get_popular_assets(limit)
             
-            # DEBUG: Check what we're getting
-            print(f"DEBUG get_popular_assets - Raw assets: {assets}")
-            print(f"DEBUG get_popular_assets - Type: {type(assets)}")
-            
-            # Handle the case where assets might be an integer
-            if isinstance(assets, int):
-                print(f"CRITICAL: Provider returned integer: {assets}")
-                return self._get_fallback_assets(limit)
-            
-            # If assets is None or empty, use fallback
+            # FIX: Comprehensive type checking and conversion
             if assets is None:
                 print("Provider returned None, using fallback")
+                return self._get_fallback_assets(limit)
+                
+            # Handle case where assets is an integer
+            if isinstance(assets, int):
+                print(f"Provider returned integer: {assets}, using fallback")
                 return self._get_fallback_assets(limit)
                 
             # Convert to list if it's not already
             if not isinstance(assets, list):
                 print(f"Converting non-list to list: {type(assets)}")
                 try:
-                    assets = list(assets)
-                except:
-                    print("Failed to convert to list, using fallback")
+                    # Handle pandas Series, tuples, etc.
+                    if hasattr(assets, '__iter__') and not isinstance(assets, str):
+                        assets = list(assets)
+                    else:
+                        print(f"Cannot convert {type(assets)} to list, using fallback")
+                        return self._get_fallback_assets(limit)
+                except Exception as e:
+                    print(f"Failed to convert to list: {e}, using fallback")
                     return self._get_fallback_assets(limit)
             
             # Filter out any non-string items and ensure we have strings
             cleaned_assets = []
             for asset in assets:
                 if asset is not None:
-                    cleaned_assets.append(str(asset).strip())
+                    asset_str = str(asset).strip()
+                    if asset_str:  # Only add non-empty strings
+                        cleaned_assets.append(asset_str)
             
-            print(f"DEBUG get_popular_assets - Cleaned assets: {cleaned_assets}")
+            print(f"Found {len(cleaned_assets)} assets after cleaning")
+            
+            if not cleaned_assets:
+                print("No valid assets found, using fallback")
+                return self._get_fallback_assets(limit)
+                
             return cleaned_assets[:limit]
                 
         except Exception as e:
@@ -154,17 +163,28 @@ class TradingBot:
         print(f"Using fallback assets for {self.mode}")
         
         if self.mode == "saham_id":
-            fallback = ['BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBRI.JK']
+            fallback = [
+                'BBCA.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBRI.JK',
+                'BBNI.JK', 'UNVR.JK', 'INDF.JK', 'ICBP.JK', 'ADRO.JK'
+            ]
         elif self.mode == "forex":
-            fallback = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X']
+            fallback = [
+                'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X',
+                'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X'
+            ]
         else:  # crypto
-            fallback = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT']
+            fallback = [
+                'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT',
+                'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'DOGE/USDT', 'MATIC/USDT'
+            ]
         
+        limit = limit or 10
         return fallback[:limit]
 
     def scan_potential_assets(self, limit=None):
-        """Scan popular assets and return potential trading signals"""
+        """Scan popular assets and return potential trading signals with robust error handling"""
         if not self.data_provider:
+            print("No data provider available for scanning")
             return []
 
         print("Starting scan...")
@@ -172,20 +192,10 @@ class TradingBot:
         # Get assets with extra validation
         assets = self.get_popular_assets(limit)
         
-        # CRITICAL FIX: Ensure assets is always a list and has length method
-        if not hasattr(assets, '__len__'):
-            print(f"CRITICAL: Assets has no length! Type: {type(assets)}, Value: {assets}")
-            assets = []
-        elif not isinstance(assets, list):
+        # FIX: Ensure assets is always a proper list
+        if not isinstance(assets, list):
             print(f"CRITICAL: Assets is not a list! Type: {type(assets)}, Value: {assets}")
-            try:
-                assets = list(assets)
-            except:
-                assets = []
-        
-        print(f"DEBUG scan_potential_assets - Final assets: {assets}")
-        print(f"DEBUG scan_potential_assets - Type: {type(assets)}")
-        print(f"DEBUG scan_potential_assets - Length: {len(assets)}")
+            assets = []
         
         if not assets:
             print("No assets to scan")
@@ -222,7 +232,7 @@ class TradingBot:
                     continue
                     
                 # Check if we have required fields
-                required_fields = ['action', 'score', 'tp1', 'tp2', 'tp3', 'sl']
+                required_fields = ['action', 'score']
                 missing_fields = [field for field in required_fields if field not in analysis]
                 if missing_fields:
                     print(f"Missing fields in analysis for {asset_str}: {missing_fields}")
@@ -261,6 +271,9 @@ class TradingBot:
     def _ensure_correct_tp_order(self, analysis):
         """Ensure TP levels are in correct order based on action"""
         try:
+            if 'tp1' not in analysis or 'tp2' not in analysis or 'tp3' not in analysis:
+                return
+                
             tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
             
             if analysis['action'] == 'LONG':
@@ -275,7 +288,7 @@ class TradingBot:
             print(f"Error ensuring TP order: {e}")
 
     def analyze_asset(self, symbol):
-        """Analyze a specific asset and return signal"""
+        """Analyze a specific asset and return signal with robust error handling"""
         if not self.data_provider or not symbol:
             return None
             
@@ -380,7 +393,9 @@ class TradingBot:
             )
             
             if df is not None and len(df) >= 50:
-                atr = self.strategy.calculate_atr(df)
+                # Use strategy's ATR calculation
+                indicators = self.strategy.calculate_technical_indicators(df)
+                atr = indicators['atr_14'].iloc[-1] if 'atr_14' in indicators else entry_price * 0.02
                 
                 # Calculate TP levels
                 tp1 = entry_price + (atr * self.strategy.atr_multiplier)
