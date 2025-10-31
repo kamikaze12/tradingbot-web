@@ -69,11 +69,19 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             return "NEUTRAL", 0
             
         # Calculate EMAs
-        ema_13 = talib.EMA(df['close'], timeperiod=13) if TALIB_AVAILABLE else df['close'].ewm(span=13).mean()
-        ema_21 = talib.EMA(df['close'], timeperiod=21) if TALIB_AVAILABLE else df['close'].ewm(span=21).mean()
+        if TALIB_AVAILABLE:
+            ema_13 = talib.EMA(df['close'], timeperiod=13)
+            ema_21 = talib.EMA(df['close'], timeperiod=21)
+            ema_13_last = ema_13[-1]
+            ema_21_last = ema_21[-1]
+        else:
+            ema_13 = df['close'].ewm(span=13).mean()
+            ema_21 = df['close'].ewm(span=21).mean()
+            ema_13_last = ema_13.iloc[-1]
+            ema_21_last = ema_21.iloc[-1]
         
         # Check crossover
-        ema_trend = "BULLISH" if ema_13.iloc[-1] > ema_21.iloc[-1] else "BEARISH"
+        ema_trend = "BULLISH" if ema_13_last > ema_21_last else "BEARISH"
         ema_score = 1 if ema_trend == "BULLISH" else -1
         
         return ema_trend, ema_score
@@ -84,7 +92,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             return 0.0
         if TALIB_AVAILABLE:
             atr = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
-            return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else 0.0
+            last_atr = atr[-1] if not np.isnan(atr[-1]) else 0.0
         else:
             # Fallback pandas calculation
             high_low = df['high'] - df['low']
@@ -93,7 +101,8 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             ranges = pd.concat([high_low, high_close, low_close], axis=1)
             true_range = np.max(ranges, axis=1)
             atr = true_range.rolling(14).sum() / 14
-            return atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else 0.0
+            last_atr = atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else 0.0
+        return last_atr
     
     def detect_triangle_patterns(self, df, period=20):
         """Detect various triangle patterns"""
@@ -542,7 +551,8 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         
         # Calculate RSI with fallback
         if TALIB_AVAILABLE:
-            current_rsi = talib.RSI(df['close'], timeperiod=14).iloc[-1]
+            rsi_array = talib.RSI(df['close'], timeperiod=14)
+            current_rsi = rsi_array[-1]
         else:
             # Simple RSI fallback
             price_diff = df['close'].diff()
@@ -569,9 +579,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         channel_wedge_patterns = self.detect_channel_wedge_patterns(df)
         harmonic_patterns = self.detect_harmonic_patterns(df)
         
-        # =========================================================
         # PHASE 2 ENHANCEMENTS - NEW INDICATORS
-        # =========================================================
         candlestick_patterns = self.detect_candlestick_patterns(df)
         momentum_indicators = self.calculate_momentum_indicators(df)
         market_regime = self.detect_market_regime(df)
@@ -614,9 +622,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             if detected:
                 pattern_score += 1  # All harmonic patterns get a small boost
                 
-        # =========================================================
         # PHASE 2 ENHANCEMENTS - CANDLESTICK PATTERN SCORING
-        # =========================================================
         candlestick_score = 0
         bullish_candles = ['hammer', 'bullish_engulfing', 'morning_star', 'three_white_soldiers', 'bullish_harami']
         bearish_candles = ['shooting_star', 'bearish_engulfing', 'evening_star', 'three_black_crows', 'bearish_harami']
@@ -641,9 +647,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         # Volume score
         volume_score = 1 if volume_ratio > 1.2 else 0 if volume_ratio > 0.8 else -1
         
-        # =========================================================
         # PHASE 2 ENHANCEMENTS - COMBINED SCORING
-        # =========================================================
         # Base score from original strategy
         base_score = trend_score + rsi_score + volume_score + pattern_score
         
@@ -676,9 +680,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         else:
             ideal_entry = entry_low = entry_high = tp1 = tp2 = tp3 = sl = None
         
-        # =========================================================
         # PHASE 2 ENHANCEMENTS - RISK METRICS CALCULATION
-        # =========================================================
         # Prepare initial result for risk calculation (FIX: Tambahkan current_price)
         initial_result = {
             'action': action,
@@ -707,22 +709,27 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         all_patterns = {**triangle_patterns, **channel_wedge_patterns, **harmonic_patterns, **candlestick_patterns}
         detected_patterns = [pattern for pattern, detected in all_patterns.items() if detected]
         
-        # Result
+        # Result (Tambahkan .item() untuk handle np scalar/array size 1)
+        def to_python_scalar(val):
+            if isinstance(val, np.ndarray) and val.size == 1:
+                return val.item()
+            return val
+        
         result = {
             'action': action,
-            'ideal_entry': float(ideal_entry) if ideal_entry is not None else None,
-            'entry_low': float(entry_low) if entry_low is not None else None,
-            'entry_high': float(entry_high) if entry_high is not None else None,
-            'tp1': float(tp1) if tp1 is not None else None,
-            'tp2': float(tp2) if tp2 is not None else None,
-            'tp3': float(tp3) if tp3 is not None else None,
-            'sl': float(sl) if sl is not None else None,
-            'current_price': float(current_close),
-            'rsi': float(current_rsi),
+            'ideal_entry': to_python_scalar(float(ideal_entry)) if ideal_entry is not None else None,
+            'entry_low': to_python_scalar(float(entry_low)) if entry_low is not None else None,
+            'entry_high': to_python_scalar(float(entry_high)) if entry_high is not None else None,
+            'tp1': to_python_scalar(float(tp1)) if tp1 is not None else None,
+            'tp2': to_python_scalar(float(tp2)) if tp2 is not None else None,
+            'tp3': to_python_scalar(float(tp3)) if tp3 is not None else None,
+            'sl': to_python_scalar(float(sl)) if sl is not None else None,
+            'current_price': to_python_scalar(float(current_close)),
+            'rsi': to_python_scalar(float(current_rsi)),
             'trend': 'BULLISH' if trend_score > 0 else 'BEARISH' if trend_score < 0 else 'NEUTRAL',
-            'volume_ratio': float(volume_ratio),
-            'score': int(final_score),  # Use risk-adjusted final score
-            'atr': float(atr),
+            'volume_ratio': to_python_scalar(float(volume_ratio)),
+            'score': int(to_python_scalar(final_score)),  # Use risk-adjusted final score
+            'atr': to_python_scalar(float(atr)),
             'hh': hh,
             'hl': hl,
             'lh': lh,
@@ -733,17 +740,15 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             'detected_patterns': detected_patterns,
             'pattern_details': all_patterns,
             
-            # =========================================================
             # PHASE 2 ENHANCEMENTS - NEW FIELDS
-            # =========================================================
             'candlestick_patterns': candlestick_patterns,
             'momentum_indicators': momentum_indicators,
             'market_regime': market_regime,
             'support_resistance': support_resistance,
             'risk_metrics': risk_metrics,
-            'base_score': int(base_score),
-            'enhanced_score': int(enhanced_score),
-            'final_score': int(final_score),
+            'base_score': int(to_python_scalar(base_score)),
+            'enhanced_score': int(to_python_scalar(enhanced_score)),
+            'final_score': int(to_python_scalar(final_score)),
             'momentum_quality': momentum_indicators.get('momentum_quality', 'NEUTRAL'),
             'risk_category': risk_metrics.get('risk_category', 'LOW'),
             'optimal_position_size': risk_metrics.get('optimal_position_size', 0.1),
