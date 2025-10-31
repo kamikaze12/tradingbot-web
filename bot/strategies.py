@@ -215,7 +215,380 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             patterns['shark'] = True
             
         return patterns
-    
+
+    # =========================================================
+    # PHASE 2 ENHANCEMENTS - ADVANCED CANDLESTICK PATTERNS
+    # =========================================================
+    def detect_candlestick_patterns(self, df, period=10):
+        """Detect advanced candlestick patterns"""
+        patterns = {
+            'doji': False, 'hammer': False, 'shooting_star': False,
+            'bullish_engulfing': False, 'bearish_engulfing': False,
+            'morning_star': False, 'evening_star': False,
+            'three_white_soldiers': False, 'three_black_crows': False,
+            'bullish_harami': False, 'bearish_harami': False
+        }
+        
+        if len(df) < period:
+            return patterns
+        
+        # Get recent candlesticks
+        for i in range(1, min(5, len(df)-1)):
+            open_prev, high_prev, low_prev, close_prev = df[['open','high','low','close']].iloc[-i-1]
+            open_curr, high_curr, low_curr, close_curr = df[['open','high','low','close']].iloc[-i]
+            
+            # Calculate candle properties
+            body_curr = abs(close_curr - open_curr)
+            range_curr = high_curr - low_curr
+            body_prev = abs(close_prev - open_prev)
+            
+            # Doji Pattern - very small body
+            if range_curr > 0 and body_curr/range_curr < 0.1:
+                patterns['doji'] = True
+                
+            # Hammer Pattern - small body at top with long lower wick
+            lower_wick = min(open_curr, close_curr) - low_curr
+            upper_wick = high_curr - max(open_curr, close_curr)
+            if (body_curr > 0 and 
+                lower_wick > 2 * body_curr and 
+                upper_wick < 0.3 * body_curr and
+                close_curr > open_curr):  # Bullish hammer
+                patterns['hammer'] = True
+                
+            # Shooting Star - small body at bottom with long upper wick
+            if (body_curr > 0 and 
+                upper_wick > 2 * body_curr and 
+                lower_wick < 0.3 * body_curr and
+                close_curr < open_curr):  # Bearish shooting star
+                patterns['shooting_star'] = True
+                
+            # Bullish Engulfing
+            if (close_prev < open_prev and close_curr > open_curr and
+                open_curr < close_prev and close_curr > open_prev):
+                patterns['bullish_engulfing'] = True
+                
+            # Bearish Engulfing
+            if (close_prev > open_prev and close_curr < open_curr and
+                open_curr > close_prev and close_curr < open_prev):
+                patterns['bearish_engulfing'] = True
+                
+            # Bullish Harami
+            if (close_prev < open_prev and close_curr > open_curr and
+                open_curr > close_prev and close_curr < open_prev):
+                patterns['bullish_harami'] = True
+                
+            # Bearish Harami
+            if (close_prev > open_prev and close_curr < open_curr and
+                open_curr < close_prev and close_curr > open_prev):
+                patterns['bearish_harami'] = True
+                
+            # Three White Soldiers (need 3 consecutive bullish candles)
+            if i <= len(df) - 3:
+                opens = df['open'].iloc[-i-2:-i+1].values
+                closes = df['close'].iloc[-i-2:-i+1].values
+                if all(closes > opens) and all(closes[1:] > closes[:-1]):
+                    patterns['three_white_soldiers'] = True
+                    
+            # Three Black Crows (need 3 consecutive bearish candles)
+            if i <= len(df) - 3:
+                opens = df['open'].iloc[-i-2:-i+1].values
+                closes = df['close'].iloc[-i-2:-i+1].values
+                if all(closes < opens) and all(closes[1:] < closes[:-1]):
+                    patterns['three_black_crows'] = True
+                    
+        return patterns
+
+    # =========================================================
+    # PHASE 2 ENHANCEMENTS - ADVANCED MOMENTUM INDICATORS
+    # =========================================================
+    def calculate_momentum_indicators(self, df):
+        """Calculate advanced momentum indicators"""
+        indicators = {
+            'macd_signal': 0, 'stochastic_signal': 0, 'momentum_score': 0,
+            'williams_r': 0, 'cci': 0, 'roc': 0, 'momentum_quality': 'NEUTRAL'
+        }
+        
+        if len(df) < 26:
+            return indicators
+            
+        try:
+            # MACD Calculation
+            ema_12 = df['close'].ewm(span=12).mean()
+            ema_26 = df['close'].ewm(span=26).mean()
+            macd = ema_12 - ema_26
+            signal = macd.ewm(span=9).mean()
+            histogram = macd - signal
+            
+            # MACD Signal
+            if macd.iloc[-1] > signal.iloc[-1] and histogram.iloc[-1] > 0:
+                indicators['macd_signal'] += 3
+            elif macd.iloc[-1] < signal.iloc[-1] and histogram.iloc[-1] < 0:
+                indicators['macd_signal'] -= 3
+                
+            # Stochastic Oscillator
+            high_14 = df['high'].rolling(14).max()
+            low_14 = df['low'].rolling(14).min()
+            stoch_k = 100 * (df['close'] - low_14) / (high_14 - low_14)
+            stoch_d = stoch_k.rolling(3).mean()
+            
+            # Stochastic Signals
+            if stoch_k.iloc[-1] < 20 and stoch_k.iloc[-1] > stoch_d.iloc[-1]:  # Oversold bullish
+                indicators['stochastic_signal'] += 2
+            elif stoch_k.iloc[-1] > 80 and stoch_k.iloc[-1] < stoch_d.iloc[-1]:  # Overbought bearish
+                indicators['stochastic_signal'] -= 2
+                
+            # Williams %R
+            williams_r = 100 * (df['high'].rolling(14).max() - df['close']) / (df['high'].rolling(14).max() - df['low'].rolling(14).min())
+            if williams_r.iloc[-1] < -80:  # Oversold
+                indicators['williams_r'] += 1
+            elif williams_r.iloc[-1] > -20:  # Overbought
+                indicators['williams_r'] -= 1
+                
+            # CCI (Commodity Channel Index)
+            typical_price = (df['high'] + df['low'] + df['close']) / 3
+            cci = (typical_price - typical_price.rolling(20).mean()) / (0.015 * typical_price.rolling(20).std())
+            if cci.iloc[-1] > 100:  # Overbought
+                indicators['cci'] -= 1
+            elif cci.iloc[-1] < -100:  # Oversold
+                indicators['cci'] += 1
+                
+            # Rate of Change
+            roc = (df['close'] / df['close'].shift(10) - 1) * 100
+            if roc.iloc[-1] > 5:  # Strong upward momentum
+                indicators['roc'] += 1
+            elif roc.iloc[-1] < -5:  # Strong downward momentum
+                indicators['roc'] -= 1
+                
+            # Total Momentum Score
+            indicators['momentum_score'] = (
+                indicators['macd_signal'] + 
+                indicators['stochastic_signal'] + 
+                indicators['williams_r'] + 
+                indicators['cci'] + 
+                indicators['roc']
+            )
+            
+            # Momentum Quality Assessment
+            if indicators['momentum_score'] >= 3:
+                indicators['momentum_quality'] = 'STRONG_BULLISH'
+            elif indicators['momentum_score'] >= 1:
+                indicators['momentum_quality'] = 'BULLISH'
+            elif indicators['momentum_score'] <= -3:
+                indicators['momentum_quality'] = 'STRONG_BEARISH'
+            elif indicators['momentum_score'] <= -1:
+                indicators['momentum_quality'] = 'BEARISH'
+            else:
+                indicators['momentum_quality'] = 'NEUTRAL'
+                
+        except Exception as e:
+            print(f"Error calculating momentum indicators: {e}")
+            
+        return indicators
+
+    # =========================================================
+    # PHASE 2 ENHANCEMENTS - MARKET REGIME DETECTION
+    # =========================================================
+    def detect_market_regime(self, df):
+        """Detect current market regime and conditions"""
+        regime = {
+            'trending': False, 'ranging': False, 'volatile': False,
+            'regime_score': 0, 'volatility_level': 'LOW',
+            'trend_strength': 'WEAK', 'market_phase': 'ACCUMULATION'
+        }
+        
+        if len(df) < 50:
+            return regime
+            
+        try:
+            # Calculate volatility using ATR relative to price
+            atr = self.calculate_atr(df)
+            current_price = df['close'].iloc[-1]
+            volatility_ratio = atr / current_price
+            
+            # Trend detection using multiple methods
+            # 1. Price change over different periods
+            price_change_20 = (current_price - df['close'].iloc[-20]) / df['close'].iloc[-20]
+            price_change_50 = (current_price - df['close'].iloc[-50]) / df['close'].iloc[-50]
+            
+            # 2. Moving average alignment
+            sma_20 = df['close'].rolling(20).mean()
+            sma_50 = df['close'].rolling(50).mean()
+            ma_alignment = 1 if sma_20.iloc[-1] > sma_50.iloc[-1] else -1
+            
+            # 3. ADX-like trend strength (simplified)
+            highs = df['high'].rolling(14).max()
+            lows = df['low'].rolling(14).min()
+            tr = np.maximum(df['high'] - df['low'], 
+                           np.maximum(abs(df['high'] - df['close'].shift()), 
+                                     abs(df['low'] - df['close'].shift())))
+            atr_14 = tr.rolling(14).mean()
+            directional_movement = abs(df['high'].diff(14).fillna(0)) + abs(df['low'].diff(14).fillna(0))
+            trend_strength = directional_movement / atr_14 if atr_14.iloc[-1] > 0 else 0
+            
+            # Regime Classification
+            if abs(price_change_20) > 0.05 or abs(price_change_50) > 0.15:  # 5% in 20 periods or 15% in 50
+                regime['trending'] = True
+                regime['regime_score'] += 3
+                
+            if volatility_ratio < 0.02:  # Low volatility
+                regime['ranging'] = True
+                regime['regime_score'] += 1
+                
+            if volatility_ratio > 0.04:  # High volatility
+                regime['volatile'] = True
+                regime['volatility_level'] = 'HIGH'
+                regime['regime_score'] -= 1  # Reduce score in high volatility
+                
+            # Trend Strength Assessment
+            if trend_strength.iloc[-1] > 1.5:
+                regime['trend_strength'] = 'STRONG'
+                regime['regime_score'] += 2
+            elif trend_strength.iloc[-1] > 0.8:
+                regime['trend_strength'] = 'MODERATE'
+                regime['regime_score'] += 1
+                
+            # Market Phase Detection
+            if regime['trending'] and price_change_20 > 0:
+                regime['market_phase'] = 'BULL_TREND'
+            elif regime['trending'] and price_change_20 < 0:
+                regime['market_phase'] = 'BEAR_TREND'
+            elif regime['ranging'] and volatility_ratio < 0.015:
+                regime['market_phase'] = 'ACCUMULATION'
+            elif regime['volatile']:
+                regime['market_phase'] = 'DISTRIBUTION'
+                
+        except Exception as e:
+            print(f"Error detecting market regime: {e}")
+            
+        return regime
+
+    # =========================================================
+    # PHASE 2 ENHANCEMENTS - ENHANCED RISK ASSESSMENT
+    # =========================================================
+    def calculate_risk_metrics(self, df, analysis_result):
+        """Calculate comprehensive risk metrics"""
+        risk = {
+            'reward_ratio': 0, 'position_score': 0, 'risk_adjusted_score': 0,
+            'volatility_adjustment': 0, 'drawdown_risk': 'LOW',
+            'risk_category': 'LOW', 'optimal_position_size': 0.1
+        }
+        
+        try:
+            if analysis_result['action'] in ['LONG', 'SHORT']:
+                entry = analysis_result.get('ideal_entry', analysis_result['current_price'])
+                tp1 = analysis_result['tp1']
+                sl = analysis_result['sl']
+                
+                if entry != sl:  # Avoid division by zero
+                    # Reward to Risk Ratio
+                    risk_reward = abs(tp1 - entry) / abs(entry - sl)
+                    risk['reward_ratio'] = risk_reward
+                    
+                    # Position Sizing Score
+                    if risk_reward > 3:
+                        risk['position_score'] += 3
+                        risk['optimal_position_size'] = 0.15  # 15% of portfolio
+                    elif risk_reward > 2:
+                        risk['position_score'] += 2
+                        risk['optimal_position_size'] = 0.1   # 10% of portfolio
+                    elif risk_reward > 1.5:
+                        risk['position_score'] += 1
+                        risk['optimal_position_size'] = 0.05  # 5% of portfolio
+                    else:
+                        risk['position_score'] -= 1
+                        risk['optimal_position_size'] = 0.02  # 2% of portfolio
+                        
+            # Volatility Adjustment
+            current_price = df['close'].iloc[-1]
+            atr = analysis_result.get('atr', 0)
+            volatility_ratio = atr / current_price if current_price > 0 else 0
+            
+            if volatility_ratio > 0.05:
+                risk['volatility_adjustment'] -= 2
+                risk['drawdown_risk'] = 'HIGH'
+                risk['risk_category'] = 'HIGH'
+            elif volatility_ratio > 0.03:
+                risk['volatility_adjustment'] -= 1
+                risk['drawdown_risk'] = 'MEDIUM'
+                risk['risk_category'] = 'MEDIUM'
+            else:
+                risk['volatility_adjustment'] += 1
+                risk['drawdown_risk'] = 'LOW'
+                risk['risk_category'] = 'LOW'
+                
+            # Recent Drawdown Analysis
+            rolling_max = df['close'].rolling(20).max()
+            current_drawdown = (df['close'] - rolling_max) / rolling_max
+            max_drawdown = current_drawdown.min()
+            
+            if max_drawdown < -0.15:  # 15% drawdown
+                risk['volatility_adjustment'] -= 1
+                
+            # Combine with original score
+            original_score = analysis_result.get('score', 0)
+            risk['risk_adjusted_score'] = (
+                original_score + 
+                risk['position_score'] + 
+                risk['volatility_adjustment']
+            )
+            
+        except Exception as e:
+            print(f"Error calculating risk metrics: {e}")
+            
+        return risk
+
+    # =========================================================
+    # PHASE 2 ENHANCEMENTS - SUPPORT/RESISTANCE DETECTION
+    # =========================================================
+    def detect_support_resistance(self, df, window=20):
+        """Detect key support and resistance levels"""
+        levels = {
+            'support_levels': [],
+            'resistance_levels': [],
+            'strong_support': None,
+            'strong_resistance': None,
+            'breakout_level': None,
+            'consolidation_zone': False
+        }
+        
+        if len(df) < window * 2:
+            return levels
+            
+        try:
+            # Find local minima and maxima
+            highs = df['high'].tail(window * 3)
+            lows = df['low'].tail(window * 3)
+            
+            # Simple pivot point detection
+            for i in range(window, len(highs) - window):
+                if highs.iloc[i] == highs.iloc[i-window:i+window].max():
+                    levels['resistance_levels'].append(highs.iloc[i])
+                if lows.iloc[i] == lows.iloc[i-window:i+window].min():
+                    levels['support_levels'].append(lows.iloc[i])
+                    
+            # Remove duplicates and sort
+            levels['support_levels'] = sorted(list(set(levels['support_levels'])))
+            levels['resistance_levels'] = sorted(list(set(levels['resistance_levels'])))
+            
+            # Find strong levels (clustered)
+            if levels['support_levels']:
+                levels['strong_support'] = levels['support_levels'][0]  # Nearest support
+            if levels['resistance_levels']:
+                levels['strong_resistance'] = levels['resistance_levels'][-1]  # Nearest resistance
+                
+            # Check for consolidation
+            price_range = df['high'].tail(window).max() - df['low'].tail(window).min()
+            avg_range = (df['high'] - df['low']).tail(window).mean()
+            
+            if price_range < 2 * avg_range:  # Tight range indicates consolidation
+                levels['consolidation_zone'] = True
+                levels['breakout_level'] = levels['strong_resistance'] if levels['strong_resistance'] else None
+                
+        except Exception as e:
+            print(f"Error detecting support/resistance: {e}")
+            
+        return levels
+
     def analyze(self, df):
         """Main analysis method with enhanced pattern recognition"""
         if len(df) < 50:
@@ -251,6 +624,14 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         triangle_patterns = self.detect_triangle_patterns(df)
         channel_wedge_patterns = self.detect_channel_wedge_patterns(df)
         harmonic_patterns = self.detect_harmonic_patterns(df)
+        
+        # =========================================================
+        # PHASE 2 ENHANCEMENTS - NEW INDICATORS
+        # =========================================================
+        candlestick_patterns = self.detect_candlestick_patterns(df)
+        momentum_indicators = self.calculate_momentum_indicators(df)
+        market_regime = self.detect_market_regime(df)
+        support_resistance = self.detect_support_resistance(df)
         
         # Trend determination
         trend_score = 0
@@ -288,6 +669,21 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         for pattern, detected in harmonic_patterns.items():
             if detected:
                 pattern_score += 1  # All harmonic patterns get a small boost
+                
+        # =========================================================
+        # PHASE 2 ENHANCEMENTS - CANDLESTICK PATTERN SCORING
+        # =========================================================
+        candlestick_score = 0
+        bullish_candles = ['hammer', 'bullish_engulfing', 'morning_star', 'three_white_soldiers', 'bullish_harami']
+        bearish_candles = ['shooting_star', 'bearish_engulfing', 'evening_star', 'three_black_crows', 'bearish_harami']
+        
+        for pattern in bullish_candles:
+            if candlestick_patterns.get(pattern, False):
+                candlestick_score += 2
+                
+        for pattern in bearish_candles:
+            if candlestick_patterns.get(pattern, False):
+                candlestick_score -= 2
         
         # RSI score
         rsi_score = 0
@@ -301,11 +697,22 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         # Volume score
         volume_score = 1 if volume_ratio > 1.2 else 0 if volume_ratio > 0.8 else -1
         
-        # Total score with pattern enhancement
-        score = trend_score + rsi_score + volume_score + pattern_score
+        # =========================================================
+        # PHASE 2 ENHANCEMENTS - COMBINED SCORING
+        # =========================================================
+        # Base score from original strategy
+        base_score = trend_score + rsi_score + volume_score + pattern_score
         
-        # Determine action
-        action = "LONG" if score > 0 else "SHORT" if score < 0 else "NEUTRAL"
+        # Enhanced scoring with new indicators
+        momentum_score = momentum_indicators['momentum_score']
+        regime_score = market_regime['regime_score']
+        candlestick_adjustment = candlestick_score
+        
+        # Total enhanced score
+        enhanced_score = base_score + momentum_score + regime_score + candlestick_adjustment
+        
+        # Determine action based on enhanced score
+        action = "LONG" if enhanced_score > 0 else "SHORT" if enhanced_score < 0 else "NEUTRAL"
         
         # Calculate entry levels if action is LONG or SHORT
         if action in ["LONG", "SHORT"]:
@@ -325,8 +732,34 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         else:
             ideal_entry = entry_low = entry_high = tp1 = tp2 = tp3 = sl = None
         
+        # =========================================================
+        # PHASE 2 ENHANCEMENTS - RISK METRICS CALCULATION
+        # =========================================================
+        # Prepare initial result for risk calculation
+        initial_result = {
+            'action': action,
+            'ideal_entry': ideal_entry,
+            'tp1': tp1,
+            'sl': sl,
+            'score': enhanced_score,
+            'atr': atr
+        }
+        
+        risk_metrics = self.calculate_risk_metrics(df, initial_result)
+        
+        # Final risk-adjusted score
+        final_score = risk_metrics['risk_adjusted_score']
+        
+        # Update action if risk adjustment changes direction
+        if final_score > 0 and enhanced_score <= 0:
+            action = "LONG"
+        elif final_score < 0 and enhanced_score >= 0:
+            action = "SHORT"
+        elif final_score == 0:
+            action = "NEUTRAL"
+        
         # Compile pattern information
-        all_patterns = {**triangle_patterns, **channel_wedge_patterns, **harmonic_patterns}
+        all_patterns = {**triangle_patterns, **channel_wedge_patterns, **harmonic_patterns, **candlestick_patterns}
         detected_patterns = [pattern for pattern, detected in all_patterns.items() if detected]
         
         # Result
@@ -343,7 +776,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             'rsi': float(current_rsi),
             'trend': 'BULLISH' if trend_score > 0 else 'BEARISH' if trend_score < 0 else 'NEUTRAL',
             'volume_ratio': float(volume_ratio),
-            'score': int(score),
+            'score': int(final_score),  # Use risk-adjusted final score
             'atr': float(atr),
             'hh': hh,
             'hl': hl,
@@ -353,7 +786,24 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             'ema_score': ema_score,
             'pattern_score': pattern_score,
             'detected_patterns': detected_patterns,
-            'pattern_details': all_patterns
+            'pattern_details': all_patterns,
+            
+            # =========================================================
+            # PHASE 2 ENHANCEMENTS - NEW FIELDS
+            # =========================================================
+            'candlestick_patterns': candlestick_patterns,
+            'momentum_indicators': momentum_indicators,
+            'market_regime': market_regime,
+            'support_resistance': support_resistance,
+            'risk_metrics': risk_metrics,
+            'base_score': int(base_score),
+            'enhanced_score': int(enhanced_score),
+            'final_score': int(final_score),
+            'momentum_quality': momentum_indicators.get('momentum_quality', 'NEUTRAL'),
+            'risk_category': risk_metrics.get('risk_category', 'LOW'),
+            'optimal_position_size': risk_metrics.get('optimal_position_size', 0.1),
+            'reward_ratio': risk_metrics.get('reward_ratio', 0),
+            'market_phase': market_regime.get('market_phase', 'ACCUMULATION')
         }
         
         return result
