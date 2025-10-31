@@ -7,6 +7,106 @@ import streamlit as st
 
 load_dotenv()
 
+def create_enhanced_tables(self):
+    """Create enhanced tables for Phase 2 features"""
+    conn, cursor = None, None
+    try:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Table: backtest_results
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id SERIAL PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                market_type TEXT NOT NULL,
+                total_trades INTEGER,
+                winning_trades INTEGER,
+                losing_trades INTEGER,
+                win_rate REAL,
+                total_pnl REAL,
+                sharpe_ratio REAL,
+                max_drawdown REAL,
+                final_balance REAL,
+                period_days INTEGER,
+                test_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Table: portfolio_allocations
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio_allocations (
+                id SERIAL PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                market_type TEXT NOT NULL,
+                allocation_percent REAL,
+                allocated_capital REAL,
+                risk_category TEXT,
+                score INTEGER,
+                optimization_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Table: ml_analysis
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ml_analysis (
+                id SERIAL PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                market_type TEXT NOT NULL,
+                traditional_score INTEGER,
+                ml_confidence REAL,
+                combined_score INTEGER,
+                risk_metrics JSONB,
+                analysis_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        conn.commit()
+        print("Enhanced tables created successfully")
+        
+    except Exception as e:
+        print(f"Error creating enhanced tables: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if cursor:
+            cursor.close()
+
+def save_backtest_result(self, result_data):
+    """Save backtest results to database"""
+    conn = self.get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO backtest_results (
+                symbol, market_type, total_trades, winning_trades, losing_trades,
+                win_rate, total_pnl, sharpe_ratio, max_drawdown, final_balance, period_days
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            result_data['symbol'],
+            result_data.get('market_type', 'unknown'),
+            result_data['total_trades'],
+            result_data['winning_trades'],
+            result_data['losing_trades'],
+            result_data['win_rate'],
+            result_data['total_pnl'],
+            result_data['sharpe_ratio'],
+            result_data['max_drawdown'],
+            result_data['final_balance'],
+            result_data['period_days']
+        ))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error saving backtest result: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+
+# Panggil method enhanced tables di __init__
+# Tambahkan di __init__ method DatabaseHandler:
+# self.create_enhanced_tables()
 class DatabaseHandler:
     def __init__(self):
         self.db_type = "postgresql"
