@@ -324,185 +324,129 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                 indicators['macd_signal'] += 3
             elif macd.iloc[-1] < signal.iloc[-1] and histogram.iloc[-1] < 0:
                 indicators['macd_signal'] -= 3
-                
-            # Stochastic Oscillator
+            
+            # Stochastic Oscillator (simplified)
             high_14 = df['high'].rolling(14).max()
             low_14 = df['low'].rolling(14).min()
-            stoch_k = 100 * (df['close'] - low_14) / (high_14 - low_14)
-            stoch_d = stoch_k.rolling(3).mean()
-            
-            # Stochastic Signals
-            if stoch_k.iloc[-1] < 20 and stoch_k.iloc[-1] > stoch_d.iloc[-1]:  # Oversold bullish
-                indicators['stochastic_signal'] += 2
-            elif stoch_k.iloc[-1] > 80 and stoch_k.iloc[-1] < stoch_d.iloc[-1]:  # Overbought bearish
+            k = 100 * ((df['close'] - low_14) / (high_14 - low_14))
+            d = k.rolling(3).mean()
+            if k.iloc[-1] > 80:
                 indicators['stochastic_signal'] -= 2
-                
+            elif k.iloc[-1] < 20:
+                indicators['stochastic_signal'] += 2
+            
             # Williams %R
-            williams_r = 100 * (df['high'].rolling(14).max() - df['close']) / (df['high'].rolling(14).max() - df['low'].rolling(14).min())
-            if williams_r.iloc[-1] < -80:  # Oversold
-                indicators['williams_r'] += 1
-            elif williams_r.iloc[-1] > -20:  # Overbought
-                indicators['williams_r'] -= 1
-                
+            indicators['williams_r'] = -100 * ((high_14.iloc[-1] - df['close'].iloc[-1]) / (high_14.iloc[-1] - low_14.iloc[-1]))
+            
             # CCI (Commodity Channel Index)
             typical_price = (df['high'] + df['low'] + df['close']) / 3
-            cci = (typical_price - typical_price.rolling(20).mean()) / (0.015 * typical_price.rolling(20).std())
-            if cci.iloc[-1] > 100:  # Overbought
-                indicators['cci'] -= 1
-            elif cci.iloc[-1] < -100:  # Oversold
-                indicators['cci'] += 1
-                
-            # Rate of Change
-            roc = (df['close'] / df['close'].shift(10) - 1) * 100
-            if roc.iloc[-1] > 5:  # Strong upward momentum
-                indicators['roc'] += 1
-            elif roc.iloc[-1] < -5:  # Strong downward momentum
-                indicators['roc'] -= 1
-                
-            # Total Momentum Score
-            indicators['momentum_score'] = (
-                indicators['macd_signal'] + 
-                indicators['stochastic_signal'] + 
-                indicators['williams_r'] + 
-                indicators['cci'] + 
-                indicators['roc']
-            )
+            sma_tp = typical_price.rolling(20).mean()
+            mad = typical_price.rolling(20).apply(lambda x: np.abs(x - x.mean()).mean())
+            indicators['cci'] = (typical_price - sma_tp) / (0.015 * mad)
             
-            # Momentum Quality Assessment
-            if indicators['momentum_score'] >= 3:
-                indicators['momentum_quality'] = 'STRONG_BULLISH'
-            elif indicators['momentum_score'] >= 1:
-                indicators['momentum_quality'] = 'BULLISH'
-            elif indicators['momentum_score'] <= -3:
-                indicators['momentum_quality'] = 'STRONG_BEARISH'
-            elif indicators['momentum_score'] <= -1:
-                indicators['momentum_quality'] = 'BEARISH'
-            else:
-                indicators['momentum_quality'] = 'NEUTRAL'
+            # ROC (Rate of Change)
+            indicators['roc'] = (df['close'].iloc[-1] - df['close'].shift(12).iloc[-1]) / df['close'].shift(12).iloc[-1] * 100
+            
+            # Momentum Score Aggregation
+            indicators['momentum_score'] = indicators['macd_signal'] + indicators['stochastic_signal']
+            if indicators['cci'].iloc[-1] > 100:
+                indicators['momentum_score'] += 1
+            elif indicators['cci'].iloc[-1] < -100:
+                indicators['momentum_score'] -= 1
                 
+            if indicators['roc'] > 0:
+                indicators['momentum_score'] += 1
+            else:
+                indicators['momentum_score'] -= 1
+                
+            # Momentum Quality
+            if abs(indicators['momentum_score']) > 4:
+                indicators['momentum_quality'] = 'STRONG'
+            elif abs(indicators['momentum_score']) > 2:
+                indicators['momentum_quality'] = 'MODERATE'
+            
         except Exception as e:
-            print(f"Error calculating momentum indicators: {e}")
+            print(f"Error in momentum indicators: {e}")
             
         return indicators
 
-    # =========================================================
-    # PHASE 2 ENHANCEMENTS - MARKET REGIME DETECTION
-    # =========================================================
-    def detect_market_regime(self, df):
-        """Detect current market regime and conditions"""
+    def detect_market_regime(self, df, period=20):
+        """Detect market regime: trending, ranging, volatile"""
         regime = {
-            'trending': False, 'ranging': False, 'volatile': False,
-            'regime_score': 0, 'volatility_level': 'LOW',
-            'trend_strength': 'WEAK', 'market_phase': 'ACCUMULATION'
+            'market_phase': 'ACCUMULATION',
+            'volatility_level': 'NORMAL',
+            'regime_score': 0
         }
         
-        if len(df) < 50:
+        if len(df) < period * 2:
             return regime
             
-        try:
-            # Calculate volatility using ATR relative to price
-            atr = self.calculate_atr(df)
-            current_price = df['close'].iloc[-1]
-            volatility_ratio = atr / current_price
-            
-            # Trend detection using multiple methods
-            # 1. Price change over different periods
-            price_change_20 = (current_price - df['close'].iloc[-20]) / df['close'].iloc[-20]
-            price_change_50 = (current_price - df['close'].iloc[-50]) / df['close'].iloc[-50]
-            
-            # 2. Moving average alignment
-            sma_20 = df['close'].rolling(20).mean()
-            sma_50 = df['close'].rolling(50).mean()
-            ma_alignment = 1 if sma_20.iloc[-1] > sma_50.iloc[-1] else -1
-            
-            # 3. ADX-like trend strength (simplified)
-            highs = df['high'].rolling(14).max()
-            lows = df['low'].rolling(14).min()
-            tr = np.maximum(df['high'] - df['low'], 
-                           np.maximum(abs(df['high'] - df['close'].shift()), 
-                                     abs(df['low'] - df['close'].shift())))
-            atr_14 = tr.rolling(14).mean()
-            directional_movement = abs(df['high'].diff(14).fillna(0)) + abs(df['low'].diff(14).fillna(0))
-            trend_strength = directional_movement / atr_14 if atr_14.iloc[-1] > 0 else 0
-            
-            # Regime Classification
-            if abs(price_change_20) > 0.05 or abs(price_change_50) > 0.15:  # 5% in 20 periods or 15% in 50
-                regime['trending'] = True
-                regime['regime_score'] += 3
-                
-            if volatility_ratio < 0.02:  # Low volatility
-                regime['ranging'] = True
-                regime['regime_score'] += 1
-                
-            if volatility_ratio > 0.04:  # High volatility
-                regime['volatile'] = True
-                regime['volatility_level'] = 'HIGH'
-                regime['regime_score'] -= 1  # Reduce score in high volatility
-                
-            # Trend Strength Assessment
-            if trend_strength.iloc[-1] > 1.5:
-                regime['trend_strength'] = 'STRONG'
-                regime['regime_score'] += 2
-            elif trend_strength.iloc[-1] > 0.8:
-                regime['trend_strength'] = 'MODERATE'
-                regime['regime_score'] += 1
-                
-            # Market Phase Detection
-            if regime['trending'] and price_change_20 > 0:
-                regime['market_phase'] = 'BULL_TREND'
-            elif regime['trending'] and price_change_20 < 0:
-                regime['market_phase'] = 'BEAR_TREND'
-            elif regime['ranging'] and volatility_ratio < 0.015:
-                regime['market_phase'] = 'ACCUMULATION'
-            elif regime['volatile']:
-                regime['market_phase'] = 'DISTRIBUTION'
-                
-        except Exception as e:
-            print(f"Error detecting market regime: {e}")
-            
+        # Volatility calculation
+        returns = df['close'].pct_change()
+        volatility = returns.tail(period).std() * np.sqrt(252)  # Annualized
+        
+        if volatility > 0.5:
+            regime['volatility_level'] = 'HIGH'
+            regime['regime_score'] -= 2
+        elif volatility < 0.2:
+            regime['volatility_level'] = 'LOW'
+            regime['regime_score'] += 1
+        else:
+            regime['volatility_level'] = 'NORMAL'
+        
+        # ADX for trend strength (simplified without TA-LIB)
+        plus_di = 100 * (df['high'].diff().clip(lower=0) / df['close'].rolling(period).std())
+        minus_di = 100 * (df['low'].diff().clip(upper=0).abs() / df['close'].rolling(period).std())
+        adx = ((plus_di - minus_di).abs() / (plus_di + minus_di).abs()).rolling(period).mean() * 100
+        
+        if adx.iloc[-1] > 25:
+            regime['market_phase'] = 'TRENDING'
+            regime['regime_score'] += 2 if df['close'].iloc[-1] > df['close'].rolling(period).mean().iloc[-1] else -2
+        else:
+            regime['market_phase'] = 'RANGING'
+            regime['regime_score'] += 1
+        
         return regime
 
     # =========================================================
-    # PHASE 2 ENHANCEMENTS - ENHANCED RISK ASSESSMENT
+    # PHASE 2 ENHANCEMENTS - RISK METRICS
     # =========================================================
     def calculate_risk_metrics(self, df, analysis_result):
-        """Calculate comprehensive risk metrics"""
+        """Calculate enhanced risk metrics"""
         risk = {
-            'reward_ratio': 0, 'position_score': 0, 'risk_adjusted_score': 0,
-            'volatility_adjustment': 0, 'drawdown_risk': 'LOW',
-            'risk_category': 'LOW', 'optimal_position_size': 0.1
+            'reward_ratio': 0,
+            'optimal_position_size': 0.1,
+            'volatility_adjustment': 0,
+            'drawdown_risk': 'LOW',
+            'risk_category': 'LOW',
+            'position_score': analysis_result.get('score', 0),
+            'risk_adjusted_score': 0
         }
         
-        try:
-            if analysis_result['action'] in ['LONG', 'SHORT']:
-                entry = analysis_result.get('ideal_entry', analysis_result['current_price'])
-                tp1 = analysis_result['tp1']
-                sl = analysis_result['sl']
-                
-                if entry != sl:  # Avoid division by zero
-                    # Reward to Risk Ratio
-                    risk_reward = abs(tp1 - entry) / abs(entry - sl)
-                    risk['reward_ratio'] = risk_reward
-                    
-                    # Position Sizing Score
-                    if risk_reward > 3:
-                        risk['position_score'] += 3
-                        risk['optimal_position_size'] = 0.15  # 15% of portfolio
-                    elif risk_reward > 2:
-                        risk['position_score'] += 2
-                        risk['optimal_position_size'] = 0.1   # 10% of portfolio
-                    elif risk_reward > 1.5:
-                        risk['position_score'] += 1
-                        risk['optimal_position_size'] = 0.05  # 5% of portfolio
-                    else:
-                        risk['position_score'] -= 1
-                        risk['optimal_position_size'] = 0.02  # 2% of portfolio
-                        
-            # Volatility Adjustment
-            current_price = df['close'].iloc[-1]
-            atr = analysis_result.get('atr', 0)
-            volatility_ratio = atr / current_price if current_price > 0 else 0
+        if len(df) < 50:
+            return risk
             
+        try:
+            # Reward Ratio with safety check
+            entry = analysis_result.get('ideal_entry', 0)
+            tp1 = analysis_result.get('tp1', 0)
+            sl = analysis_result.get('sl', 0)
+            if entry == 0 or sl == entry:
+                risk['reward_ratio'] = 0
+            else:
+                risk['reward_ratio'] = abs((tp1 - entry) / (entry - sl))
+            
+            # Optimal Position Size based on ATR
+            atr = analysis_result.get('atr', 0.01)
+            current_price = analysis_result.get('current_price', entry)  # Use entry as fallback
+            if current_price > 0 and atr > 0:
+                risk['optimal_position_size'] = min(0.02 / (atr / current_price), 0.2)  # 2% risk max, cap at 20%
+            else:
+                risk['optimal_position_size'] = 0.1  # Default
+            
+            # Volatility Adjustment
+            volatility = (df['high'] - df['low']) / df['close']
+            volatility_ratio = volatility.tail(20).mean()
             if volatility_ratio > 0.05:
                 risk['volatility_adjustment'] -= 2
                 risk['drawdown_risk'] = 'HIGH'
@@ -604,8 +548,8 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             price_diff = df['close'].diff()
             gain = price_diff.where(price_diff > 0, 0).rolling(14).mean()
             loss = -price_diff.where(price_diff < 0, 0).rolling(14).mean()
-            rs = gain / loss
-            current_rsi = 100 - (100 / (1 + rs)).iloc[-1] if not np.isnan(rs.iloc[-1]) and loss.iloc[-1] != 0 else 50
+            rs = gain / loss if loss.iloc[-1] != 0 else 1
+            current_rsi = 100 - (100 / (1 + rs)).iloc[-1] if not np.isnan(rs.iloc[-1]) else 50
         
         # Get ATR
         atr = self.calculate_atr(df)
@@ -735,14 +679,15 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         # =========================================================
         # PHASE 2 ENHANCEMENTS - RISK METRICS CALCULATION
         # =========================================================
-        # Prepare initial result for risk calculation
+        # Prepare initial result for risk calculation (FIX: Tambahkan current_price)
         initial_result = {
             'action': action,
             'ideal_entry': ideal_entry,
             'tp1': tp1,
             'sl': sl,
             'score': enhanced_score,
-            'atr': atr
+            'atr': atr,
+            'current_price': float(current_close)  # FIX: Tambahkan ini untuk hindari KeyError
         }
         
         risk_metrics = self.calculate_risk_metrics(df, initial_result)
