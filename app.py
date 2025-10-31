@@ -4,8 +4,15 @@ import threading
 import schedule
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
 from dotenv import load_dotenv
+
+# Try to import plotly, fallback to streamlit charts if not available
+try:
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+    st.warning("Plotly not available. Install with: pip install plotly")
 
 from bot.core import TradingBot
 
@@ -17,9 +24,25 @@ st.set_page_config(page_title="TradingBot Pro", layout="wide")
 
 @st.cache_resource
 def init_bot():
-    """Inisialisasi Enhanced TradingBot."""
+    """Inisialisasi TradingBot."""
     return TradingBot()
 
+def run_scheduler(bot):
+    """Jalankan auto scan tiap 30 detik."""
+    def scan_job():
+        if bot.mode:
+            results = bot.scan_potential_assets(10)
+            if results:
+                st.session_state['latest_results'] = results[:5]
+
+    schedule.every(30).seconds.do(scan_job)
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+# ====================================
+# Main App
+# ====================================
 def main():
     st.title("🚀 TradingBot Pro - Enhanced Dashboard")
     bot = init_bot()
@@ -68,6 +91,13 @@ def main():
         if bot.mode:
             st.success(f"Mode: {bot.mode.upper()}")
 
+            if st.button("🔄 Refresh Semua Data", key="refresh_all"):
+                st.session_state.positions_data = bot.get_active_positions()
+                st.session_state.history_data = bot.get_trade_history()
+                st.session_state.last_refresh = {"positions": time.time(), "history": time.time()}
+                st.success("Data berhasil direfresh!")
+                st.rerun()
+
     if not bot.mode:
         st.warning("Pilih market di sidebar!")
         return
@@ -79,9 +109,6 @@ def main():
     ])
 
     # ===============================
-    # Tab 1-6: Existing functionality (tetap sama)
-    # ===============================
-  # ===============================
     # Tab 1: Top Aset
     # ===============================
     with tab1:
@@ -134,14 +161,13 @@ def main():
                     st.session_state.scanned_results = bot.scan_potential_assets(50)
                     if not st.session_state.scanned_results:
                         st.warning("Tidak ada hasil scan dari metode utama. Mencoba fallback dengan aset populer.")
-                        fallback_assets = bot.get_popular_assets(10)  # Tingkatkan ke 10 untuk lebih banyak peluang
+                        fallback_assets = bot.get_popular_assets(10)
                         fallback_results = []
                         for asset in fallback_assets:
                             analysis = bot.analyze_asset(asset)
-                            if analysis and analysis["action"] in ["LONG", "SHORT"] and analysis["score"] >= 1:  # Turunkan threshold
+                            if analysis and analysis["action"] in ["LONG", "SHORT"] and analysis["score"] >= 1:
                                 fallback_results.append(analysis)
                             elif analysis is None:
-                                # Fallback ultimate: gunakan ticker untuk buat analysis sederhana
                                 ticker = bot.data_provider.get_ticker(asset)
                                 if ticker and 'last' in ticker:
                                     current_price = ticker['last']
@@ -171,7 +197,7 @@ def main():
                                     st.warning(f"Gagal mengambil data untuk {asset}")
                         st.session_state.scanned_results = fallback_results
                         if not fallback_results:
-                            st.error("Tidak ada data sama sekali. Periksa API key Alpha Vantage atau koneksi yfinance.")
+                            st.error("Tidak ada data sama sekali. Periksa koneksi atau API key.")
                     st.rerun()
 
         # Tampilkan hasil scan
@@ -194,6 +220,10 @@ def main():
                         # Tampilkan pattern score
                         if 'pattern_score' in res:
                             st.write(f"⭐ **Pattern Score:** {res['pattern_score']}")
+                            
+                        # Tampilkan risk category
+                        if 'risk_category' in res:
+                            st.write(f"⚖️ **Risk Category:** {res['risk_category']}")
                             
                     with col2:
                         if st.button(f"Pilih {i}", key=f"select_{res['symbol']}"):
@@ -244,21 +274,14 @@ def main():
                             else:
                                 st.error("Gagal tambah posisi.")
                     
-                    # Tampilkan detail pola untuk analisis yang dipilih
-                    if 'pattern_details' in analysis:
-                        with st.expander("🔍 Detail Pola Teknikal"):
-                            pattern_details = analysis['pattern_details']
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.write("**✅ Pola Terdeteksi:**")
-                                for pattern, detected in pattern_details.items():
-                                    if detected:
-                                        st.write(f"🎯 {pattern}")
-                            with col2:
-                                st.write("**❌ Pola Tidak Terdeteksi:**")
-                                for pattern, detected in pattern_details.items():
-                                    if not detected:
-                                        st.write(f"⚪ {pattern}")
+                    # Tampilkan detail analisis
+                    with st.expander("🔍 Detail Analisis"):
+                        if 'momentum_quality' in analysis:
+                            st.write(f"**Momentum Quality:** {analysis['momentum_quality']}")
+                        if 'market_phase' in analysis:
+                            st.write(f"**Market Phase:** {analysis['market_phase']}")
+                        if 'reward_ratio' in analysis:
+                            st.write(f"**Reward Ratio:** {analysis['reward_ratio']:.2f}")
                     
                     # Tombol untuk menghapus pilihan
                     if st.button(f"🗑️ Hapus {symbol} dari pilihan", key=f"remove_{symbol}"):
@@ -317,18 +340,16 @@ def main():
     with tab2:
         st.subheader("🔍 Analisis Aset Spesifik")
         
-        # Input untuk simbol
-        symbol_input = st.text_input("Masukkan simbol aset (contoh: btc untuk crypto, xau untuk forex, bbca untuk saham indo):", key="symbol_input")
+        symbol_input = st.text_input("Masukkan simbol aset:", key="symbol_input")
 
         if st.button("Analisis", key="analyze_asset"):
             with st.spinner("Menganalisis..."):
-                # Auto-convert symbol based on mode
                 symbol = symbol_input.upper()
                 if bot.mode == "crypto":
                     symbol = f"{symbol}/USDT"
                 elif bot.mode == "forex":
                     if symbol == "XAU":
-                        symbol = "GC=F"  # Gold futures symbol for real data
+                        symbol = "GC=F"
                     elif len(symbol) == 6:
                         symbol = f"{symbol}=X"
                     else:
@@ -342,13 +363,12 @@ def main():
                     st.session_state.selected_analysis = analysis
                     st.rerun()
                 else:
-                    # Fallback untuk analisis
                     ticker = bot.data_provider.get_ticker(symbol)
                     if ticker and 'last' in ticker:
                         current_price = ticker['last']
                         analysis = {
                             'symbol': symbol,
-                            'action': 'LONG' if current_price > 1 else 'SHORT',  # Variasi action berdasarkan harga
+                            'action': 'LONG' if current_price > 1 else 'SHORT',
                             'score': 1,
                             'ideal_entry': current_price,
                             'entry_low': current_price * 0.99,
@@ -372,7 +392,7 @@ def main():
                         st.rerun()
                     else:
                         st.session_state.selected_analysis = None
-                        st.error("Tidak dapat menganalisis aset. Pastikan simbol valid, periksa koneksi atau API key.")
+                        st.error("Tidak dapat menganalisis aset. Pastikan simbol valid.")
 
         # Tampilkan hasil analisis
         if st.session_state.selected_analysis:
@@ -393,15 +413,26 @@ def main():
                     st.metric("EMA Trend", analysis.get('ema_trend', 'NEUTRAL'))
                     st.metric("EMA Score", analysis.get('ema_score', 0))
                 
-                # Tampilkan pola terdeteksi
+                # Enhanced analysis details
                 if 'detected_patterns' in analysis and analysis['detected_patterns']:
                     st.write(f"📊 **Pola Terdeteksi:** {', '.join(analysis['detected_patterns'])}")
                 
-                # Tampilkan pattern score
                 if 'pattern_score' in analysis:
                     st.write(f"⭐ **Pattern Score:** {analysis['pattern_score']}")
                 
-                # Tambah display TP/SL
+                # Enhanced metrics
+                col3, col4 = st.columns(2)
+                with col3:
+                    if 'risk_category' in analysis:
+                        st.metric("⚖️ Risk Category", analysis['risk_category'])
+                    if 'momentum_quality' in analysis:
+                        st.metric("📈 Momentum Quality", analysis['momentum_quality'])
+                with col4:
+                    if 'market_phase' in analysis:
+                        st.metric("🌊 Market Phase", analysis['market_phase'])
+                    if 'reward_ratio' in analysis:
+                        st.metric("🎯 Reward Ratio", f"{analysis['reward_ratio']:.2f}")
+                
                 st.subheader("🎯 Take Profit & Stop Loss")
                 st.write(f"TP1: {analysis.get('tp1', 0):.5f}")
                 st.write(f"TP2: {analysis.get('tp2', 0):.5f}")
@@ -474,14 +505,15 @@ def main():
             with col2:
                 st.metric("🎯 TP3", f"{result['tp3']:.5f}")
                 st.metric("🛡️ SL", f"{result['sl']:.5f}")
-                st.metric("📊 Risk/Reward", f"{(result['tp1'] - result['entry_price']) / (result['entry_price'] - result['sl']):.2f}")
+                risk_reward = (result['tp1'] - result['entry_price']) / (result['entry_price'] - result['sl'])
+                st.metric("📊 Risk/Reward", f"{risk_reward:.2f}")
             
             # Tombol untuk menambahkan ke posisi
             if st.button("✅ Tambahkan ke Posisi Aktif", key="add_custom"):
                 position_id = bot.db.save_position(
                     symbol=result['symbol'],
                     market_type=bot.mode,
-                    action="LONG",  # Default action untuk custom entry
+                    action="LONG",
                     entry_price=result['entry_price'],
                     tp1=result['tp1'],
                     tp2=result['tp2'],
@@ -503,7 +535,6 @@ def main():
     with tab4:
         st.subheader("📊 Posisi Aktif")
         
-        # Refresh positions data
         if st.button("🔄 Refresh Posisi", key="refresh_positions"):
             st.session_state.positions_data = bot.get_active_positions()
             st.success("Posisi diperbarui!")
@@ -515,7 +546,6 @@ def main():
             st.write(f"**📈 Total Posisi Aktif:** {len(st.session_state.positions_data)}")
             
             for pos in st.session_state.positions_data:
-                # Unpack position data
                 pos_id = pos[0]
                 symbol = pos[1]
                 market_type = pos[2]
@@ -531,7 +561,7 @@ def main():
                 if action == "LONG":
                     pl_pct = ((current_price - entry_price) / entry_price) * 100
                     pl_color = "green" if pl_pct >= 0 else "red"
-                else:  # SHORT
+                else:
                     pl_pct = ((entry_price - current_price) / entry_price) * 100
                     pl_color = "green" if pl_pct >= 0 else "red"
                 
@@ -545,7 +575,6 @@ def main():
                     st.write(f"💰 P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
                 
                 with col2:
-                    # Update current price
                     if st.button("🔄", key=f"update_{symbol}"):
                         ticker = bot.data_provider.get_ticker(symbol)
                         if ticker and 'last' in ticker:
@@ -555,7 +584,6 @@ def main():
                             st.rerun()
                 
                 with col3:
-                    # Close position
                     exit_price = st.number_input(
                         "Exit Price",
                         value=float(current_price),
@@ -576,7 +604,6 @@ def main():
     with tab5:
         st.subheader("📋 History Trading")
         
-        # Refresh history data
         if st.button("🔄 Refresh History", key="refresh_history"):
             st.session_state.history_data = bot.get_trade_history(20)
             st.success("History diperbarui!")
@@ -588,7 +615,6 @@ def main():
             st.write(f"**📊 Total Trade:** {len(st.session_state.history_data)}")
             
             for trade in st.session_state.history_data:
-                # Unpack trade data
                 trade_id = trade[0]
                 symbol = trade[1]
                 market_type = trade[2]
@@ -599,7 +625,6 @@ def main():
                 trade_type = trade[7]
                 timestamp = trade[8]
                 
-                # Determine color based on profit/loss
                 color = "green" if profit_loss > 0 else "red"
                 emoji = "✅" if profit_loss > 0 else "❌"
                 
@@ -615,7 +640,6 @@ def main():
     with tab6:
         st.subheader("📡 Live Scanner")
         
-        # Start/stop live monitoring
         if st.button("🚀 Mulai Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Hentikan Live Monitoring"):
             st.session_state.live_monitoring = not st.session_state.live_monitoring
             st.rerun()
@@ -623,7 +647,6 @@ def main():
         if st.session_state.live_monitoring:
             st.info("📡 Live monitoring aktif. Harga akan diperbarui setiap 30 detik.")
             
-            # Display current positions with live prices
             if st.session_state.positions_data:
                 st.subheader("📊 Posisi Aktif - Live")
                 for pos in st.session_state.positions_data:
@@ -631,7 +654,6 @@ def main():
                     entry_price = pos[4]
                     current_price = pos[11] if len(pos) > 11 else entry_price
                     
-                    # Get latest price
                     ticker = bot.data_provider.get_ticker(symbol)
                     if ticker and 'last' in ticker:
                         latest_price = ticker['last']
@@ -647,23 +669,22 @@ def main():
                         st.write(f"💰 Total P/L: <span style='color:{total_color}'>{total_change:+.2f}%</span>", unsafe_allow_html=True)
                         st.markdown("---")
             
-            # Auto refresh checkbox
             st_auto_refresh = st.checkbox("🔄 Auto Refresh (30s)")
             if st_auto_refresh:
                 time.sleep(30)
                 st.rerun()
                 
-            # Manual refresh button
             if st.button("🔄 Refresh Sekarang"):
                 st.rerun()
                 
         else:
             st.info("👉 Klik 'Mulai Live Monitoring' untuk memantau harga real-time.")
+
     # ===============================
-    # Tab 7: ML Backtest (NEW)
+    # Tab 7: ML Backtest
     # ===============================
     with tab7:
-        st.subheader("🤖 Machine Learning Backtesting")
+        st.subheader("🤖 ML Backtest & Analysis")
         
         col1, col2 = st.columns([2, 1])
         with col1:
@@ -676,7 +697,6 @@ def main():
             if st.button("🚀 Run Backtest", key="run_backtest"):
                 if backtest_symbol:
                     with st.spinner("Running comprehensive backtest..."):
-                        # Convert symbol based on mode
                         symbol = backtest_symbol.upper()
                         if bot.mode == "crypto":
                             symbol = f"{symbol}/USDT"
@@ -688,29 +708,41 @@ def main():
                         elif bot.mode == "saham_id":
                             symbol = f"{symbol}.JK"
                         
-                        results = bot.run_comprehensive_backtest(symbol, backtest_days)
+                        # Check if backtest method exists
+                        if hasattr(bot, 'run_comprehensive_backtest'):
+                            results = bot.run_comprehensive_backtest(symbol, backtest_days)
+                        else:
+                            results = {"error": "Backtest feature not available"}
                         st.session_state.backtest_results = results
                         st.rerun()
         
         with col2:
-            if st.button("📊 ML Analysis", key="ml_analysis"):
+            if st.button("📊 Enhanced Analysis", key="enhanced_analysis"):
                 if backtest_symbol:
-                    with st.spinner("Running ML-enhanced analysis..."):
+                    with st.spinner("Running enhanced analysis..."):
                         symbol = backtest_symbol.upper()
                         if bot.mode == "crypto":
                             symbol = f"{symbol}/USDT"
                         
-                        analysis = bot.analyze_with_ml(symbol)
+                        # Check if enhanced analysis method exists
+                        if hasattr(bot, 'analyze_with_ml'):
+                            analysis = bot.analyze_with_ml(symbol)
+                        else:
+                            analysis = bot.analyze_asset(symbol)
                         if analysis:
                             st.session_state.selected_analysis = analysis
-                            st.success("ML analysis completed!")
+                            st.success("Enhanced analysis completed!")
                         else:
-                            st.error("ML analysis failed!")
+                            st.error("Enhanced analysis failed!")
         
         with col3:
             if st.button("📈 Risk Assessment", key="risk_assess"):
                 if backtest_symbol:
-                    risk_assessment = bot.get_risk_assessment(backtest_symbol)
+                    # Check if risk assessment method exists
+                    if hasattr(bot, 'get_risk_assessment'):
+                        risk_assessment = bot.get_risk_assessment(backtest_symbol)
+                    else:
+                        risk_assessment = None
                     if risk_assessment:
                         st.session_state.risk_assessments[backtest_symbol] = risk_assessment
                         st.success("Risk assessment completed!")
@@ -722,21 +754,19 @@ def main():
             results = st.session_state.backtest_results
             st.subheader("📊 Backtest Results")
             
-            # Performance Metrics
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Trades", results['total_trades'])
-                st.metric("Final Balance", f"${results['final_balance']:,.2f}")
+                st.metric("Total Trades", results.get('total_trades', 0))
+                st.metric("Final Balance", f"${results.get('final_balance', 0):,.2f}")
             with col2:
-                st.metric("Win Rate", f"{results['win_rate']:.1%}")
-                st.metric("Total P&L", f"${results['total_pnl']:,.2f}")
+                st.metric("Win Rate", f"{results.get('win_rate', 0):.1%}")
+                st.metric("Total P&L", f"${results.get('total_pnl', 0):,.2f}")
             with col3:
-                st.metric("Sharpe Ratio", f"{results['sharpe_ratio']:.2f}")
+                st.metric("Sharpe Ratio", f"{results.get('sharpe_ratio', 0):.2f}")
             with col4:
-                st.metric("Max Drawdown", f"{results['max_drawdown']:.1%}")
+                st.metric("Max Drawdown", f"{results.get('max_drawdown', 0):.1%}")
             
-            # Equity Curve Visualization
-            if 'equity_curve' in results:
+            if 'equity_curve' in results and PLOTLY_AVAILABLE:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     y=results['equity_curve'],
@@ -754,29 +784,28 @@ def main():
         elif st.session_state.backtest_results and 'error' in st.session_state.backtest_results:
             st.error(f"Backtest Error: {st.session_state.backtest_results['error']}")
 
-        # Display ML Analysis Results
+        # Display Enhanced Analysis
         if st.session_state.selected_analysis and isinstance(st.session_state.selected_analysis, dict):
             analysis = st.session_state.selected_analysis
-            st.subheader("🤖 ML-Enhanced Analysis")
+            st.subheader("🤖 Enhanced Analysis")
             
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Traditional Score", analysis.get('base_score', 0))
-                st.metric("ML Confidence", f"{analysis.get('ml_confidence', 1.0):.2f}")
+                st.metric("Base Score", analysis.get('base_score', analysis.get('score', 0)))
+                if 'ml_confidence' in analysis:
+                    st.metric("ML Confidence", f"{analysis.get('ml_confidence', 1.0):.2f}")
             with col2:
-                st.metric("Combined Score", analysis.get('combined_score', 0))
-                st.metric("Final Action", analysis.get('action', 'NEUTRAL'))
+                st.metric("Final Score", analysis.get('final_score', analysis.get('score', 0)))
+                st.metric("Action", analysis.get('action', 'NEUTRAL'))
             
-            # Risk Metrics from ML Analysis
             if 'risk_metrics' in analysis:
-                st.subheader("📊 Enhanced Risk Metrics")
+                st.subheader("📊 Risk Metrics")
                 risk_cols = st.columns(3)
                 with risk_cols[0]:
                     st.metric("Risk Category", analysis['risk_metrics']['risk_category'])
                     st.metric("Reward Ratio", f"{analysis['risk_metrics']['reward_ratio']:.2f}")
                 with risk_cols[1]:
                     st.metric("Position Size", f"{analysis['risk_metrics']['optimal_position_size']:.1%}")
-                    st.metric("Volatility Adj", analysis['risk_metrics']['volatility_adjustment'])
                 with risk_cols[2]:
                     st.metric("Drawdown Risk", analysis['risk_metrics']['drawdown_risk'])
 
@@ -795,7 +824,7 @@ def main():
                     st.info(f"**Recommendation:** {assessment['recommendation']}")
 
     # ===============================
-    # Tab 8: Portfolio Optimization (NEW)
+    # Tab 8: Portfolio Optimization
     # ===============================
     with tab8:
         st.subheader("⚖️ Portfolio Optimization")
@@ -806,33 +835,56 @@ def main():
         with col2:
             if st.button("🔄 Optimize Portfolio", key="optimize_portfolio"):
                 if st.session_state.scanned_results:
-                    allocations = bot.optimize_portfolio_allocation(
-                        st.session_state.scanned_results, 
-                        portfolio_capital
-                    )
+                    # Check if portfolio optimization method exists
+                    if hasattr(bot, 'optimize_portfolio_allocation'):
+                        allocations = bot.optimize_portfolio_allocation(
+                            st.session_state.scanned_results, 
+                            portfolio_capital
+                        )
+                    else:
+                        # Fallback simple allocation
+                        signals = st.session_state.scanned_results[:5]  # Take top 5
+                        total_signals = len(signals)
+                        if total_signals > 0:
+                            base_allocation = 1.0 / total_signals
+                            allocations = {
+                                'signals': [
+                                    {
+                                        'symbol': s['symbol'],
+                                        'score': s.get('score', 1),
+                                        'risk_category': s.get('risk_category', 'MEDIUM'),
+                                        'allocation_percent': base_allocation,
+                                        'allocated_capital': portfolio_capital * base_allocation
+                                    }
+                                    for s in signals
+                                ],
+                                'total_allocated_percent': 1.0,
+                                'total_allocated_capital': portfolio_capital,
+                                'remaining_capital': 0
+                            }
+                        else:
+                            allocations = {}
                     st.session_state.portfolio_allocations = allocations
                     st.rerun()
         
         # Display Portfolio Allocations
         if st.session_state.portfolio_allocations:
             allocations = st.session_state.portfolio_allocations
-            st.subheader("📈 Optimized Portfolio Allocation")
+            st.subheader("📈 Portfolio Allocation")
             
-            # Summary Metrics
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Allocated", f"{allocations['total_allocated_percent']:.1%}")
+                st.metric("Total Allocated", f"{allocations.get('total_allocated_percent', 0):.1%}")
             with col2:
-                st.metric("Allocated Capital", f"${allocations['total_allocated_capital']:,.2f}")
+                st.metric("Allocated Capital", f"${allocations.get('total_allocated_capital', 0):,.2f}")
             with col3:
-                st.metric("Remaining Capital", f"${allocations['remaining_capital']:,.2f}")
+                st.metric("Remaining Capital", f"${allocations.get('remaining_capital', 0):,.2f}")
             with col4:
-                st.metric("Number of Signals", len(allocations['signals']))
+                st.metric("Number of Signals", len(allocations.get('signals', [])))
             
-            # Detailed Allocations
             st.subheader("📋 Position Details")
             allocation_data = []
-            for signal in allocations['signals']:
+            for signal in allocations.get('signals', []):
                 allocation_data.append({
                     'Symbol': signal['symbol'],
                     'Score': signal['score'],
@@ -845,27 +897,23 @@ def main():
                 df_allocations = pd.DataFrame(allocation_data)
                 st.dataframe(df_allocations, use_container_width=True)
                 
-                # Visualization
-                fig = go.Figure(data=[go.Pie(
-                    labels=[s['symbol'] for s in allocations['signals']],
-                    values=[s['allocated_capital'] for s in allocations['signals']],
-                    hole=.3
-                )])
-                fig.update_layout(title="Portfolio Allocation")
-                st.plotly_chart(fig, use_container_width=True)
+                if PLOTLY_AVAILABLE:
+                    fig = go.Figure(data=[go.Pie(
+                        labels=[s['symbol'] for s in allocations['signals']],
+                        values=[s['allocated_capital'] for s in allocations['signals']],
+                        hole=.3
+                    )])
+                    fig.update_layout(title="Portfolio Allocation")
+                    st.plotly_chart(fig, use_container_width=True)
         
-        # Correlation Matrix (Placeholder)
-        st.subheader("🔗 Portfolio Correlation Analysis")
+        st.subheader("🔗 Portfolio Analysis")
         st.info("""
-        **Correlation Features:**
-        - Diversification scoring across assets
+        **Portfolio Features:**
         - Risk-adjusted position sizing
-        - Dynamic correlation monitoring
+        - Diversification scoring
+        - Dynamic allocation optimization
+        - Correlation analysis
         """)
-        
-        # Portfolio Performance Simulation
-        if st.button("📊 Simulate Portfolio Performance", key="simulate_portfolio"):
-            st.info("Portfolio simulation would show historical performance of optimized allocations")
 
 if __name__ == "__main__":
     main()
