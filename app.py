@@ -341,10 +341,25 @@ def main():
         st.subheader("🔍 Analisis Aset Spesifik")
         
         # Input untuk simbol
-        symbol = st.text_input("Masukkan simbol aset:", key="symbol_input")
+        symbol_input = st.text_input("Masukkan simbol aset (contoh: btc untuk crypto, xau untuk forex, bbca untuk saham indo):", key="symbol_input")
 
         if st.button("Analisis", key="analyze_asset"):
             with st.spinner("Menganalisis..."):
+                # Auto-convert symbol based on mode
+                symbol = symbol_input.upper()
+                if bot.mode == "crypto":
+                    symbol = f"{symbol}/USDT"
+                elif bot.mode == "forex":
+                    if symbol == "XAU":
+                        symbol = "GC=F"  # Gold futures symbol for real data
+                    elif len(symbol) == 6:
+                        symbol = f"{symbol}=X"
+                    else:
+                        st.error("Format symbol forex: 6 huruf seperti EURUSD atau XAU untuk gold.")
+                        continue
+                elif bot.mode == "saham_id":
+                    symbol = f"{symbol}.JK"
+                
                 analysis = bot.analyze_asset(symbol)
                 if analysis and isinstance(analysis, dict) and 'symbol' in analysis:
                     st.session_state.selected_analysis = analysis
@@ -356,15 +371,15 @@ def main():
                         current_price = ticker['last']
                         analysis = {
                             'symbol': symbol,
-                            'action': 'LONG',
+                            'action': 'LONG' if current_price > 1 else 'SHORT',  # Variasi action berdasarkan harga
                             'score': 1,
                             'ideal_entry': current_price,
                             'entry_low': current_price * 0.99,
                             'entry_high': current_price * 1.01,
-                            'tp1': current_price * 1.05,
-                            'tp2': current_price * 1.10,
-                            'tp3': current_price * 1.15,
-                            'sl': current_price * 0.95,
+                            'tp1': current_price * (1.05 if current_price > 1 else 0.95),
+                            'tp2': current_price * (1.10 if current_price > 1 else 0.90),
+                            'tp3': current_price * (1.15 if current_price > 1 else 0.85),
+                            'sl': current_price * (0.95 if current_price > 1 else 1.05),
                             'current_price': current_price,
                             'rsi': 50.0,
                             'trend': 'NEUTRAL',
@@ -408,6 +423,13 @@ def main():
                 # Tampilkan pattern score
                 if 'pattern_score' in analysis:
                     st.write(f"⭐ **Pattern Score:** {analysis['pattern_score']}")
+                
+                # Tambah display TP/SL
+                st.subheader("🎯 Take Profit & Stop Loss")
+                st.write(f"TP1: {analysis.get('tp1', 0):.5f}")
+                st.write(f"TP2: {analysis.get('tp2', 0):.5f}")
+                st.write(f"TP3: {analysis.get('tp3', 0):.5f}")
+                st.write(f"SL: {analysis.get('sl', 0):.5f}")
                 
                 # Input entry price
                 entry_price = st.number_input(
@@ -453,63 +475,50 @@ def main():
             if symbol_custom and entry_price_custom > 0:
                 with st.spinner("Menghitung..."):
                     result = bot.calculate_custom_entry(symbol_custom, entry_price_custom)
-                    if result and isinstance(result, dict) and 'symbol' in result:
+                    if result:
                         st.session_state.custom_result = result
                         st.success("Perhitungan selesai!")
                     else:
-                        # Fallback untuk custom jika no data
-                        result = {
-                            'symbol': symbol_custom,
-                            'entry_price': entry_price_custom,
-                            'tp1': entry_price_custom * 1.1,
-                            'tp2': entry_price_custom * 1.2,
-                            'tp3': entry_price_custom * 1.3,
-                            'sl': entry_price_custom * 0.9
-                        }
-                        st.session_state.custom_result = result
-                        st.success("Menggunakan fallback perhitungan karena tidak ada data historis.")
+                        st.error("Tidak dapat menghitung TP/SL. Pastikan simbol valid.")
             else:
                 st.warning("Masukkan simbol dan harga entry yang valid.")
         
         # Tampilkan hasil custom entry
         if st.session_state.custom_result:
             result = st.session_state.custom_result
-            if isinstance(result, dict) and 'symbol' in result:
-                st.subheader(f"📊 Hasil untuk {result['symbol']}")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("💰 Entry Price", f"{result['entry_price']:.5f}")
-                    st.metric("🎯 TP1", f"{result['tp1']:.5f}")
-                    st.metric("🎯 TP2", f"{result['tp2']:.5f}")
-                
-                with col2:
-                    st.metric("🎯 TP3", f"{result['tp3']:.5f}")
-                    st.metric("🛡️ SL", f"{result['sl']:.5f}")
-                    st.metric("📊 Risk/Reward", f"{(result['tp1'] - result['entry_price']) / (result['entry_price'] - result['sl']):.2f}")
-                
-                # Tombol untuk menambahkan ke posisi
-                if st.button("✅ Tambahkan ke Posisi Aktif", key="add_custom"):
-                    position_id = bot.db.save_position(
-                        symbol=result['symbol'],
-                        market_type=bot.mode,
-                        action="LONG",  # Default action untuk custom entry
-                        entry_price=result['entry_price'],
-                        tp1=result['tp1'],
-                        tp2=result['tp2'],
-                        tp3=result['tp3'],
-                        sl=result['sl'],
-                        entry_low=result['entry_price'] * 0.99,
-                        entry_high=result['entry_price'] * 1.01,
-                    )
-                    if position_id:
-                        st.success(f"Posisi {result['symbol']} ditambahkan!")
-                        st.session_state.positions_data = bot.get_active_positions()
-                        st.rerun()
-                    else:
-                        st.error("Gagal tambah posisi.")
-            else:
-                st.error("Data hasil custom tidak valid.")
+            st.subheader(f"📊 Hasil untuk {result['symbol']}")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("💰 Entry Price", f"{result['entry_price']:.5f}")
+                st.metric("🎯 TP1", f"{result['tp1']:.5f}")
+                st.metric("🎯 TP2", f"{result['tp2']:.5f}")
+            
+            with col2:
+                st.metric("🎯 TP3", f"{result['tp3']:.5f}")
+                st.metric("🛡️ SL", f"{result['sl']:.5f}")
+                st.metric("📊 Risk/Reward", f"{(result['tp1'] - result['entry_price']) / (result['entry_price'] - result['sl']):.2f}")
+            
+            # Tombol untuk menambahkan ke posisi
+            if st.button("✅ Tambahkan ke Posisi Aktif", key="add_custom"):
+                position_id = bot.db.save_position(
+                    symbol=result['symbol'],
+                    market_type=bot.mode,
+                    action="LONG",  # Default action untuk custom entry
+                    entry_price=result['entry_price'],
+                    tp1=result['tp1'],
+                    tp2=result['tp2'],
+                    tp3=result['tp3'],
+                    sl=result['sl'],
+                    entry_low=result['entry_price'] * 0.99,
+                    entry_high=result['entry_price'] * 1.01,
+                )
+                if position_id:
+                    st.success(f"Posisi {result['symbol']} ditambahkan!")
+                    st.session_state.positions_data = bot.get_active_positions()
+                    st.rerun()
+                else:
+                    st.error("Gagal tambah posisi.")
 
     # ===============================
     # Tab 4: Posisi Aktif
@@ -529,12 +538,12 @@ def main():
             st.write(f"**📈 Total Posisi Aktif:** {len(st.session_state.positions_data)}")
             
             for pos in st.session_state.positions_data:
-                # Unpack position data with defaults
+                # Unpack position data
                 pos_id = pos[0]
-                symbol = pos[1] if len(pos) > 1 else "Unknown"
-                market_type = pos[2] if len(pos) > 2 else bot.mode
-                action = pos[3] if len(pos) > 3 else "LONG"
-                entry_price = pos[4] if len(pos) > 4 else 0
+                symbol = pos[1]
+                market_type = pos[2]
+                action = pos[3]
+                entry_price = pos[4]
                 current_price = pos[11] if len(pos) > 11 else entry_price
                 sl = pos[9] if len(pos) > 9 else 0
                 tp1 = pos[6] if len(pos) > 6 else 0
@@ -542,16 +551,12 @@ def main():
                 tp3 = pos[8] if len(pos) > 8 else 0
                 
                 # Calculate P/L
-                if entry_price != 0:
-                    if action == "LONG":
-                        pl_pct = ((current_price - entry_price) / entry_price) * 100 
-                        pl_color = "green" if pl_pct >= 0 else "red"
-                    else:  # SHORT
-                        pl_pct = ((entry_price - current_price) / entry_price) * 100 
-                        pl_color = "green" if pl_pct >= 0 else "red"
-                else:
-                    pl_pct = 0
-                    pl_color = "gray"
+                if action == "LONG":
+                    pl_pct = ((current_price - entry_price) / entry_price) * 100
+                    pl_color = "green" if pl_pct >= 0 else "red"
+                else:  # SHORT
+                    pl_pct = ((entry_price - current_price) / entry_price) * 100
+                    pl_color = "green" if pl_pct >= 0 else "red"
                 
                 st.markdown("---")
                 col1, col2, col3 = st.columns([3, 1, 1])
@@ -571,8 +576,6 @@ def main():
                             st.success(f"Harga {symbol} diperbarui!")
                             st.session_state.positions_data = bot.get_active_positions()
                             st.rerun()
-                        else:
-                            st.error(f"Gagal mengambil harga terbaru untuk {symbol}.")
                 
                 with col3:
                     # Close position
@@ -608,16 +611,16 @@ def main():
             st.write(f"**📊 Total Trade:** {len(st.session_state.history_data)}")
             
             for trade in st.session_state.history_data:
-                # Unpack with defaults
-                trade_id = trade[0] if len(trade) > 0 else 0
-                symbol = trade[1] if len(trade) > 1 else "Unknown"
-                market_type = trade[2] if len(trade) > 2 else bot.mode
-                action = trade[3] if len(trade) > 3 else "LONG"
-                entry_price = trade[4] if len(trade) > 4 else 0
-                exit_price = trade[5] if len(trade) > 5 else 0
-                profit_loss = trade[6] if len(trade) > 6 else 0
-                trade_type = trade[7] if len(trade) > 7 else "manual"
-                timestamp = trade[8] if len(trade) > 8 else datetime.now()
+                # Unpack trade data
+                trade_id = trade[0]
+                symbol = trade[1]
+                market_type = trade[2]
+                action = trade[3]
+                entry_price = trade[4]
+                exit_price = trade[5]
+                profit_loss = trade[6]
+                trade_type = trade[7]
+                timestamp = trade[8]
                 
                 # Determine color based on profit/loss
                 color = "green" if profit_loss > 0 else "red"
@@ -647,16 +650,16 @@ def main():
             if st.session_state.positions_data:
                 st.subheader("📊 Posisi Aktif - Live")
                 for pos in st.session_state.positions_data:
-                    symbol = pos[1] if len(pos) > 1 else "Unknown"
-                    entry_price = pos[4] if len(pos) > 4 else 0
+                    symbol = pos[1]
+                    entry_price = pos[4]
                     current_price = pos[11] if len(pos) > 11 else entry_price
                     
                     # Get latest price
                     ticker = bot.data_provider.get_ticker(symbol)
                     if ticker and 'last' in ticker:
                         latest_price = ticker['last']
-                        price_change = ((latest_price - current_price) / current_price) * 100 if current_price != 0 else 0
-                        total_change = ((latest_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
+                        price_change = ((latest_price - current_price) / current_price) * 100
+                        total_change = ((latest_price - entry_price) / entry_price) * 100
                         
                         color = "green" if price_change >= 0 else "red"
                         total_color = "green" if total_change >= 0 else "red"
@@ -666,8 +669,6 @@ def main():
                         st.write(f"📈 Change: <span style='color:{color}'>{price_change:+.2f}%</span>", unsafe_allow_html=True)
                         st.write(f"💰 Total P/L: <span style='color:{total_color}'>{total_change:+.2f}%</span>", unsafe_allow_html=True)
                         st.markdown("---")
-                    else:
-                        st.warning(f"Gagal mengambil harga live untuk {symbol}.")
             
             # Auto refresh checkbox
             st_auto_refresh = st.checkbox("🔄 Auto Refresh (30s)")
