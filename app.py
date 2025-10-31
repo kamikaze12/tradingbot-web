@@ -356,7 +356,7 @@ def main():
                         symbol = f"{symbol}=X"
                     else:
                         st.error("Format symbol forex: 6 huruf seperti EURUSD atau XAU untuk gold.")
-                        continue
+                        st.stop()
                 elif bot.mode == "saham_id":
                     symbol = f"{symbol}.JK"
                 
