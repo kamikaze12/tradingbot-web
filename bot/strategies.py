@@ -127,7 +127,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         
         # Symmetrical Triangle: converging trendlines with similar slopes
         if abs(high_slope) > 0 and abs(low_slope) > 0:
-            if high_slope < 0 and low_slope > 0 and abs(high_slope/low_slope) < 1.5:
+            if high_slope < 0 and low_slope > 0 and abs(high_slope/low_slope) < 2.0:
                 patterns['symmetrical_triangle'] = True
         
         # Ascending Triangle: horizontal resistance, rising support
@@ -252,7 +252,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             body_prev = abs(close_prev - open_prev)
             
             # Doji Pattern - very small body
-            if range_curr > 0 and body_curr/range_curr < 0.1:
+            if range_curr > 0 and body_curr/range_curr < 0.15:
                 patterns['doji'] = True
                 
             # Hammer Pattern - small body at top with long lower wick
@@ -621,6 +621,9 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         for pattern, detected in harmonic_patterns.items():
             if detected:
                 pattern_score += 1  # All harmonic patterns get a small boost
+        
+        if pattern_score == 0 and market_regime['volatility_level'] == 'LOW':  # Tweak: Boost neutral
+            pattern_score += 0.5
                 
         # PHASE 2 ENHANCEMENTS - CANDLESTICK PATTERN SCORING
         candlestick_score = 0
