@@ -158,8 +158,13 @@ def main():
                         st.info("Tidak ada token baru di Pump Fun.")
 
                 else:
-                    st.session_state.scanned_results = bot.scan_potential_assets(100)
-                    if not st.session_state.scanned_results:
+                    all_results = bot.scan_potential_assets(100)  # Scan 100 koin
+                    if all_results:
+                        # Sort berdasarkan abs(score) descending (LONG/SHORT kuat duluan)
+                        all_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
+                        st.session_state.scanned_results = all_results[:10]  # Tampil hanya 10 terbaik
+                        st.success("Scan selesai! Menampilkan 10 terbaik dari 100.")
+                    else:
                         st.warning("Tidak ada hasil scan dari metode utama. Mencoba fallback dengan aset populer.")
                         fallback_assets = bot.get_popular_assets(100)
                         fallback_results = []
@@ -171,24 +176,30 @@ def main():
                                 ticker = bot.data_provider.get_ticker(asset)
                                 if ticker and 'last' in ticker:
                                     current_price = ticker['last']
+                                    percentage = ticker.get('percentage', 0)
+                                    volume = ticker.get('volume', 1.0)
+                                    # Variasi score berdasarkan ticker
+                                    simple_score = 2 if percentage > 0 else -2 if percentage < 0 else 1
+                                    simple_patterns = ['ranging_channel'] if volume < 1000 else ['symmetrical_triangle'] if percentage == 0 else []
+                                    simple_pattern_score = 1 if simple_patterns else 0
                                     analysis = {
                                         'symbol': asset,
-                                        'action': 'LONG',
-                                        'score': 1,
+                                        'action': 'LONG' if percentage > 0 else 'SHORT' if percentage < 0 else 'NEUTRAL',
+                                        'score': simple_score,
                                         'ideal_entry': current_price,
                                         'entry_low': current_price * 0.99,
                                         'entry_high': current_price * 1.01,
-                                        'tp1': current_price * 1.05,
-                                        'tp2': current_price * 1.10,
-                                        'tp3': current_price * 1.15,
-                                        'sl': current_price * 0.95,
+                                        'tp1': current_price * (1.05 if percentage > 0 else 0.95),
+                                        'tp2': current_price * (1.10 if percentage > 0 else 0.90),
+                                        'tp3': current_price * (1.15 if percentage > 0 else 0.85),
+                                        'sl': current_price * (0.95 if percentage > 0 else 1.05),
                                         'current_price': current_price,
-                                        'rsi': 50.0,
-                                        'trend': 'NEUTRAL',
-                                        'volume_ratio': 1.0,
+                                        'rsi': 50.0 + (percentage * 5),
+                                        'trend': 'BULLISH' if percentage > 0 else 'BEARISH' if percentage < 0 else 'NEUTRAL',
+                                        'volume_ratio': volume / 1000 if volume > 1000 else 1.0,
                                         'atr': current_price * 0.01,
-                                        'detected_patterns': [],
-                                        'pattern_score': 0,
+                                        'detected_patterns': simple_patterns,
+                                        'pattern_score': simple_pattern_score,
                                         'ema_trend': 'NEUTRAL',
                                         'ema_score': 0
                                     }
@@ -267,14 +278,12 @@ def main():
                                 st.success(f"Posisi {symbol} ditambahkan!")
                                 st.session_state.positions_data = bot.get_active_positions()
                                 st.session_state.selected_positions.append(symbol)
-                                # Hapus dari selected_for_entry setelah berhasil ditambahkan
                                 if symbol in st.session_state.selected_for_entry:
                                     del st.session_state.selected_for_entry[symbol]
                                 st.rerun()
                             else:
                                 st.error("Gagal tambah posisi.")
                     
-                    # Tampilkan detail analisis
                     with st.expander("🔍 Detail Analisis"):
                         if 'momentum_quality' in analysis:
                             st.write(f"**Momentum Quality:** {analysis['momentum_quality']}")
@@ -283,7 +292,6 @@ def main():
                         if 'reward_ratio' in analysis:
                             st.write(f"**Reward Ratio:** {analysis['reward_ratio']:.2f}")
                     
-                    # Tombol untuk menghapus pilihan
                     if st.button(f"🗑️ Hapus {symbol} dari pilihan", key=f"remove_{symbol}"):
                         if symbol in st.session_state.selected_for_entry:
                             del st.session_state.selected_for_entry[symbol]
@@ -299,9 +307,9 @@ def main():
             st.subheader("⚙️ Kelola Sinyal")
             if st.button("🧹 Hapus Semua Sinyal Tidak Terpilih", key="confirm_delete"):
                 non_selected = [
-                    r['symbol'] for r in st.session_state.scanned_results
-                    if r['symbol'] not in st.session_state.selected_positions and 
-                    r['symbol'] not in st.session_state.selected_for_entry
+                    r["symbol"] for r in st.session_state.scanned_results
+                    if r["symbol"] not in st.session_state.selected_positions and 
+                    r["symbol"] not in st.session_state.selected_for_entry
                 ]
                 for sym in non_selected:
                     bot.db.delete_signal_by_symbol(sym, bot.mode)
@@ -317,7 +325,6 @@ def main():
         else:
             st.info("Tidak ada hasil scan. Periksa koneksi, API key, atau coba mode lain.")
 
-        # --- Auto Rescan
         st.markdown("---")
         if st.checkbox("🔄 Auto Rescan (30s)"):
             if "scheduler_thread" not in st.session_state:
