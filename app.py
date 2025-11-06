@@ -158,10 +158,10 @@ def main():
                         st.info("Tidak ada token baru di Pump Fun.")
 
                 else:
-                    st.session_state.scanned_results = bot.scan_potential_assets(50)
+                    st.session_state.scanned_results = bot.scan_potential_assets(100)
                     if not st.session_state.scanned_results:
                         st.warning("Tidak ada hasil scan dari metode utama. Mencoba fallback dengan aset populer.")
-                        fallback_assets = bot.get_popular_assets(10)
+                        fallback_assets = bot.get_popular_assets(100)
                         fallback_results = []
                         for asset in fallback_assets:
                             analysis = bot.analyze_asset(asset)
