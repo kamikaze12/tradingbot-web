@@ -348,7 +348,7 @@ class YFinanceDataProvider(DataProvider):
         """
         Dynamically fetch popular assets similar to crypto mode.
         Uses web scraping to get real-time top assets sorted by market cap or volume.
-        Falls back to empty list if scraping fails.
+        Falls back to hardcoded if scraping fails.
         """
         if self.market_type == 'saham_id':
             try:
@@ -377,12 +377,17 @@ class YFinanceDataProvider(DataProvider):
                 else:
                     raise ValueError("No assets found in scrape.")
             except Exception as e:
-                print(f"Error fetching saham ID assets dynamically: {e}")
-                return []
+                print(f"Error fetching saham ID assets dynamically: {e}. Falling back to hardcoded.")
+                hardcoded = ['BREN.JK', 'BBCA.JK', 'DCII.JK', 'TPIA.JK', 'BYAN.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK',
+                             'ADRO.JK', 'UNTR.JK', 'PGAS.JK', 'ANTM.JK', 'INDF.JK', 'CPIN.JK', 'KLBF.JK', 'UNVR.JK', 'HMSP.JK', 'GGRM.JK',
+                             'MDKA.JK', 'EXCL.JK', 'ISAT.JK', 'SMGR.JK', 'INTP.JK', 'AKRA.JK', 'JSMR.JK', 'SRTG.JK', 'TBIG.JK', 'TOWR.JK',
+                             'WIKA.JK', 'WSKT.JK', 'PTPP.JK', 'ADHI.JK', 'ACES.JK', 'AMRT.JK', 'ARTO.JK', 'AVIA.JK', 'BBRI.JK', 'BBTN.JK',
+                             'BFIN.JK', 'BMAS.JK', 'BRMS.JK', 'BUKA.JK', 'CITA.JK', 'DNET.JK', 'DOID.JK', 'EMTK.JK', 'ESSA.JK', 'FAPA.JK']
+                return hardcoded[:limit]
         
         elif self.market_type == 'forex':
             try:
-                url = "https://finance.yahoo.com/currencies/"
+                url = "https://www.tradingview.com/markets/currencies/rates-major/"
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
                 response = requests.get(url, headers=headers)
                 response.raise_for_status()
@@ -396,21 +401,23 @@ class YFinanceDataProvider(DataProvider):
                 
                 assets = []
                 for row in rows[:limit]:
-                    cells = row.find_all('td')
-                    if len(cells) >= 3:
-                        symbol_elem = cells[0].find('a')  # First cell has the symbol link
-                        if symbol_elem:
-                            symbol = symbol_elem.text.strip().replace('/', '') + '=X'  # e.g., 'EUR/USD' -> 'EURUSD=X'
-                            assets.append(symbol)
+                    symbol_cell = row.find('td').find('a')
+                    if symbol_cell:
+                        symbol = symbol_cell.text.strip().replace('/', '') + '=X'  # e.g., 'EURUSD' -> 'EURUSD=X'
+                        assets.append(symbol)
                 
                 if assets:
-                    print(f"Dynamically fetched {len(assets)} forex assets from Yahoo Finance.")
+                    print(f"Dynamically fetched {len(assets)} forex assets from TradingView.")
                     return assets
                 else:
                     raise ValueError("No assets found in scrape.")
             except Exception as e:
-                print(f"Error fetching forex assets dynamically: {e}")
-                return []
+                print(f"Error fetching forex assets dynamically: {e}. Falling back to hardcoded.")
+                hardcoded = ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+                             'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'NZDCAD=X', 'EURAUD=X', 'GBPAUD=X', 'NZDJPY=X',
+                             'USDMXN=X', 'USDTRY=X', 'USDCNY=X', 'USDINR=X', 'USDBRL=X', 'USDRUB=X', 'USDZAR=X', 'USDKRW=X', 'USDSEK=X', 'USDNOK=X',
+                             'USDPLN=X', 'USDSGD=X', 'USDHKD=X', 'USDDKK=X', 'EURCHF=X', 'GBCHF=X', 'AUDCHF=X', 'NZDCHF=X', 'CADCHF=X', 'EURSEK=X']
+                return hardcoded[:limit]
         
         return []
 
