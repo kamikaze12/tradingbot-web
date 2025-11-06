@@ -48,16 +48,16 @@ class AlphaVantageProvider(DataProvider):
             return f"{base[:3]}/{base[3:]}"
         return base
 
-    def get_ohlcv(self, symbol, timeframe, limit=200, market_type='crypto'):
+    def get_ohlcv(self, symbol, timeframe, limit=200):
         if not self.api_key:
             print("No Alpha Vantage key, skipping OHLCV.")
             return None
         try:
-            symbol_av = self._convert_symbol(symbol, market_type)
+            symbol_av = self._convert_symbol(symbol)
             if '/' in symbol_av:  # Forex
                 function = "FX_DAILY"
             else:
-                function = "DIGITAL_CURRENCY_DAILY" if market_type == 'crypto' else "TIME_SERIES_DAILY"
+                function = "DIGITAL_CURRENCY_DAILY" if 'crypto' in market_type else "TIME_SERIES_DAILY"
             params = {
                 "function": function,
                 "symbol": symbol_av,
@@ -92,12 +92,12 @@ class AlphaVantageProvider(DataProvider):
             print(f"Error getting OHLCV from Alpha Vantage for {symbol}: {e}")
         return None
 
-    def get_ticker(self, symbol, market_type='crypto'):
+    def get_ticker(self, symbol):
         if not self.api_key:
             print("No Alpha Vantage key, skipping ticker.")
             return None
         try:
-            symbol_av = self._convert_symbol(symbol, market_type)
+            symbol_av = self._convert_symbol(symbol)
             function = "CURRENCY_EXCHANGE_RATE" if '/' in symbol_av else "GLOBAL_QUOTE"
             params = {
                 "function": function,
@@ -302,7 +302,7 @@ class YFinanceDataProvider(DataProvider):
             try:
                 conv_symbol = self._convert_symbol(symbol, 'av')
                 print(f"Falling back to AlphaVantageProvider with symbol: {conv_symbol}")
-                av_df = self.fallback_av.get_ohlcv(conv_symbol, timeframe, limit, market_type=self.market_type)
+                av_df = self.fallback_av.get_ohlcv(conv_symbol, timeframe, limit)
                 if av_df is not None:
                     return av_df
             except Exception as av_e:
@@ -335,7 +335,7 @@ class YFinanceDataProvider(DataProvider):
             try:
                 conv_symbol = self._convert_symbol(symbol, 'av')
                 print(f"Falling back to AlphaVantageProvider with symbol: {conv_symbol}")
-                av_tk = self.fallback_av.get_ticker(conv_symbol, market_type=self.market_type)
+                av_tk = self.fallback_av.get_ticker(conv_symbol)
                 if av_tk is not None:
                     return av_tk
             except Exception as av_e:
@@ -344,75 +344,64 @@ class YFinanceDataProvider(DataProvider):
             print(f"All failed for ticker {symbol}. Returning dummy.")
             return {'last': 1.0, 'volume': 1000}
 
-    def get_popular_assets(self, limit=100):
+    def get_popular_assets(self, limit=50):
         """
-        Dynamically fetch popular assets similar to crypto mode, using web scraping.
-        For saham_id: Fetch from TradingView large-cap movers, sorted by market cap.
-        For forex: Fetch from Yahoo Finance currencies page, top traded pairs.
-        Returns list of symbols in appropriate format (.JK for saham, =X for forex).
-        Returns empty list if fetch fails.
+        Dynamically fetch popular assets similar to crypto mode.
+        Uses web scraping to get real-time top assets sorted by market cap or volume.
+        Falls back to empty list if scraping fails.
         """
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        
         if self.market_type == 'saham_id':
             try:
                 url = "https://www.tradingview.com/markets/stocks-indonesia/market-movers-large-cap/"
-                response = requests.get(url, headers=headers, timeout=10)
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+                response = requests.get(url, headers=headers)
                 response.raise_for_status()
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                # Find the table
                 table = soup.find('table')
                 if not table:
-                    raise ValueError("No table found on the page.")
+                    raise ValueError("No table found.")
                 
-                # Get rows skipping header
-                rows = table.find_all('tr')[1:]
+                rows = table.find_all('tr')[1:]  # Skip header
                 
                 assets = []
                 for row in rows[:limit]:
-                    # First td has <a> with symbol
-                    symbol_elem = row.find('td').find('a')
-                    if symbol_elem:
-                        symbol = symbol_elem.text.strip()
+                    symbol_cell = row.find('td').find('a')
+                    if symbol_cell:
+                        symbol = symbol_cell.text.strip()
                         assets.append(f"{symbol}.JK")
                 
                 if assets:
                     print(f"Dynamically fetched {len(assets)} saham ID assets from TradingView.")
                     return assets
                 else:
-                    raise ValueError("No assets extracted from scrape.")
+                    raise ValueError("No assets found in scrape.")
             except Exception as e:
-                print(f"Error fetching saham ID assets dynamically: {e}. Returning empty list.")
+                print(f"Error fetching saham ID assets dynamically: {e}")
                 return []
         
         elif self.market_type == 'forex':
             try:
-                url = "https://finance.yahoo.com/currencies"
-                response = requests.get(url, headers=headers, timeout=10)
+                url = "https://finance.yahoo.com/currencies/"
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+                response = requests.get(url, headers=headers)
                 response.raise_for_status()
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                # Find the table
                 table = soup.find('table')
                 if not table:
-                    raise ValueError("No table found on the page.")
+                    raise ValueError("No table found.")
                 
-                # Get rows skipping header
-                rows = table.find_all('tr')[1:]
+                rows = table.find_all('tr')[1:]  # Skip header
                 
                 assets = []
                 for row in rows[:limit]:
                     cells = row.find_all('td')
-                    if len(cells) >= 2:
-                        # Second td has <a> with href containing symbol
-                        symbol_elem = cells[1].find('a')
+                    if len(cells) >= 3:  # Ensure enough cells
+                        symbol_elem = cells[1].find('a')  # Second cell has chart link
                         if symbol_elem and 'href' in symbol_elem.attrs:
                             href = symbol_elem['href']
-                            # Extract from /chart/EURUSD%3DX
-                            symbol_match = re.search(r'/chart/(.+?%3D[X])', href)
+                            symbol_match = re.search(r'/chart/([A-Z]{6}%3D[X])', href)
                             if symbol_match:
                                 encoded_symbol = symbol_match.group(1)
                                 symbol = encoded_symbol.replace('%3D', '=')
@@ -422,9 +411,9 @@ class YFinanceDataProvider(DataProvider):
                     print(f"Dynamically fetched {len(assets)} forex assets from Yahoo Finance.")
                     return assets
                 else:
-                    raise ValueError("No assets extracted from scrape.")
+                    raise ValueError("No assets found in scrape.")
             except Exception as e:
-                print(f"Error fetching forex assets dynamically: {e}. Returning empty list.")
+                print(f"Error fetching forex assets dynamically: {e}")
                 return []
         
         return []
