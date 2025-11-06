@@ -389,13 +389,13 @@ class YFinanceDataProvider(DataProvider):
         
         elif self.market_type == 'forex':
             try:
-                url = "https://www.tradingview.com/markets/currencies/rates-major/"
+                url = "https://www.investing.com/currencies/"
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
                 response = requests.get(url, headers=headers)
                 response.raise_for_status()
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                table = soup.find('table')
+                table = soup.find('table', id='cr1') or soup.find('table', class_='genTbl')  # Common ID/class for currency table
                 if not table:
                     raise ValueError("No table found.")
                 
@@ -403,13 +403,18 @@ class YFinanceDataProvider(DataProvider):
                 
                 assets = []
                 for row in rows[:limit]:
-                    symbol_cell = row.find('td').find('a')
+                    symbol_cell = row.find('td', class_='plusIconTd') or row.find('td')
                     if symbol_cell:
-                        symbol = symbol_cell.text.strip()
-                        assets.append(f"{symbol}=X")
+                        a_tag = symbol_cell.find('a')
+                        if a_tag and 'href' in a_tag.attrs:
+                            href = a_tag['href']
+                            # Extract from /currencies/eur-usd -> 'eur-usd'
+                            pair = href.split('/')[-1].upper().replace('-', '')
+                            if len(pair) == 6:  # Ensure 6 chars like EURUSD
+                                assets.append(f"{pair}=X")
                 
                 if assets:
-                    print(f"Dynamically fetched {len(assets)} forex assets from TradingView.")
+                    print(f"Dynamically fetched {len(assets)} forex assets from Investing.com.")
                     return assets
                 else:
                     raise ValueError("No assets found in scrape.")
