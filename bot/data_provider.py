@@ -271,7 +271,7 @@ class YFinanceDataProvider(DataProvider):
         self.fallback_av = AlphaVantageProvider() # Only fallback ke Alpha
 
     def _convert_symbol(self, symbol, target='av'):
-        base = symbol.split('=')[0] if '=X' in symbol else symbol.split('.')[0] if '.JK' in symbol else symbol
+        base = symbol.split('=')[0] if '=X' in symbol else symbol.split('[0]') if '.JK' in symbol else symbol
         if target == 'av':
             if self.market_type == 'forex':
                 from_curr, to_curr = base[:3], base[3:]
@@ -338,6 +338,8 @@ class YFinanceDataProvider(DataProvider):
                 av_tk = self.fallback_av.get_ticker(conv_symbol)
                 if av_tk is not None:
                     return av_tk
+                else:
+                    print(f"Alpha Vantage returned None for {conv_symbol}")
             except Exception as av_e:
                 print(f"Alpha fallback ticker error: {av_e}")
             # Dummy fallback
@@ -403,8 +405,8 @@ class YFinanceDataProvider(DataProvider):
                 for row in rows[:limit]:
                     symbol_cell = row.find('td').find('a')
                     if symbol_cell:
-                        symbol = symbol_cell.text.strip().replace('/', '') + '=X'  # e.g., 'EURUSD' -> 'EURUSD=X'
-                        assets.append(symbol)
+                        symbol = symbol_cell.text.strip()
+                        assets.append(f"{symbol}=X")
                 
                 if assets:
                     print(f"Dynamically fetched {len(assets)} forex assets from TradingView.")
