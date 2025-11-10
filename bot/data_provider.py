@@ -437,4 +437,4 @@ class SolanaPumpFunProvider:
         return "EXAMPLE_MINT_TOKEN" # Ganti dengan parsing real dari logs
     async def get_solana_ticker(self, mint):
         return self.dex_provider.get_ticker('solana', mint) # Return {'last': price, 'volume': vol}
-sekarang data providerku ini kenapa kalo error stop harusnya kan jalan truz contoh saham indo sampai 60error langsung bre forex pun gitu
+
