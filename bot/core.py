@@ -345,14 +345,32 @@ class TradingBot:
         try:
             assets = self.data_provider.get_popular_assets(limit)
             results = []
-            for asset in assets:
+            successful_analysis = 0
+            failed_analysis = 0
+            
+            print(f"🔄 Scanning {len(assets)} assets in {self.mode} mode...")
+            
+            for i, asset in enumerate(assets):
+                print(f"  Analyzing {i+1}/{len(assets)}: {asset}")
+                
                 analysis = self.analyze_asset(asset)
-                if analysis and analysis["action"] in ["LONG", "SHORT"] and analysis["score"] >= self.config.get("min_score", 3):
-                    results.append(analysis)
-            print(f"Scanned {len(assets)} assets, found {len(results)} potential signals.")
+                
+                if analysis:
+                    if analysis["action"] in ["LONG", "SHORT"] and analysis["score"] >= self.config.get("min_score", 3):
+                        results.append(analysis)
+                        successful_analysis += 1
+                        print(f"    ✅ Signal found: {analysis['action']} (Score: {analysis['score']})")
+                    else:
+                        print(f"    ⚠️ No trade signal (Action: {analysis.get('action')}, Score: {analysis.get('score')})")
+                else:
+                    failed_analysis += 1
+                    print(f"    ❌ Analysis failed for {asset}")
+            
+            print(f"📊 Scan complete: {successful_analysis} signals, {failed_analysis} failed, {len(results)} potential trades")
             return results
+            
         except Exception as e:
-            print(f"Error scanning assets: {e}")
+            print(f"❌ Error scanning assets: {e}")
             return []
     def get_popular_assets(self, limit=50):
         if not self.data_provider:
@@ -369,21 +387,79 @@ class TradingBot:
             print("No data provider for analysis.")
             return None
         try:
+            # Clean symbol untuk forex/saham jika perlu
+            if self.mode == 'forex' and '=X' not in symbol:
+                symbol = f"{symbol}=X"
+            elif self.mode == 'saham_id' and not symbol.endswith('.JK'):
+                symbol = f"{symbol}.JK"
+            
+            print(f"📈 Fetching data for {symbol}...")
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
-            if df is not None and len(df) >= 30:  # Loosened to 30
-                analysis = self.strategy.analyze(df)
-                if analysis:
-                    analysis["symbol"] = symbol
-                    analysis["market_type"] = self.mode
-                    self.db.save_signal(analysis)
-                    return analysis
-            print(f"Insufficient data for {symbol}")
-            return None
+            
+            if df is None:
+                print(f"   ❌ No data returned for {symbol}")
+                return None
+                
+            if len(df) < 20:  # Reduced minimum data requirement
+                print(f"   ⚠️ Insufficient data for {symbol}: {len(df)} rows (min: 20)")
+                return None
+            
+            print(f"   ✅ Data fetched: {len(df)} rows")
+            analysis = self.strategy.analyze(df)
+            
+            if analysis:
+                analysis["symbol"] = symbol
+                analysis["market_type"] = self.mode
+                self.db.save_signal(analysis)
+                print(f"   📊 Analysis complete: {analysis['action']} (Score: {analysis['score']})")
+                return analysis
+            else:
+                print(f"   ⚠️ No analysis results for {symbol}")
+                return None
+                
         except Exception as e:
-            print(f"Error analyzing {symbol}: {e}")
+            print(f"❌ Error analyzing {symbol}: {e}")
             return None
+    def search_assets(self, query, limit=20):
+        """Search assets berdasarkan query untuk web interface"""
+        if not self.data_provider:
+            return []
+        
+        try:
+            # Jika data provider punya method search, gunakan itu
+            if hasattr(self.data_provider, 'search_assets'):
+                return self.data_provider.search_assets(query, limit)
+            else:
+                # Fallback: filter popular assets
+                all_assets = self.data_provider.get_popular_assets(limit=100)
+                query_clean = query.upper().strip()
+                
+                if self.mode == 'forex':
+                    results = [asset for asset in all_assets if query_clean in asset.replace('=X', '')]
+                elif self.mode == 'saham_id':
+                    results = [asset for asset in all_assets if query_clean in asset.replace('.JK', '')]
+                else:  # crypto
+                    results = [asset for asset in all_assets if query_clean in asset]
+                
+                return results[:limit]
+                
+        except Exception as e:
+            print(f"Error searching assets: {e}")
+            return []
+    def scan_selected_assets(self, symbols):
+        """Scan specific symbols (untuk web interface)"""
+        if not self.data_provider:
+            return []
+        
+        results = []
+        for symbol in symbols:
+            analysis = self.analyze_asset(symbol)
+            if analysis and analysis["action"] in ["LONG", "SHORT"]:
+                results.append(analysis)
+        
+        return results
     async def scan_pump_fun(self):
         if not self.pump_provider:
             print("No Pump Fun provider available.")
@@ -401,7 +477,7 @@ class TradingBot:
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
-            if df is not None and len(df) >= 30:  # Loosened to 30
+            if df is not None and len(df) >= 20:  # Reduced minimum data requirement
                 atr = self.strategy.calculate_atr(df)
                 return {
                     "symbol": symbol,
