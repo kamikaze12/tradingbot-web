@@ -346,7 +346,7 @@ class YFinanceDataProvider(DataProvider):
             print(f"All failed for ticker {symbol}. Returning dummy.")
             return {'last': 1.0, 'volume': 1000}
 
-    def get_popular_assets(self, limit=50):
+    def get_popular_assets(self, limit=100):
         if self.market_type == 'saham_id':
             # Updated list dari saham Indonesia populer (LQ45 + high volume)
             hardcoded = [
