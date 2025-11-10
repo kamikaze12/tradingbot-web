@@ -346,28 +346,51 @@ class YFinanceDataProvider(DataProvider):
             print(f"All failed for ticker {symbol}. Returning dummy.")
             return {'last': 1.0, 'volume': 1000}
 
-    def get_popular_assets(self, limit=100):
+    def get_popular_assets(self, limit=50):
         if self.market_type == 'saham_id':
-            # From search: top stocks by market cap in IDX
-            hardcoded = ['BREN.JK', 'BBCA.JK', 'DCII.JK', 'TPIA.JK', 'BYAN.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK',
-                         'ADRO.JK', 'UNTR.JK', 'PGAS.JK', 'ANTM.JK', 'INDF.JK', 'CPIN.JK', 'KLBF.JK', 'UNVR.JK', 'HMSP.JK', 'GGRM.JK',
-                         'MDKA.JK', 'EXCL.JK', 'ISAT.JK', 'SMGR.JK', 'INTP.JK', 'AKRA.JK', 'JSMR.JK', 'SRTG.JK', 'TBIG.JK', 'TOWR.JK',
-                         'WIKA.JK', 'WSKT.JK', 'PTPP.JK', 'ADHI.JK', 'ACES.JK', 'AMRT.JK', 'ARTO.JK', 'AVIA.JK', 'BBRI.JK', 'BBTN.JK',
-                         'BFIN.JK', 'BMAS.JK', 'BRMS.JK', 'BUKA.JK', 'CITA.JK', 'DNET.JK', 'DOID.JK', 'EMTK.JK', 'ESSA.JK', 'FAPA.JK']
+            # Updated list dari saham Indonesia populer (LQ45 + high volume)
+            hardcoded = [
+                'ACES.JK', 'ADRO.JK', 'AKRA.JK', 'AMRT.JK', 'ANTM.JK', 'ASII.JK', 
+                'BBCA.JK', 'BBNI.JK', 'BBRI.JK', 'BBTN.JK', 'BMRI.JK', 'BRPT.JK', 
+                'BSDE.JK', 'CPIN.JK', 'ERAA.JK', 'EXCL.JK', 'GGRM.JK', 'HMSP.JK', 
+                'ICBP.JK', 'INCO.JK', 'INDF.JK', 'INKP.JK', 'INTP.JK', 'ITMG.JK', 
+                'JPFA.JK', 'KLBF.JK', 'MDKA.JK', 'MIKA.JK', 'MNCN.JK', 'PGAS.JK', 
+                'PTBA.JK', 'PTPP.JK', 'PWON.JK', 'SMGR.JK', 'SRTG.JK', 'TBIG.JK', 
+                'TINS.JK', 'TKIM.JK', 'TLKM.JK', 'TOWR.JK', 'TPIA.JK', 'UNTR.JK', 
+                'UNVR.JK', 'WIKA.JK', 'WSKT.JK', 'BREN.JK', 'DCII.JK', 'BYAN.JK',
+                'ADHI.JK', 'BUKA.JK'
+            ]
             assets = hardcoded[:limit]
-            print(f"Hardcoded saham ID assets (updated from search): {len(assets)} returned.")
+            print(f"Hardcoded saham ID assets (updated): {len(assets)} returned.")
             return assets
         elif self.market_type == 'forex':
-            # From search: top most traded forex pairs
-            hardcoded = ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
-                         'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'NZDCAD=X', 'EURAUD=X', 'GBPAUD=X', 'NZDJPY=X',
-                         'USDMXN=X', 'USDTRY=X', 'USDCNY=X', 'USDINR=X', 'USDBRL=X', 'USDRUB=X', 'USDZAR=X', 'USDKRW=X', 'USDSEK=X', 'USDNOK=X',
-                         'USDPLN=X', 'USDSGD=X', 'USDHKD=X', 'USDDKK=X', 'EURCHF=X', 'GBCHF=X', 'AUDCHF=X', 'NZDCHF=X', 'CADCHF=X', 'EURSEK=X']
+            # Updated list forex pairs populer
+            hardcoded = [
+                'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 
+                'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X', 
+                'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPCAD=X', 
+                'AUDCAD=X', 'NZDCAD=X', 'EURAUD=X', 'GBPAUD=X', 'NZDJPY=X', 
+                'USDMXN=X', 'USDTRY=X', 'USDCNY=X', 'USDINR=X', 'USDBRL=X', 
+                'USDRUB=X', 'USDZAR=X', 'USDKRW=X', 'USDSEK=X', 'USDNOK=X', 
+                'USDPLN=X', 'USDSGD=X', 'USDHKD=X', 'USDDKK=X', 'EURCHF=X', 
+                'GBPCHF=X', 'AUDCHF=X', 'NZDCHF=X', 'CADCHF=X', 'EURSEK=X',
+                'EURHUF=X', 'USDHUF=X', 'USDCZK=X', 'USDTHB=X', 'USDMYR=X',
+                'USDPHP=X', 'USDRON=X', 'USDILS=X', 'USDSAR=X', 'USDAED=X'
+            ]
             assets = hardcoded[:limit]
-            print(f"Hardcoded forex assets (updated from search): {len(assets)} returned.")
+            print(f"Hardcoded forex assets (updated): {len(assets)} returned.")
             return assets
         else:
-            return []
+            # Untuk market type lainnya (crypto via yfinance)
+            hardcoded = [
+                'BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD', 
+                'SOL-USD', 'DOT-USD', 'DOGE-USD', 'LTC-USD', 'LINK-USD',
+                'TRX-USD', 'AVAX-USD', 'MATIC-USD', 'SHIB-USD', 'UNI-USD',
+                'ATOM-USD', 'XLM-USD', 'BCH-USD', 'ETC-USD', 'FIL-USD'
+            ]
+            assets = hardcoded[:limit]
+            print(f"Hardcoded crypto assets via yfinance: {len(assets)} returned.")
+            return assets
 
 class SolanaPumpFunProvider:
     def __init__(self, rpc_url):
@@ -399,5 +422,6 @@ class SolanaPumpFunProvider:
     def extract_token_mint(self, msg):
         # Placeholder (real: parse logs untuk dapat mint address)
         return "EXAMPLE_MINT_TOKEN" # Ganti dengan parsing real dari logs
+
     async def get_solana_ticker(self, mint):
         return self.dex_provider.get_ticker('solana', mint) # Return {'last': price, 'volume': vol}
