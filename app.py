@@ -41,6 +41,65 @@ def run_scheduler(bot):
         schedule.run_pending()
         time.sleep(1)
 
+def calculate_tp_probability(current_price, tp1, tp2, tp3, sl, action, volatility=0.02):
+    """Hitung probabilitas hit TP1, TP2, TP3 berdasarkan distance dan volatilitas"""
+    try:
+        if action == "LONG":
+            # Untuk LONG: TP di atas current price, SL di bawah
+            distances = {
+                'tp1': (tp1 - current_price) / current_price,
+                'tp2': (tp2 - current_price) / current_price,
+                'tp3': (tp3 - current_price) / current_price,
+                'sl': (current_price - sl) / current_price
+            }
+        else:  # SHORT
+            # Untuk SHORT: TP di bawah current price, SL di atas
+            distances = {
+                'tp1': (current_price - tp1) / current_price,
+                'tp2': (current_price - tp2) / current_price,
+                'tp3': (current_price - tp3) / current_price,
+                'sl': (sl - current_price) / current_price
+            }
+        
+        # Base probability berdasarkan distance
+        probabilities = {}
+        for target, distance in distances.items():
+            if target.startswith('tp'):
+                # Semakin dekat TP, semakin tinggi probabilitas
+                if distance <= 0.01:  # Sangat dekat (<1%)
+                    base_prob = 0.7
+                elif distance <= 0.03:  # Dekat (1-3%)
+                    base_prob = 0.5
+                elif distance <= 0.05:  # Sedang (3-5%)
+                    base_prob = 0.3
+                elif distance <= 0.08:  # Jauh (5-8%)
+                    base_prob = 0.2
+                else:  # Sangat jauh (>8%)
+                    base_prob = 0.1
+                
+                # Adjust berdasarkan volatilitas
+                volatility_adjustment = volatility * 5  # Normalize volatility
+                adjusted_prob = max(0.05, min(0.9, base_prob - volatility_adjustment))
+                
+                probabilities[target] = adjusted_prob
+        
+        # Pastikan TP1 > TP2 > TP3
+        if 'tp1' in probabilities and 'tp2' in probabilities and 'tp3' in probabilities:
+            if action == "LONG":
+                probabilities['tp1'] = max(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+                probabilities['tp2'] = min(probabilities['tp1'], max(probabilities['tp2'], probabilities['tp3']))
+                probabilities['tp3'] = min(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+            else:  # SHORT
+                probabilities['tp1'] = max(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+                probabilities['tp2'] = min(probabilities['tp1'], max(probabilities['tp2'], probabilities['tp3']))
+                probabilities['tp3'] = min(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+        
+        return probabilities
+        
+    except Exception as e:
+        print(f"Error calculating TP probability: {e}")
+        return {"tp1": 0.5, "tp2": 0.3, "tp3": 0.1}
+
 # ====================================
 # Main App
 # ====================================
@@ -152,6 +211,15 @@ def main():
                                         analysis['action'] = "LONG"
                                         analysis['score'] = 5
                                         analysis['ideal_entry'] = analysis['entry_price']
+                                
+                                # Hitung probabilitas TP
+                                if 'tp_probabilities' not in analysis:
+                                    analysis['tp_probabilities'] = calculate_tp_probability(
+                                        analysis.get('current_price', entry_price),
+                                        analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                                        analysis['sl'], analysis['action']
+                                    )
+                                
                                 st.session_state.selected_for_entry[symbol] = analysis
                                 st.success(f"Selected {res['symbol']}!")
                                 st.rerun()
@@ -163,6 +231,17 @@ def main():
                     if all_results:
                         # Sort berdasarkan abs(score) descending untuk dapat 10 terbaik
                         all_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
+                        
+                        # Hitung probabilitas TP untuk setiap hasil
+                        for result in all_results[:10]:
+                            if 'tp_probabilities' not in result:
+                                result['tp_probabilities'] = calculate_tp_probability(
+                                    result.get('current_price', result.get('ideal_entry', 0)),
+                                    result['tp1'], result['tp2'], result['tp3'],
+                                    result['sl'], result['action'],
+                                    result.get('volatility', 0.02)
+                                )
+                        
                         st.session_state.scanned_results = all_results[:10]  # Tampil hanya 10 terbaik
                         st.success("Scan selesai! Menampilkan 10 terbaik dari 100.")
                     else:
@@ -172,6 +251,14 @@ def main():
                         for asset in fallback_assets:
                             analysis = bot.analyze_asset(asset)
                             if analysis and analysis["action"] in ["LONG", "SHORT"] and analysis["score"] >= 1:
+                                # Hitung probabilitas TP
+                                if 'tp_probabilities' not in analysis:
+                                    analysis['tp_probabilities'] = calculate_tp_probability(
+                                        analysis.get('current_price', analysis.get('ideal_entry', 0)),
+                                        analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                                        analysis['sl'], analysis['action'],
+                                        analysis.get('volatility', 0.02)
+                                    )
                                 fallback_results.append(analysis)
                             elif analysis is None:
                                 ticker = bot.data_provider.get_ticker(asset)
@@ -204,8 +291,16 @@ def main():
                                         'detected_patterns': simple_patterns,
                                         'pattern_score': simple_pattern_score,
                                         'ema_trend': 'NEUTRAL',
-                                        'ema_score': 0
+                                        'ema_score': 0,
+                                        'volatility': 0.02
                                     }
+                                    # Hitung probabilitas TP
+                                    analysis['tp_probabilities'] = calculate_tp_probability(
+                                        current_price,
+                                        analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                                        analysis['sl'], analysis['action'],
+                                        0.02
+                                    )
                                     fallback_results.append(analysis)
                                 else:
                                     st.warning(f"Gagal mengambil data untuk {asset}")
@@ -228,7 +323,20 @@ def main():
                         st.write(f"{i}. **{res['symbol']}** - {res['action']} (Score: {res['score']})")
                         st.write(f"Entry Range: {res['entry_low']:.5f} - {res['entry_high']:.5f} | "
                                  f"SL: {res['sl']:.5f}")
-                        st.write(f"TP1: {res['tp1']:.5f} | TP2: {res['tp2']:.5f} | TP3: {res['tp3']:.5f}")
+                        
+                        # ✅ FIXED: Urutkan TP levels sebelum display
+                        tp1, tp2, tp3 = res['tp1'], res['tp2'], res['tp3']
+                        if res['action'] == "LONG":
+                            tp1, tp2, tp3 = sorted([tp1, tp2, tp3])  # Kecil ke besar
+                        elif res['action'] == "SHORT":
+                            tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)  # Besar ke kecil
+                        
+                        st.write(f"🎯 TP1: {tp1:.5f} | 🎯 TP2: {tp2:.5f} | 🎯 TP3: {tp3:.5f}")
+                        
+                        # Tampilkan probabilitas TP jika ada
+                        if 'tp_probabilities' in res:
+                            probs = res['tp_probabilities']
+                            st.write(f"📊 **Probabilitas:** TP1: {probs.get('tp1', 0)*100:.1f}% | TP2: {probs.get('tp2', 0)*100:.1f}% | TP3: {probs.get('tp3', 0)*100:.1f}%")
                         
                         # Tampilkan pola yang terdeteksi
                         if 'detected_patterns' in res and res['detected_patterns']:
@@ -268,15 +376,29 @@ def main():
                     with col2:
                         if st.button(f"✅ Tambah Posisi {symbol}", key=f"add_{symbol}"):
                             ideal_entry = analysis.get("ideal_entry", entry_price)
+                            
+                            # ✅ FIXED: Urutkan TP levels sebelum simpan
+                            tp1, tp2, tp3 = analysis["tp1"], analysis["tp2"], analysis["tp3"]
+                            if analysis["action"] == "LONG":
+                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                            elif analysis["action"] == "SHORT":
+                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                            
+                            # Adjust TP levels berdasarkan entry price yang baru
+                            tp1_adj = entry_price + (tp1 - ideal_entry)
+                            tp2_adj = entry_price + (tp2 - ideal_entry)
+                            tp3_adj = entry_price + (tp3 - ideal_entry)
+                            sl_adj = entry_price - (ideal_entry - analysis["sl"])
+                            
                             position_id = bot.db.save_position(
                                 symbol=symbol,
                                 market_type=bot.mode,
                                 action=analysis["action"],
                                 entry_price=entry_price,
-                                tp1=entry_price + (analysis["tp1"] - ideal_entry),
-                                tp2=entry_price + (analysis["tp2"] - ideal_entry),
-                                tp3=entry_price + (analysis["tp3"] - ideal_entry),
-                                sl=entry_price - (ideal_entry - analysis["sl"]),
+                                tp1=tp1_adj,
+                                tp2=tp2_adj,
+                                tp3=tp3_adj,
+                                sl=sl_adj,
                                 entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
                                 entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
                             )
@@ -297,6 +419,9 @@ def main():
                             st.write(f"**Market Phase:** {analysis['market_phase']}")
                         if 'reward_ratio' in analysis:
                             st.write(f"**Reward Ratio:** {analysis['reward_ratio']:.2f}")
+                        if 'tp_probabilities' in analysis:
+                            probs = analysis['tp_probabilities']
+                            st.write(f"**Probabilitas TP:** TP1: {probs.get('tp1', 0)*100:.1f}% | TP2: {probs.get('tp2', 0)*100:.1f}% | TP3: {probs.get('tp3', 0)*100:.1f}%")
                     
                     if st.button(f"🗑️ Hapus {symbol} dari pilihan", key=f"remove_{symbol}"):
                         if symbol in st.session_state.selected_for_entry:
@@ -373,6 +498,15 @@ def main():
                 
                 analysis = bot.analyze_asset(symbol)
                 if analysis and isinstance(analysis, dict) and 'symbol' in analysis:
+                    # Hitung probabilitas TP jika belum ada
+                    if 'tp_probabilities' not in analysis:
+                        analysis['tp_probabilities'] = calculate_tp_probability(
+                            analysis.get('current_price', analysis.get('ideal_entry', 0)),
+                            analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                            analysis['sl'], analysis['action'],
+                            analysis.get('volatility', 0.02)
+                        )
+                    
                     st.session_state.selected_analysis = analysis
                     st.rerun()
                 else:
@@ -398,8 +532,16 @@ def main():
                             'detected_patterns': [],
                             'pattern_score': 0,
                             'ema_trend': 'NEUTRAL',
-                            'ema_score': 0
+                            'ema_score': 0,
+                            'volatility': 0.02
                         }
+                        # Hitung probabilitas TP
+                        analysis['tp_probabilities'] = calculate_tp_probability(
+                            current_price,
+                            analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                            analysis['sl'], analysis['action'],
+                            0.02
+                        )
                         st.session_state.selected_analysis = analysis
                         st.warning("Menggunakan analisis fallback karena data historis tidak cukup.")
                         st.rerun()
@@ -433,6 +575,18 @@ def main():
                 if 'pattern_score' in analysis:
                     st.write(f"⭐ **Pattern Score:** {analysis['pattern_score']}")
                 
+                # Tampilkan probabilitas TP
+                if 'tp_probabilities' in analysis:
+                    st.subheader("📊 Probabilitas TP")
+                    probs = analysis['tp_probabilities']
+                    col_prob1, col_prob2, col_prob3 = st.columns(3)
+                    with col_prob1:
+                        st.metric("TP1 Probability", f"{probs.get('tp1', 0)*100:.1f}%")
+                    with col_prob2:
+                        st.metric("TP2 Probability", f"{probs.get('tp2', 0)*100:.1f}%")
+                    with col_prob3:
+                        st.metric("TP3 Probability", f"{probs.get('tp3', 0)*100:.1f}%")
+                
                 # Enhanced metrics
                 col3, col4 = st.columns(2)
                 with col3:
@@ -447,10 +601,18 @@ def main():
                         st.metric("🎯 Reward Ratio", f"{analysis['reward_ratio']:.2f}")
                 
                 st.subheader("🎯 Take Profit & Stop Loss")
-                st.write(f"TP1: {analysis.get('tp1', 0):.5f}")
-                st.write(f"TP2: {analysis.get('tp2', 0):.5f}")
-                st.write(f"TP3: {analysis.get('tp3', 0):.5f}")
-                st.write(f"SL: {analysis.get('sl', 0):.5f}")
+                
+                # ✅ FIXED: Urutkan TP levels sebelum display
+                tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
+                if analysis['action'] == "LONG":
+                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])  # Kecil ke besar
+                elif analysis['action'] == "SHORT":
+                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)  # Besar ke kecil
+                
+                st.write(f"🎯 TP1: {tp1:.5f}")
+                st.write(f"🎯 TP2: {tp2:.5f}")
+                st.write(f"🎯 TP3: {tp3:.5f}")
+                st.write(f"🛑 SL: {analysis.get('sl', 0):.5f}")
                 
                 # Input entry price
                 entry_price = st.number_input(
@@ -462,14 +624,16 @@ def main():
                 
                 if st.button(f"✅ Tambah Posisi {analysis.get('symbol', 'Aset')}", key="add_analysis"):
                     ideal_entry = analysis.get("ideal_entry", entry_price)
+                    
+                    # ✅ FIXED: Gunakan TP yang sudah diurutkan
                     position_id = bot.db.save_position(
                         symbol=analysis['symbol'],
                         market_type=bot.mode,
                         action=analysis.get("action", "LONG"),
                         entry_price=entry_price,
-                        tp1=entry_price + (analysis.get("tp1", 0) - ideal_entry),
-                        tp2=entry_price + (analysis.get("tp2", 0) - ideal_entry),
-                        tp3=entry_price + (analysis.get("tp3", 0) - ideal_entry),
+                        tp1=entry_price + (tp1 - ideal_entry),
+                        tp2=entry_price + (tp2 - ideal_entry),
+                        tp3=entry_price + (tp3 - ideal_entry),
                         sl=entry_price - (ideal_entry - analysis.get("sl", 0)),
                         entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
                         entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
@@ -497,6 +661,12 @@ def main():
                 with st.spinner("Menghitung..."):
                     result = bot.calculate_custom_entry(symbol_custom, entry_price_custom)
                     if result:
+                        # Hitung probabilitas TP
+                        result['tp_probabilities'] = calculate_tp_probability(
+                            entry_price_custom,
+                            result['tp1'], result['tp2'], result['tp3'],
+                            result['sl'], "LONG"  # Default LONG untuk custom entry
+                        )
                         st.session_state.custom_result = result
                         st.success("Perhitungan selesai!")
                     else:
@@ -520,6 +690,18 @@ def main():
                 st.metric("🛡️ SL", f"{result['sl']:.5f}")
                 risk_reward = (result['tp1'] - result['entry_price']) / (result['entry_price'] - result['sl'])
                 st.metric("📊 Risk/Reward", f"{risk_reward:.2f}")
+            
+            # Tampilkan probabilitas TP
+            if 'tp_probabilities' in result:
+                st.subheader("📊 Probabilitas TP")
+                probs = result['tp_probabilities']
+                col_prob1, col_prob2, col_prob3 = st.columns(3)
+                with col_prob1:
+                    st.metric("TP1 Probability", f"{probs.get('tp1', 0)*100:.1f}%")
+                with col_prob2:
+                    st.metric("TP2 Probability", f"{probs.get('tp2', 0)*100:.1f}%")
+                with col_prob3:
+                    st.metric("TP3 Probability", f"{probs.get('tp3', 0)*100:.1f}%")
             
             # Tombol untuk menambahkan ke posisi
             if st.button("✅ Tambahkan ke Posisi Aktif", key="add_custom"):
@@ -570,6 +752,12 @@ def main():
                 tp2 = pos[7] if len(pos) > 7 else 0
                 tp3 = pos[8] if len(pos) > 8 else 0
                 
+                # ✅ FIXED: Urutkan TP levels sebelum display
+                if action == "LONG":
+                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])  # Kecil ke besar
+                elif action == "SHORT":
+                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)  # Besar ke kecil
+                
                 # Calculate P/L
                 if action == "LONG":
                     pl_pct = ((current_price - entry_price) / entry_price) * 100
@@ -578,16 +766,27 @@ def main():
                     pl_pct = ((entry_price - current_price) / entry_price) * 100
                     pl_color = "green" if pl_pct >= 0 else "red"
                 
+                # Hitung probabilitas TP untuk posisi aktif
+                tp_probabilities = calculate_tp_probability(
+                    current_price, tp1, tp2, tp3, sl, action
+                )
+                
                 st.markdown("---")
-                col1, col2, col3 = st.columns([3, 1, 1])
+                col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
                 
                 with col1:
                     st.write(f"**{symbol}** ({market_type}) - {action}")
                     st.write(f"📥 Entry: `{entry_price:.5f}` | 📊 Current: `{current_price:.5f}`")
-                    st.write(f"🛡️ SL: `{sl:.5f}` | 🎯 TP1: `{tp1:.5f}` | 🎯 TP2: `{tp2:.5f}` | 🎯 TP3: `{tp3:.5f}`")
                     st.write(f"💰 P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
                 
                 with col2:
+                    # Display TP levels dengan probabilitas
+                    st.write(f"🎯 TP1: `{tp1:.5f}` ({tp_probabilities.get('tp1', 0)*100:.1f}%)")
+                    st.write(f"🎯 TP2: `{tp2:.5f}` ({tp_probabilities.get('tp2', 0)*100:.1f}%)")
+                    st.write(f"🎯 TP3: `{tp3:.5f}` ({tp_probabilities.get('tp3', 0)*100:.1f}%)")
+                    st.write(f"🛑 SL: `{sl:.5f}`")
+                
+                with col3:
                     if st.button("🔄", key=f"update_{symbol}"):
                         ticker = bot.data_provider.get_ticker(symbol)
                         if ticker and 'last' in ticker:
@@ -596,7 +795,7 @@ def main():
                             st.session_state.positions_data = bot.get_active_positions()
                             st.rerun()
                 
-                with col3:
+                with col4:
                     exit_price = st.number_input(
                         "Exit Price",
                         value=float(current_price),
