@@ -16,29 +16,38 @@ from .data_provider import (
 )
 from .notifier import SoundNotifier
 from database.db_handler import DatabaseHandler
+
 warnings.filterwarnings("ignore")
 load_dotenv()
 
 class MLEnhancedBot:
+    """Machine Learning enhanced trading bot"""
     def __init__(self):
         self.model = None
         self.is_trained = False
         
     def extract_features(self, df):
+        """Extract features for ML model"""
         features = {}
+        
         if len(df) > 1:
             features['price_change_1d'] = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] if df['close'].iloc[-2] != 0 else 0
         else:
             features['price_change_1d'] = 0
+            
         if len(df) > 6:
             features['price_change_5d'] = (df['close'].iloc[-1] - df['close'].iloc[-6]) / df['close'].iloc[-6] if df['close'].iloc[-6] != 0 else 0
         else:
             features['price_change_5d'] = 0
+            
         features['volatility'] = df['close'].pct_change().std() if len(df) > 1 else 0.02
+        
         vol_mean = df['volume'].rolling(20).mean().iloc[-1] if len(df) >= 20 else df['volume'].mean()
         features['volume_ratio'] = df['volume'].iloc[-1] / vol_mean if vol_mean > 0 else 1
+        
         features['rsi'] = self._calculate_rsi(df['close'])
         features['macd'] = self._calculate_macd(df['close'])
+        
         return pd.DataFrame([features])
     
     def _calculate_rsi(self, prices, period=14):
@@ -58,11 +67,13 @@ class MLEnhancedBot:
         return (exp1 - exp2).iloc[-1]
 
 class BacktestEngine:
+    """Advanced backtesting engine"""
     def __init__(self, initial_balance=10000):
         self.initial_balance = initial_balance
         self.results = {}
         
     def run_backtest(self, df, strategy, **kwargs):
+        """Run comprehensive backtest"""
         balance = self.initial_balance
         position = 0
         trades = []
@@ -95,6 +106,7 @@ class BacktestEngine:
                         exit_price = current_price
                         pnl = (exit_price - current_trade['entry_price']) * current_trade['size'] * position
                         balance += pnl
+                        
                         current_trade.update({
                             'exit_time': df.index[i] if hasattr(df.index, 'iloc') else i,
                             'exit_price': exit_price,
@@ -128,10 +140,13 @@ class BacktestEngine:
     def _calculate_performance_metrics(self, trades, equity_curve):
         if not trades:
             return self._get_empty_results()
+            
         winning_trades = [t for t in trades if t.get('pnl', 0) > 0]
         losing_trades = [t for t in trades if t.get('pnl', 0) <= 0]
+        
         total_pnl = sum(t.get('pnl', 0) for t in trades)
         win_rate = len(winning_trades) / len(trades) if trades else 0
+        
         if len(equity_curve) > 1:
             returns = np.diff(equity_curve) / equity_curve[:-1]
             if len(returns) > 1 and np.std(returns) > 0:
@@ -140,12 +155,14 @@ class BacktestEngine:
                 sharpe_ratio = 0
         else:
             sharpe_ratio = 0
+        
         if equity_curve:
             peak = np.maximum.accumulate(equity_curve)
             drawdown = (equity_curve - peak) / peak
             max_drawdown = np.min(drawdown) if len(drawdown) > 0 else 0
         else:
             max_drawdown = 0
+        
         return {
             'total_trades': len(trades),
             'winning_trades': len(winning_trades),
@@ -172,15 +189,20 @@ class BacktestEngine:
         }
 
 class PortfolioOptimizer:
+    """Portfolio optimization engine"""
+    
     def __init__(self):
         self.correlation_matrix = {}
     
     def optimize_position(self, analysis, existing_positions):
+        """Optimize position size based on portfolio context"""
         if not analysis:
             return {}
+            
         base_size = analysis.get('risk_metrics', {}).get('optimal_position_size', 0.1)
         correlation_penalty = self._calculate_correlation_penalty(analysis.get('symbol', ''), existing_positions)
         adjusted_size = base_size * (1 - correlation_penalty)
+        
         return {
             'base_position_size': base_size,
             'adjusted_position_size': adjusted_size,
@@ -195,18 +217,23 @@ class PortfolioOptimizer:
         return min(0.3, num_positions * 0.05)
     
     def optimize_allocations(self, signals, total_capital):
+        """Optimize capital allocation across multiple signals"""
         if not signals:
             return {}
+            
         scored_signals = []
         for signal in signals:
             if not isinstance(signal, dict):
                 continue
+                
             score = signal.get('final_score', signal.get('score', 0))
             risk_metrics = signal.get('risk_metrics', {})
             risk_category = risk_metrics.get('risk_category', 'MEDIUM')
             base_allocation = risk_metrics.get('optimal_position_size', 0.05)
+            
             risk_multiplier = 1.0 if risk_category == 'LOW' else 0.7 if risk_category == 'MEDIUM' else 0.4
             score_multiplier = 1.0 + (score - 1) * 0.1
+            
             final_allocation = base_allocation * risk_multiplier * score_multiplier
             scored_signals.append({
                 'symbol': signal.get('symbol', 'Unknown'),
@@ -215,13 +242,16 @@ class PortfolioOptimizer:
                 'allocation_percent': final_allocation,
                 'allocated_capital': total_capital * final_allocation
             })
+        
         if not scored_signals:
             return {}
+        
         total_allocated = sum(s['allocation_percent'] for s in scored_signals)
         if total_allocated > 1.0:
             for signal in scored_signals:
                 signal['allocation_percent'] /= total_allocated
                 signal['allocated_capital'] = total_capital * signal['allocation_percent']
+        
         return {
             'signals': scored_signals,
             'total_allocated_percent': sum(s['allocation_percent'] for s in scored_signals),
@@ -242,6 +272,7 @@ class TradingBot:
         )
         self.notifier = SoundNotifier()
         self.db = DatabaseHandler()
+        # PHASE 2 Enhancements
         self.ml_bot = MLEnhancedBot()
         self.backtest_engine = BacktestEngine()
         self.portfolio_optimizer = PortfolioOptimizer()
@@ -250,6 +281,7 @@ class TradingBot:
         self.scanner_active = False
         self.entry_positions = {}
         self.position_ids = {}
+        
         self.scheduler_thread = None
         self.stop_scheduler = False
 
@@ -264,7 +296,7 @@ class TradingBot:
                 "atr_multiplier": 1.0,
                 "entry_range_pct": 0.02,
                 "exchange_crypto": "kucoin",
-                "analysis_coins_limit": 20,
+                "analysis_coins_limit": 100,  # Updated to 100
                 "ohlcv_limit": 200,
                 "min_score": 3,
                 "max_signals": 5,
@@ -292,50 +324,43 @@ class TradingBot:
         else:
             self.data_provider = None
             self.pump_provider = None
+            print(f"Invalid mode: {mode}")
             return False
+        print(f"Mode set to: {self.mode.upper()} with data provider: {self.data_provider.__class__.__name__}")
         self.start_background_tasks()
         return True
 
     def start_background_tasks(self):
         if self.scheduler_thread and self.scheduler_thread.is_alive():
             self.stop_background_tasks()
+            
         self.stop_scheduler = False
         self.scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
         self.scheduler_thread.start()
+        print("Background tasks started")
 
     def stop_background_tasks(self):
         self.stop_scheduler = True
         if self.scheduler_thread:
             self.scheduler_thread.join(timeout=5)
+        print("Background tasks stopped")
 
     def _run_scheduler(self):
         while not self.stop_scheduler:
             schedule.run_pending()
             time.sleep(1)
 
-    def scan_potential_assets(self, limit=50, query=None):
-        """SEARCH-ONLY: Only scan assets from search query, no fallback to popular"""
+    def scan_potential_assets(self, limit=100):  # Updated default limit to 100
         if not self.data_provider:
+            print("No data provider for scanning.")
             return []
-        
         try:
-            # FORCE SEARCH-ONLY APPROACH
-            if not query:
-                print("❌ SEARCH-ONLY MODE: Query parameter required")
-                return []
-            
-            print(f"🔍 SEARCH-ONLY: Scanning for '{query}' in {self.mode} mode...")
-            assets = self.search_assets(query, limit)
-            
-            if not assets:
-                print(f"❌ No assets found for query: '{query}'")
-                return []
-            
+            assets = self.data_provider.get_popular_assets(limit)
             results = []
             successful_analysis = 0
             failed_analysis = 0
             
-            print(f"📊 Found {len(assets)} assets from search, analyzing...")
+            print(f"🔄 Scanning {len(assets)} assets in {self.mode} mode...")
             
             for i, asset in enumerate(assets):
                 print(f"  Analyzing {i+1}/{len(assets)}: {asset}")
@@ -346,107 +371,131 @@ class TradingBot:
                     if analysis["action"] in ["LONG", "SHORT"] and analysis["score"] >= self.config.get("min_score", 3):
                         results.append(analysis)
                         successful_analysis += 1
-                        print(f"    ✅ Signal: {analysis['action']} (Score: {analysis['score']})")
+                        print(f"    ✅ Signal found: {analysis['action']} (Score: {analysis['score']})")
                     else:
-                        print(f"    ⚠️ No trade signal")
+                        print(f"    ⚠️ No trade signal (Action: {analysis.get('action')}, Score: {analysis.get('score')})")
                 else:
                     failed_analysis += 1
-                    print(f"    ❌ Analysis failed")
+                    print(f"    ❌ Analysis failed for {asset}")
             
-            print(f"🎯 SEARCH RESULTS: {successful_analysis} signals from {len(assets)} searched assets")
+            print(f"📊 Scan complete: {successful_analysis} signals, {failed_analysis} failed, {len(results)} potential trades")
             return results
             
         except Exception as e:
-            print(f"❌ Search error: {e}")
+            print(f"❌ Error scanning assets: {e}")
             return []
 
-    def get_popular_assets(self, limit=50):
-        """DISABLED: Returns empty to force search-only approach"""
-        return []
+    def get_popular_assets(self, limit=100):  # Updated default limit to 100
+        if not self.data_provider:
+            print("No data provider for popular assets.")
+            return []
+        try:
+            assets = self.data_provider.get_popular_assets(limit)
+            return assets
+        except Exception as e:
+            print(f"Error loading popular assets: {e}")
+            return []
 
     def analyze_asset(self, symbol):
         if not self.data_provider:
+            print("No data provider for analysis.")
             return None
-        
         try:
-            # Auto-format symbols for forex/saham
+            # Clean symbol untuk forex/saham jika perlu
             if self.mode == 'forex' and '=X' not in symbol:
                 symbol = f"{symbol}=X"
             elif self.mode == 'saham_id' and not symbol.endswith('.JK'):
                 symbol = f"{symbol}.JK"
             
+            print(f"📈 Fetching data for {symbol}...")
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
             
-            if df is None or len(df) < 20:
+            if df is None:
+                print(f"   ❌ No data returned for {symbol}")
+                return None
+                
+            if len(df) < 20:  # Reduced minimum data requirement
+                print(f"   ⚠️ Insufficient data for {symbol}: {len(df)} rows (min: 20)")
                 return None
             
+            print(f"   ✅ Data fetched: {len(df)} rows")
             analysis = self.strategy.analyze(df)
             
             if analysis:
                 analysis["symbol"] = symbol
                 analysis["market_type"] = self.mode
                 self.db.save_signal(analysis)
+                print(f"   📊 Analysis complete: {analysis['action']} (Score: {analysis['score']})")
                 return analysis
-            return None
+            else:
+                print(f"   ⚠️ No analysis results for {symbol}")
+                return None
                 
         except Exception as e:
+            print(f"❌ Error analyzing {symbol}: {e}")
             return None
 
-    def search_assets(self, query, limit=20):
-        """Enhanced search with web scraping"""
+    def search_assets(self, query, limit=100):  # Updated default limit to 100
+        """Search assets berdasarkan query untuk web interface"""
         if not self.data_provider:
             return []
         
         try:
+            # Jika data provider punya method search, gunakan itu
             if hasattr(self.data_provider, 'search_assets'):
-                results = self.data_provider.search_assets(query, limit)
-                print(f"🔍 Found {len(results)} assets for query: '{query}'")
-                return results
+                return self.data_provider.search_assets(query, limit)
             else:
-                return []
+                # Fallback: filter popular assets
+                all_assets = self.data_provider.get_popular_assets(limit=100)
+                query_clean = query.upper().strip()
+                
+                if self.mode == 'forex':
+                    results = [asset for asset in all_assets if query_clean in asset.replace('=X', '')]
+                elif self.mode == 'saham_id':
+                    results = [asset for asset in all_assets if query_clean in asset.replace('.JK', '')]
+                else:  # crypto
+                    results = [asset for asset in all_assets if query_clean in asset]
+                
+                return results[:limit]
                 
         except Exception as e:
-            print(f"Search error: {e}")
+            print(f"Error searching assets: {e}")
             return []
 
     def scan_selected_assets(self, symbols):
-        """Scan specific symbols from search results"""
-        if not self.data_provider or not symbols:
+        """Scan specific symbols (untuk web interface)"""
+        if not self.data_provider:
             return []
         
         results = []
-        print(f"🔍 Scanning {len(symbols)} selected assets...")
-        
-        for i, symbol in enumerate(symbols):
-            print(f"  {i+1}/{len(symbols)}: {symbol}")
+        for symbol in symbols:
             analysis = self.analyze_asset(symbol)
             if analysis and analysis["action"] in ["LONG", "SHORT"]:
                 results.append(analysis)
-                print(f"    ✅ Signal found")
-            else:
-                print(f"    ⚠️ No signal")
         
-        print(f"🎯 Selected scan: {len(results)} signals from {len(symbols)} assets")
         return results
 
     async def scan_pump_fun(self):
         if not self.pump_provider:
+            print("No Pump Fun provider available.")
             return []
         try:
             return await self.pump_provider.monitor_new_tokens(10)
         except Exception as e:
+            print(f"Error scanning Pump Fun: {e}")
             return []
 
     def calculate_custom_entry(self, symbol, entry_price):
         if not self.data_provider:
+            print("No data provider for custom entry.")
             return None
         try:
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
-            if df is not None and len(df) >= 20:
+            if df is not None and len(df) >= 20:  # Reduced minimum data requirement
                 atr = self.strategy.calculate_atr(df)
                 return {
                     "symbol": symbol,
@@ -456,8 +505,10 @@ class TradingBot:
                     "tp3": float(entry_price + atr * self.strategy.atr_multiplier * 3),
                     "sl": float(entry_price - atr * self.strategy.atr_multiplier),
                 }
+            print(f"Insufficient data for ATR calculation on {symbol}")
             return None
         except Exception as e:
+            print(f"Error calculating custom entry for {symbol}: {e}")
             return None
 
     def get_active_positions(self):
@@ -470,12 +521,14 @@ class TradingBot:
                     self.db.update_position_current_price(symbol, ticker['last'])
             return self.db.get_active_positions(self.mode)
         except Exception as e:
+            print(f"Error fetching active positions: {e}")
             return []
 
-    def get_trade_history(self, limit=10):
+    def get_trade_history(self, limit=100):  # Updated default limit to 100
         try:
             return self.db.get_trade_history(self.mode, limit)
         except Exception as e:
+            print(f"Error fetching trade history: {e}")
             return []
 
     def delete_signals_not_selected(self, selected_symbols):
@@ -485,11 +538,13 @@ class TradingBot:
                 symbol = signal[1]
                 if symbol not in selected_symbols:
                     self.db.delete_signal_by_symbol(symbol, self.mode)
+                    print(f"Deleted non-selected signal for {symbol}")
         except Exception as e:
-            pass
+            print(f"Error deleting non-selected signals: {e}")
 
     def close_position(self, position_id, exit_price, exit_type="manual"):
         try:
             return self.db.close_position(position_id, exit_price, exit_type)
         except Exception as e:
+            print(f"Error closing position: {e}")
             return False
