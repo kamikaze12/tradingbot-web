@@ -205,6 +205,24 @@ class CCXTDataProvider(DataProvider):
                 except Exception:
                     continue
             return {'last': 1.0, 'volume': 1000}
+            # Dalam YFinanceDataProvider - method get_popular_assets
+    def get_popular_assets(self, limit=100):
+        try:
+            if self.market_type == "forex":
+                # Major forex pairs
+                symbols = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'USDCHF=X', 'AUDUSD=X', 
+                          'USDCAD=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X']
+            elif self.market_type == "saham_id":
+                # Saham Indonesia populer
+                symbols = ['BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'TLKM.JK',
+                          'ASII.JK', 'UNVR.JK', 'ICBP.JK', 'INDF.JK', 'MNCN.JK']
+            else:
+                symbols = []
+            
+            return symbols[:limit]
+        except Exception as e:
+            print(f"Error getting popular assets: {e}")
+            return []
 
     def get_popular_assets(self, limit=100):
         try:
