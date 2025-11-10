@@ -932,6 +932,7 @@ class TradingBot:
             return []
 
     def calculate_custom_entry(self, symbol, entry_price):
+        """Calculate custom entry dengan TP/SL dan probabilitas"""
         if not self.data_provider:
             print("No data provider for custom entry.")
             return None
@@ -941,13 +942,29 @@ class TradingBot:
             )
             if df is not None and len(df) >= 20:
                 atr = self.strategy.calculate_atr(df)
+                
+                # Calculate raw TP levels
+                raw_tp1 = entry_price + atr * self.strategy.atr_multiplier
+                raw_tp2 = entry_price + atr * self.strategy.atr_multiplier * 2
+                raw_tp3 = entry_price + atr * self.strategy.atr_multiplier * 3
+                sl = entry_price - atr * self.strategy.atr_multiplier
+                
+                # ✅ FIXED: Sort TP levels for LONG (ascending)
+                tp1, tp2, tp3 = sorted([raw_tp1, raw_tp2, raw_tp3])
+                
+                # Calculate TP probabilities
+                tp_probabilities = self.strategy.calculate_tp_probability(
+                    entry_price, tp1, tp2, tp3, sl, "LONG"
+                )
+                
                 return {
                     "symbol": symbol,
                     "entry_price": float(entry_price),
-                    "tp1": float(entry_price + atr * self.strategy.atr_multiplier),
-                    "tp2": float(entry_price + atr * self.strategy.atr_multiplier * 2),
-                    "tp3": float(entry_price + atr * self.strategy.atr_multiplier * 3),
-                    "sl": float(entry_price - atr * self.strategy.atr_multiplier),
+                    "tp1": float(tp1),
+                    "tp2": float(tp2),
+                    "tp3": float(tp3),
+                    "sl": float(sl),
+                    "tp_probabilities": tp_probabilities  # ✅ NEW: TP probabilities
                 }
             print(f"Insufficient data for ATR calculation on {symbol}")
             return None
@@ -1094,3 +1111,43 @@ class TradingBot:
         except Exception as e:
             print(f"Error in parameter optimization: {e}")
             return {"error": str(e)}
+
+    def calculate_tp_probability(self, current_price, tp1, tp2, tp3, sl, action, volatility=0.02):
+        """Calculate TP probabilities - wrapper untuk strategy method"""
+        return self.strategy.calculate_tp_probability(
+            current_price, tp1, tp2, tp3, sl, action, volatility
+        )
+
+    def optimize_portfolio_allocation(self, signals, total_capital):
+        """Optimize portfolio allocation across signals"""
+        return self.portfolio_optimizer.optimize_allocations(signals, total_capital)
+
+    def get_risk_assessment(self, symbol):
+        """Get comprehensive risk assessment untuk symbol"""
+        try:
+            analysis = self.analyze_asset(symbol)
+            if analysis:
+                return {
+                    'symbol': symbol,
+                    'risk_category': analysis.get('risk_metrics', {}).get('risk_category', 'MEDIUM'),
+                    'volatility_level': analysis.get('volatility', 0.02),
+                    'optimal_position_size': analysis.get('risk_metrics', {}).get('optimal_position_size', 0.1),
+                    'reward_ratio': analysis.get('risk_metrics', {}).get('reward_ratio', 2.0),
+                    'recommendation': self._generate_risk_recommendation(analysis)
+                }
+            return None
+        except Exception as e:
+            print(f"Error in risk assessment: {e}")
+            return None
+
+    def _generate_risk_recommendation(self, analysis):
+        """Generate risk recommendation berdasarkan analysis"""
+        risk_category = analysis.get('risk_metrics', {}).get('risk_category', 'MEDIUM')
+        volatility = analysis.get('volatility', 0.02)
+        
+        if risk_category == 'HIGH' or volatility > 0.03:
+            return "Consider smaller position size and tighter stop loss"
+        elif risk_category == 'MEDIUM':
+            return "Standard position sizing appropriate"
+        else:
+            return "Can consider larger position size with standard risk management"
