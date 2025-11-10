@@ -133,6 +133,7 @@ class AlphaVantageProvider(DataProvider):
 class DexScreenerProvider:
     def __init__(self):
         self.base_url = "https://api.dexscreener.com/latest/dex"
+
     def get_ticker(self, chain, token_address):
         try:
             url = f"{self.base_url}/tokens/{chain}/{token_address}"
@@ -156,6 +157,7 @@ class DexScreenerProvider:
         except Exception as e:
             print(f"Error getting ticker from DexScreener for {token_address}: {e}")
             return None
+
     def search_pairs(self, query):
         try:
             url = f"{self.base_url}/search?q={query}"
@@ -271,7 +273,7 @@ class YFinanceDataProvider(DataProvider):
         self.fallback_av = AlphaVantageProvider() # Only fallback ke Alpha
 
     def _convert_symbol(self, symbol, target='av'):
-        base = symbol.split('=')[0] if '=X' in symbol else symbol.split('[0]') if '.JK' in symbol else symbol
+        base = symbol.split('=')[0] if '=X' in symbol else symbol.split('.')[0] if '.JK' in symbol else symbol
         if target == 'av':
             if self.market_type == 'forex':
                 from_curr, to_curr = base[:3], base[3:]
@@ -338,8 +340,6 @@ class YFinanceDataProvider(DataProvider):
                 av_tk = self.fallback_av.get_ticker(conv_symbol)
                 if av_tk is not None:
                     return av_tk
-                else:
-                    print(f"Alpha Vantage returned None for {conv_symbol}")
             except Exception as av_e:
                 print(f"Alpha fallback ticker error: {av_e}")
             # Dummy fallback
@@ -347,88 +347,31 @@ class YFinanceDataProvider(DataProvider):
             return {'last': 1.0, 'volume': 1000}
 
     def get_popular_assets(self, limit=50):
-        """
-        Dynamically fetch popular assets similar to crypto mode.
-        Uses web scraping to get real-time top assets sorted by market cap or volume.
-        Falls back to hardcoded if scraping fails.
-        """
-        if self.market_type == 'saham_id':
-            try:
-                url = "https://www.tradingview.com/markets/stocks-indonesia/market-movers-large-cap/"
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-                response = requests.get(url, headers=headers)
-                response.raise_for_status()
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                table = soup.find('table')
-                if not table:
-                    raise ValueError("No table found.")
-                
-                rows = table.find_all('tr')[1:]  # Skip header
-                
-                assets = []
-                for row in rows[:limit]:
-                    symbol_cell = row.find('td').find('a')
-                    if symbol_cell:
-                        symbol = symbol_cell.text.strip()
-                        assets.append(f"{symbol}.JK")
-                
-                if assets:
-                    print(f"Dynamically fetched {len(assets)} saham ID assets from TradingView.")
-                    return assets
-                else:
-                    raise ValueError("No assets found in scrape.")
-            except Exception as e:
-                print(f"Error fetching saham ID assets dynamically: {e}. Falling back to hardcoded.")
-                hardcoded = ['BREN.JK', 'BBCA.JK', 'DCII.JK', 'TPIA.JK', 'BYAN.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK',
-                             'ADRO.JK', 'UNTR.JK', 'PGAS.JK', 'ANTM.JK', 'INDF.JK', 'CPIN.JK', 'KLBF.JK', 'UNVR.JK', 'HMSP.JK', 'GGRM.JK',
-                             'MDKA.JK', 'EXCL.JK', 'ISAT.JK', 'SMGR.JK', 'INTP.JK', 'AKRA.JK', 'JSMR.JK', 'SRTG.JK', 'TBIG.JK', 'TOWR.JK',
-                             'WIKA.JK', 'WSKT.JK', 'PTPP.JK', 'ADHI.JK', 'ACES.JK', 'AMRT.JK', 'ARTO.JK', 'AVIA.JK', 'BBRI.JK', 'BBTN.JK',
-                             'BFIN.JK', 'BMAS.JK', 'BRMS.JK', 'BUKA.JK', 'CITA.JK', 'DNET.JK', 'DOID.JK', 'EMTK.JK', 'ESSA.JK', 'FAPA.JK']
-                return hardcoded[:limit]
-        
-        elif self.market_type == 'forex':
-            try:
-                url = "https://www.tradingview.com/markets/currencies/rates-major/"
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-                response = requests.get(url, headers=headers)
-                response.raise_for_status()
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                table = soup.find('table')
-                if not table:
-                    raise ValueError("No table found.")
-                
-                rows = table.find_all('tr')[1:]  # Skip header
-                
-                assets = []
-                for row in rows[:limit]:
-                    symbol_cell = row.find('td').find('a')
-                    if symbol_cell:
-                        symbol = symbol_cell.text.strip()
-                        assets.append(f"{symbol}=X")
-                
-                if assets:
-                    print(f"Dynamically fetched {len(assets)} forex assets from TradingView.")
-                    return assets
-                else:
-                    raise ValueError("No assets found in scrape.")
-            except Exception as e:
-                print(f"Error fetching forex assets dynamically: {e}. Falling back to hardcoded.")
-                hardcoded = ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
-                             'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'NZDCAD=X', 'EURAUD=X', 'GBPAUD=X', 'NZDJPY=X',
-                             'USDMXN=X', 'USDTRY=X', 'USDCNY=X', 'USDINR=X', 'USDBRL=X', 'USDRUB=X', 'USDZAR=X', 'USDKRW=X', 'USDSEK=X', 'USDNOK=X',
-                             'USDPLN=X', 'USDSGD=X', 'USDHKD=X', 'USDDKK=X', 'EURCHF=X', 'GBCHF=X', 'AUDCHF=X', 'NZDCHF=X', 'CADCHF=X', 'EURSEK=X']
-                return hardcoded[:limit]
-        
-        return []
-
+        # From search: top stocks by market cap in IDX
+        hardcoded = ['BREN.JK', 'BBCA.JK', 'DCII.JK', 'TPIA.JK', 'BYAN.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK',
+                     'ADRO.JK', 'UNTR.JK', 'PGAS.JK', 'ANTM.JK', 'INDF.JK', 'CPIN.JK', 'KLBF.JK', 'UNVR.JK', 'HMSP.JK', 'GGRM.JK',
+                     'MDKA.JK', 'EXCL.JK', 'ISAT.JK', 'SMGR.JK', 'INTP.JK', 'AKRA.JK', 'JSMR.JK', 'SRTG.JK', 'TBIG.JK', 'TOWR.JK',
+                     'WIKA.JK', 'WSKT.JK', 'PTPP.JK', 'ADHI.JK', 'ACES.JK', 'AMRT.JK', 'ARTO.JK', 'AVIA.JK', 'BBRI.JK', 'BBTN.JK',
+                     'BFIN.JK', 'BMAS.JK', 'BRMS.JK', 'BUKA.JK', 'CITA.JK', 'DNET.JK', 'DOID.JK', 'EMTK.JK', 'ESSA.JK', 'FAPA.JK']
+        assets = hardcoded[:limit]
+        print(f"Hardcoded saham ID assets (updated from search): {len(assets)} returned.")
+        return assets
+    elif self.market_type == 'forex':
+        # From search: top most traded forex pairs
+        hardcoded = ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+                     'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'NZDCAD=X', 'EURAUD=X', 'GBPAUD=X', 'NZDJPY=X',
+                     'USDMXN=X', 'USDTRY=X', 'USDCNY=X', 'USDINR=X', 'USDBRL=X', 'USDRUB=X', 'USDZAR=X', 'USDKRW=X', 'USDSEK=X', 'USDNOK=X',
+                     'USDPLN=X', 'USDSGD=X', 'USDHKD=X', 'USDDKK=X', 'EURCHF=X', 'GBCHF=X', 'AUDCHF=X', 'NZDCHF=X', 'CADCHF=X', 'EURSEK=X']
+        assets = hardcoded[:limit]
+        print(f"Hardcoded forex assets (updated from search): {len(assets)} returned.")
+        return assets
+    return []
 class SolanaPumpFunProvider:
     def __init__(self, rpc_url):
         self.client = Client(rpc_url)
         self.program_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
         self.dex_provider = DexScreenerProvider() # Integrasi DexScreener
-   
+  
     async def monitor_new_tokens(self, limit=10):
         results = []
         try:
@@ -449,7 +392,7 @@ class SolanaPumpFunProvider:
             print(f"Error monitoring Pump.fun: {e}")
         print(f"Pump.fun tokens monitored: {len(results)}")
         return results
-   
+  
     def extract_token_mint(self, msg):
         # Placeholder (real: parse logs untuk dapat mint address)
         return "EXAMPLE_MINT_TOKEN" # Ganti dengan parsing real dari logs
