@@ -146,6 +146,65 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             self.trend_weight = 1.0
             self.volatility_threshold = 0.01
     
+    def calculate_tp_probability(self, current_price, tp1, tp2, tp3, sl, action, volatility=0.02):
+        """Calculate probability of hitting TP1, TP2, TP3"""
+        try:
+            if action == "LONG":
+                # Untuk LONG: TP di atas current price, SL di bawah
+                distances = {
+                    'tp1': (tp1 - current_price) / current_price,
+                    'tp2': (tp2 - current_price) / current_price,
+                    'tp3': (tp3 - current_price) / current_price,
+                    'sl': (current_price - sl) / current_price
+                }
+            else:  # SHORT
+                # Untuk SHORT: TP di bawah current price, SL di atas
+                distances = {
+                    'tp1': (current_price - tp1) / current_price,
+                    'tp2': (current_price - tp2) / current_price,
+                    'tp3': (current_price - tp3) / current_price,
+                    'sl': (sl - current_price) / current_price
+                }
+            
+            # Base probability berdasarkan distance
+            probabilities = {}
+            for target, distance in distances.items():
+                if target.startswith('tp'):
+                    # Semakin dekat TP, semakin tinggi probabilitas
+                    if distance <= 0.01:  # Sangat dekat (<1%)
+                        base_prob = 0.7
+                    elif distance <= 0.03:  # Dekat (1-3%)
+                        base_prob = 0.5
+                    elif distance <= 0.05:  # Sedang (3-5%)
+                        base_prob = 0.3
+                    elif distance <= 0.08:  # Jauh (5-8%)
+                        base_prob = 0.2
+                    else:  # Sangat jauh (>8%)
+                        base_prob = 0.1
+                    
+                    # Adjust berdasarkan volatilitas
+                    volatility_adjustment = volatility * 5  # Normalize volatility
+                    adjusted_prob = max(0.05, min(0.9, base_prob - volatility_adjustment))
+                    
+                    probabilities[target] = adjusted_prob
+            
+            # Pastikan TP1 > TP2 > TP3 untuk probabilitas
+            if 'tp1' in probabilities and 'tp2' in probabilities and 'tp3' in probabilities:
+                if action == "LONG":
+                    probabilities['tp1'] = max(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+                    probabilities['tp2'] = min(probabilities['tp1'], max(probabilities['tp2'], probabilities['tp3']))
+                    probabilities['tp3'] = min(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+                else:  # SHORT
+                    probabilities['tp1'] = max(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+                    probabilities['tp2'] = min(probabilities['tp1'], max(probabilities['tp2'], probabilities['tp3']))
+                    probabilities['tp3'] = min(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+            
+            return probabilities
+            
+        except Exception as e:
+            print(f"Error calculating TP probability: {e}")
+            return {"tp1": 0.5, "tp2": 0.3, "tp3": 0.1}
+    
     def _calculate_drawdown_risk(self, volatility, rsi, atr, price_position):
         """Calculate drawdown risk based on multiple factors"""
         risk_score = 0
@@ -792,24 +851,41 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             action_threshold = 2 if self.market_type == "crypto" else 1
             action = "LONG" if final_score >= action_threshold else "SHORT" if final_score <= -action_threshold else "NEUTRAL"
             
-            # FIXED: Always calculate entry levels, even for NEUTRAL
-            # Calculate entry levels based on current price and ATR
+            # Calculate entry levels
             ideal_entry = current_close
             entry_low = ideal_entry * (1 - self.entry_range_pct)
             entry_high = ideal_entry * (1 + self.entry_range_pct)
             
+            # Calculate raw TP levels
             if action == "LONG":
-                tp1 = ideal_entry + atr * self.atr_multiplier
-                tp2 = ideal_entry + atr * self.atr_multiplier * 2
-                tp3 = ideal_entry + atr * self.atr_multiplier * 3
+                raw_tp1 = ideal_entry + atr * self.atr_multiplier
+                raw_tp2 = ideal_entry + atr * self.atr_multiplier * 2
+                raw_tp3 = ideal_entry + atr * self.atr_multiplier * 3
                 sl = ideal_entry - atr * self.atr_multiplier
             elif action == "SHORT":
-                tp1 = ideal_entry - atr * self.atr_multiplier
-                tp2 = ideal_entry - atr * self.atr_multiplier * 2
-                tp3 = ideal_entry - atr * self.atr_multiplier * 3
+                raw_tp1 = ideal_entry - atr * self.atr_multiplier
+                raw_tp2 = ideal_entry - atr * self.atr_multiplier * 2
+                raw_tp3 = ideal_entry - atr * self.atr_multiplier * 3
                 sl = ideal_entry + atr * self.atr_multiplier
-            else:  # NEUTRAL - use current price for all levels
-                tp1 = tp2 = tp3 = sl = ideal_entry
+            else:  # NEUTRAL
+                raw_tp1 = raw_tp2 = raw_tp3 = sl = ideal_entry
+            
+            # ✅ FIXED: Apply TP ordering correction
+            if action == "LONG":
+                # Untuk LONG: TP1 < TP2 < TP3 (semua di atas current price)
+                tp_levels = sorted([raw_tp1, raw_tp2, raw_tp3])
+                tp1, tp2, tp3 = tp_levels
+            elif action == "SHORT":
+                # Untuk SHORT: TP1 > TP2 > TP3 (semua di bawah current price)
+                tp_levels = sorted([raw_tp1, raw_tp2, raw_tp3], reverse=True)
+                tp1, tp2, tp3 = tp_levels
+            else:  # NEUTRAL
+                tp1, tp2, tp3 = raw_tp1, raw_tp2, raw_tp3
+            
+            # Calculate TP probabilities
+            tp_probabilities = self.calculate_tp_probability(
+                current_close, tp1, tp2, tp3, sl, action, volatility
+            )
             
             # Prepare pattern details
             detected_patterns = []
@@ -866,7 +942,8 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                 'rsi_score': rsi_score,
                 'trend_score': int(trend_score),
                 'ml_confidence': float(ml_confidence),
-                'risk_metrics': risk_metrics
+                'risk_metrics': risk_metrics,
+                'tp_probabilities': tp_probabilities  # ✅ NEW: TP probabilities
             }
             
             return result
