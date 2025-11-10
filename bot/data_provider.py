@@ -346,7 +346,7 @@ class YFinanceDataProvider(DataProvider):
             print(f"All failed for ticker {symbol}. Returning dummy.")
             return {'last': 1.0, 'volume': 1000}
 
-    def get_popular_assets(self, limit=100):
+    def get_popular_assets(self, limit=50):
         if self.market_type == 'saham_id':
             # Updated list dari saham Indonesia populer (LQ45 + high volume)
             hardcoded = [
@@ -391,6 +391,54 @@ class YFinanceDataProvider(DataProvider):
             assets = hardcoded[:limit]
             print(f"Hardcoded crypto assets via yfinance: {len(assets)} returned.")
             return assets
+
+    def search_assets(self, query, limit=20):
+        """Search assets berdasarkan query untuk web interface"""
+        if self.market_type == 'saham_id':
+            return self._search_id_stocks(query, limit)
+        elif self.market_type == 'forex':
+            return self._search_forex_pairs(query, limit)
+        else:
+            return self._search_crypto_yf(query, limit)
+
+    def _search_id_stocks(self, query, limit):
+        """Search saham Indonesia"""
+        all_stocks = self.get_popular_assets(limit=200)
+        query_clean = query.upper().replace('.JK', '').strip()
+        results = []
+        
+        for stock in all_stocks:
+            stock_clean = stock.replace('.JK', '')
+            if query_clean in stock_clean:
+                results.append(stock)
+        
+        return results[:limit]
+
+    def _search_forex_pairs(self, query, limit):
+        """Search forex pairs"""
+        all_pairs = self.get_popular_assets(limit=100)
+        query_clean = query.upper().replace('=X', '').replace('/', '').strip()
+        results = []
+        
+        for pair in all_pairs:
+            pair_clean = pair.replace('=X', '').replace('/', '')
+            if query_clean in pair_clean:
+                results.append(pair)
+        
+        return results[:limit]
+
+    def _search_crypto_yf(self, query, limit):
+        """Search crypto via yfinance"""
+        all_crypto = self.get_popular_assets(limit=100)
+        query_clean = query.upper().replace('-USD', '').strip()
+        results = []
+        
+        for crypto in all_crypto:
+            crypto_clean = crypto.replace('-USD', '')
+            if query_clean in crypto_clean:
+                results.append(crypto)
+        
+        return results[:limit]
 
 class SolanaPumpFunProvider:
     def __init__(self, rpc_url):
