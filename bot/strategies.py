@@ -129,14 +129,70 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             self.pattern_weight = 1.5
             self.trend_weight = 1.5
             self.volatility_threshold = 0.01
-        else:  # stocks international
+        elif self.market_type == "stocks_international":
             self.rsi_oversold = 30
             self.rsi_overbought = 70
             self.volume_threshold = 1.2
             self.adx_trend_threshold = 22
-            self.pattern_weight = 1.2
-            self.trend_weight = 1.2
+            self.pattern_weight = 1.3
+            self.trend_weight = 1.3
             self.volatility_threshold = 0.015
+        else:  # default
+            self.rsi_oversold = 30
+            self.rsi_overbought = 70
+            self.volume_threshold = 1.2
+            self.adx_trend_threshold = 20
+            self.pattern_weight = 1.0
+            self.trend_weight = 1.0
+            self.volatility_threshold = 0.01
+    
+    def _calculate_drawdown_risk(self, volatility, rsi, atr, price_position):
+        """Calculate drawdown risk based on multiple factors"""
+        risk_score = 0
+        
+        # Volatility component (40% weight)
+        if volatility > 0.03:
+            risk_score += 4
+        elif volatility > 0.015:
+            risk_score += 2
+        elif volatility > 0.005:
+            risk_score += 1
+        
+        # RSI component (30% weight) - extreme levels increase risk
+        if rsi > 80 or rsi < 20:
+            risk_score += 3
+        elif rsi > 70 or rsi < 30:
+            risk_score += 2
+        elif 40 < rsi < 60:
+            risk_score += 0  # Neutral zone - no additional risk
+        else:
+            risk_score += 1
+        
+        # ATR component (20% weight) - high ATR means larger potential drawdowns
+        price = 1.0  # Normalized for calculation
+        atr_ratio = atr / price
+        if atr_ratio > 0.05:
+            risk_score += 2
+        elif atr_ratio > 0.02:
+            risk_score += 1
+        
+        # Price position component (10% weight) - extreme highs increase risk
+        if price_position > 0.8:  # Near recent highs
+            risk_score += 1
+        elif price_position < 0.2:  # Near recent lows
+            risk_score += 1
+        
+        # Convert to risk level
+        if risk_score >= 8:
+            return "VERY HIGH"
+        elif risk_score >= 6:
+            return "HIGH"
+        elif risk_score >= 4:
+            return "MEDIUM"
+        elif risk_score >= 2:
+            return "LOW"
+        else:
+            return "VERY LOW"
     
     def identify_hh_hl_lh_ll(self, df, lookback=20):
         """Identify Higher High, Higher Low, Lower High, Lower Low patterns"""
@@ -668,6 +724,11 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             triangle_patterns = self.detect_triangle_patterns(df)
             channel_wedge_patterns = self.detect_channel_wedge_patterns(df)
             
+            # Calculate price position for drawdown risk
+            high_20 = df['high'].rolling(20).max().iloc[-1]
+            low_20 = df['low'].rolling(20).min().iloc[-1]
+            price_position = (current_close - low_20) / (high_20 - low_20) if (high_20 - low_20) > 0 else 0.5
+            
             # Calculate scores dengan market-specific weights
             trend_score = 0
             if hh or hl:
@@ -759,6 +820,17 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                         detected_patterns.append(pattern_name)
                     all_patterns[pattern_name] = pattern_data
             
+            # 🆕 FIX: Calculate drawdown risk
+            drawdown_risk = self._calculate_drawdown_risk(volatility, current_rsi, atr, price_position)
+            
+            # Risk metrics dengan drawdown_risk
+            risk_metrics = {
+                'reward_ratio': 2.0,  # Default
+                'risk_category': 'HIGH' if volatility > 0.03 else 'MEDIUM' if volatility > 0.01 else 'LOW',
+                'optimal_position_size': 0.1 if volatility > 0.03 else 0.15 if volatility > 0.01 else 0.2,
+                'drawdown_risk': drawdown_risk  # 🆕 FIXED - Now this field exists!
+            }
+            
             result = {
                 'action': action,
                 'ideal_entry': float(ideal_entry) if ideal_entry is not None else None,
@@ -793,11 +865,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                 'rsi_score': rsi_score,
                 'trend_score': int(trend_score),
                 'ml_confidence': float(ml_confidence),
-                'risk_metrics': {
-                    'reward_ratio': 2.0,  # Default, can be calculated based on TP/SL
-                    'risk_category': 'HIGH' if volatility > 0.03 else 'MEDIUM' if volatility > 0.01 else 'LOW',
-                    'optimal_position_size': 0.1 if volatility > 0.03 else 0.15 if volatility > 0.01 else 0.2
-                }
+                'risk_metrics': risk_metrics  # 🆕 FIXED - Now includes drawdown_risk
             }
             
             return result
