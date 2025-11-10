@@ -6,26 +6,24 @@ from solana.rpc.api import Client
 from solana.rpc.websocket_api import connect
 import json
 import asyncio
-import base58  # Untuk decode pubkey
+import base58 # Untuk decode pubkey
 import os
-import requests  # Untuk Alpha Vantage dan DexScreener
-from bs4 import BeautifulSoup  # Untuk parse HTML dari situs web
-import re  # Untuk parse search result
+import requests # Untuk Alpha Vantage dan DexScreener
+from bs4 import BeautifulSoup # Untuk parse HTML dari situs web
+import re # Untuk parse search result
 from datetime import datetime
-
 class DataProvider(ABC):
     @abstractmethod
     def get_ohlcv(self, symbol, timeframe, limit):
         pass
-        
+       
     @abstractmethod
     def get_ticker(self, symbol):
         pass
-        
+       
     @abstractmethod
     def get_popular_assets(self, limit):
         pass
-
 class AlphaVantageProvider(DataProvider):
     def __init__(self, api_key=None):
         self.api_key = api_key or os.getenv('ALPHA_VANTAGE_KEY')
@@ -33,7 +31,6 @@ class AlphaVantageProvider(DataProvider):
             print("Warning: Alpha Vantage API key not found. Skipping Alpha fallback - get one at https://www.alphavantage.co/support/#api-key")
             self.api_key = None
         self.base_url = "https://www.alphavantage.co/query"
-
     def _convert_symbol(self, symbol, market_type='crypto'):
         if '/' in symbol:
             base, quote = symbol.split('/')
@@ -47,14 +44,13 @@ class AlphaVantageProvider(DataProvider):
         if market_type == 'forex':
             return f"{base[:3]}/{base[3:]}"
         return base
-
     def get_ohlcv(self, symbol, timeframe, limit=200):
         if not self.api_key:
             print("No Alpha Vantage key, skipping OHLCV.")
             return None
         try:
             symbol_av = self._convert_symbol(symbol)
-            if '/' in symbol_av:  # Forex
+            if '/' in symbol_av: # Forex
                 function = "FX_DAILY"
             else:
                 function = "DIGITAL_CURRENCY_DAILY" if 'crypto' in market_type else "TIME_SERIES_DAILY"
@@ -91,7 +87,6 @@ class AlphaVantageProvider(DataProvider):
         except Exception as e:
             print(f"Error getting OHLCV from Alpha Vantage for {symbol}: {e}")
         return None
-
     def get_ticker(self, symbol):
         if not self.api_key:
             print("No Alpha Vantage key, skipping ticker.")
@@ -126,14 +121,11 @@ class AlphaVantageProvider(DataProvider):
         except Exception as e:
             print(f"Error getting ticker from Alpha Vantage for {symbol}: {e}")
         return None
-
     def get_popular_assets(self, limit=100):
         return []
-
 class DexScreenerProvider:
     def __init__(self):
         self.base_url = "https://api.dexscreener.com/latest/dex"
-
     def get_ticker(self, chain, token_address):
         try:
             url = f"{self.base_url}/tokens/{chain}/{token_address}"
@@ -157,7 +149,6 @@ class DexScreenerProvider:
         except Exception as e:
             print(f"Error getting ticker from DexScreener for {token_address}: {e}")
             return None
-
     def search_pairs(self, query):
         try:
             url = f"{self.base_url}/search?q={query}"
@@ -172,7 +163,6 @@ class DexScreenerProvider:
         except Exception as e:
             print(f"Error searching pairs in DexScreener: {e}")
             return []
-
 class CCXTDataProvider(DataProvider):
     def __init__(self, exchange_id='kucoin', api_key='', secret=''):
         exchange_class = getattr(ccxt, exchange_id)
@@ -183,7 +173,6 @@ class CCXTDataProvider(DataProvider):
         })
         self.fallback_yf = YFinanceDataProvider(market_type='crypto')
         self.fallback_av = AlphaVantageProvider() # Last untuk hemat limit 25/day
-
     def _convert_symbol(self, symbol, target='yf'):
         base = symbol.split('/')[0] if '/' in symbol else symbol.upper()
         if target == 'yf':
@@ -191,7 +180,6 @@ class CCXTDataProvider(DataProvider):
         elif target == 'av':
             return base
         return symbol
-
     def get_ohlcv(self, symbol, timeframe, limit=200):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -219,11 +207,10 @@ class CCXTDataProvider(DataProvider):
                 'open': [1.0] * limit,
                 'high': [1.1] * limit,
                 'low': [0.9] * limit,
-                'close': [1.0 + (i / 100) for i in range(limit)],  # Slight upward trend to trigger LONG
-                'volume': [1000 + i for i in range(limit)]  # Increasing volume
+                'close': [1.0 + (i / 100) for i in range(limit)], # Slight upward trend to trigger LONG
+                'volume': [1000 + i for i in range(limit)] # Increasing volume
             }
             return pd.DataFrame(dummy_data)
-
     def get_ticker(self, symbol):
         try:
             ticker = self.exchange.fetch_ticker(symbol)
@@ -243,7 +230,6 @@ class CCXTDataProvider(DataProvider):
             # Dummy fallback
             print(f"All failed for ticker {symbol}. Returning dummy.")
             return {'last': 1.0, 'volume': 1000}
-
     def get_popular_assets(self, limit=100):
         try:
             markets = self.exchange.load_markets()
@@ -266,21 +252,18 @@ class CCXTDataProvider(DataProvider):
                      'TRX/USDT', 'AVAX/USDT', 'MATIC/USDT', 'SHIB/USDT', 'UNI/USDT', 'ATOM/USDT', 'XLM/USDT', 'BCH/USDT', 'ETC/USDT', 'FIL/USDT']
         print(f"Falling back to hardcoded crypto assets: {len(hardcoded[:limit])}")
         return hardcoded[:limit]
-
 class YFinanceDataProvider(DataProvider):
     def __init__(self, market_type='saham_id'):
         self.market_type = market_type
         self.fallback_av = AlphaVantageProvider() # Only fallback ke Alpha
-
     def _convert_symbol(self, symbol, target='av'):
-        base = symbol.split('=')[0] if '=X' in symbol else symbol.split('.')[0] if '.JK' in symbol else symbol
+        base = symbol.split('=')[0] if '=X' in symbol else symbol.split('[0]') if '.JK' in symbol else symbol
         if target == 'av':
             if self.market_type == 'forex':
                 from_curr, to_curr = base[:3], base[3:]
                 return f"{from_curr}/{to_curr}"
             return base
         return symbol
-
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         try:
             interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
@@ -317,11 +300,10 @@ class YFinanceDataProvider(DataProvider):
                 'open': [1.0] * limit,
                 'high': [1.1] * limit,
                 'low': [0.9] * limit,
-                'close': [1.0 + (i / 100) for i in range(limit)],  # Slight upward trend to trigger LONG
-                'volume': [1000 + i for i in range(limit)]  # Increasing volume
+                'close': [1.0 + (i / 100) for i in range(limit)], # Slight upward trend to trigger LONG
+                'volume': [1000 + i for i in range(limit)] # Increasing volume
             }
             return pd.DataFrame(dummy_data)
-
     def get_ticker(self, symbol):
         try:
             ticker = yf.Ticker(symbol)
@@ -340,32 +322,89 @@ class YFinanceDataProvider(DataProvider):
                 av_tk = self.fallback_av.get_ticker(conv_symbol)
                 if av_tk is not None:
                     return av_tk
+                else:
+                    print(f"Alpha Vantage returned None for {conv_symbol}")
             except Exception as av_e:
                 print(f"Alpha fallback ticker error: {av_e}")
             # Dummy fallback
             print(f"All failed for ticker {symbol}. Returning dummy.")
             return {'last': 1.0, 'volume': 1000}
-
     def get_popular_assets(self, limit=50):
-        # From search: top stocks by market cap in IDX
-        hardcoded = ['BREN.JK', 'BBCA.JK', 'DCII.JK', 'TPIA.JK', 'BYAN.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK',
-                     'ADRO.JK', 'UNTR.JK', 'PGAS.JK', 'ANTM.JK', 'INDF.JK', 'CPIN.JK', 'KLBF.JK', 'UNVR.JK', 'HMSP.JK', 'GGRM.JK',
-                     'MDKA.JK', 'EXCL.JK', 'ISAT.JK', 'SMGR.JK', 'INTP.JK', 'AKRA.JK', 'JSMR.JK', 'SRTG.JK', 'TBIG.JK', 'TOWR.JK',
-                     'WIKA.JK', 'WSKT.JK', 'PTPP.JK', 'ADHI.JK', 'ACES.JK', 'AMRT.JK', 'ARTO.JK', 'AVIA.JK', 'BBRI.JK', 'BBTN.JK',
-                     'BFIN.JK', 'BMAS.JK', 'BRMS.JK', 'BUKA.JK', 'CITA.JK', 'DNET.JK', 'DOID.JK', 'EMTK.JK', 'ESSA.JK', 'FAPA.JK']
-        assets = hardcoded[:limit]
-        print(f"Hardcoded saham ID assets (updated from search): {len(assets)} returned.")
-        return assets
-    elif self.market_type == 'forex':
-        # From search: top most traded forex pairs
-        hardcoded = ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
-                     'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'NZDCAD=X', 'EURAUD=X', 'GBPAUD=X', 'NZDJPY=X',
-                     'USDMXN=X', 'USDTRY=X', 'USDCNY=X', 'USDINR=X', 'USDBRL=X', 'USDRUB=X', 'USDZAR=X', 'USDKRW=X', 'USDSEK=X', 'USDNOK=X',
-                     'USDPLN=X', 'USDSGD=X', 'USDHKD=X', 'USDDKK=X', 'EURCHF=X', 'GBCHF=X', 'AUDCHF=X', 'NZDCHF=X', 'CADCHF=X', 'EURSEK=X']
-        assets = hardcoded[:limit]
-        print(f"Hardcoded forex assets (updated from search): {len(assets)} returned.")
-        return assets
-    return []
+        """
+        Dynamically fetch popular assets similar to crypto mode.
+        Uses web scraping to get real-time top assets sorted by market cap or volume.
+        Falls back to hardcoded if scraping fails.
+        """
+        if self.market_type == 'saham_id':
+            try:
+                url = "https://www.tradingview.com/markets/stocks-indonesia/market-movers-large-cap/"
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, 'html.parser')
+               
+                table = soup.find('table')
+                if not table:
+                    raise ValueError("No table found.")
+               
+                rows = table.find_all('tr')[1:] # Skip header
+               
+                assets = []
+                for row in rows[:limit]:
+                    symbol_cell = row.find('td').find('a')
+                    if symbol_cell:
+                        symbol = symbol_cell.text.strip()
+                        assets.append(f"{symbol}.JK")
+               
+                if assets:
+                    print(f"Dynamically fetched {len(assets)} saham ID assets from TradingView.")
+                    return assets
+                else:
+                    raise ValueError("No assets found in scrape.")
+            except Exception as e:
+                print(f"Error fetching saham ID assets dynamically: {e}. Falling back to hardcoded.")
+                hardcoded = ['BREN.JK', 'BBCA.JK', 'DCII.JK', 'TPIA.JK', 'BYAN.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK',
+                             'ADRO.JK', 'UNTR.JK', 'PGAS.JK', 'ANTM.JK', 'INDF.JK', 'CPIN.JK', 'KLBF.JK', 'UNVR.JK', 'HMSP.JK', 'GGRM.JK',
+                             'MDKA.JK', 'EXCL.JK', 'ISAT.JK', 'SMGR.JK', 'INTP.JK', 'AKRA.JK', 'JSMR.JK', 'SRTG.JK', 'TBIG.JK', 'TOWR.JK',
+                             'WIKA.JK', 'WSKT.JK', 'PTPP.JK', 'ADHI.JK', 'ACES.JK', 'AMRT.JK', 'ARTO.JK', 'AVIA.JK', 'BBRI.JK', 'BBTN.JK',
+                             'BFIN.JK', 'BMAS.JK', 'BRMS.JK', 'BUKA.JK', 'CITA.JK', 'DNET.JK', 'DOID.JK', 'EMTK.JK', 'ESSA.JK', 'FAPA.JK']
+                return hardcoded[:limit]
+       
+        elif self.market_type == 'forex':
+            try:
+                url = "https://www.tradingview.com/markets/currencies/rates-major/"
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, 'html.parser')
+               
+                table = soup.find('table')
+                if not table:
+                    raise ValueError("No table found.")
+               
+                rows = table.find_all('tr')[1:] # Skip header
+               
+                assets = []
+                for row in rows[:limit]:
+                    symbol_cell = row.find('td').find('a')
+                    if symbol_cell:
+                        symbol = symbol_cell.text.strip()
+                        assets.append(f"{symbol}=X")
+               
+                if assets:
+                    print(f"Dynamically fetched {len(assets)} forex assets from TradingView.")
+                    return assets
+                else:
+                    raise ValueError("No assets found in scrape.")
+            except Exception as e:
+                print(f"Error fetching forex assets dynamically: {e}. Falling back to hardcoded.")
+                hardcoded = ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+                             'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'NZDCAD=X', 'EURAUD=X', 'GBPAUD=X', 'NZDJPY=X',
+                             'USDMXN=X', 'USDTRY=X', 'USDCNY=X', 'USDINR=X', 'USDBRL=X', 'USDRUB=X', 'USDZAR=X', 'USDKRW=X', 'USDSEK=X', 'USDNOK=X',
+                             'USDPLN=X', 'USDSGD=X', 'USDHKD=X', 'USDDKK=X', 'EURCHF=X', 'GBCHF=X', 'AUDCHF=X', 'NZDCHF=X', 'CADCHF=X', 'EURSEK=X']
+                return hardcoded[:limit]
+       
+        return []
 class SolanaPumpFunProvider:
     def __init__(self, rpc_url):
         self.client = Client(rpc_url)
@@ -398,3 +437,4 @@ class SolanaPumpFunProvider:
         return "EXAMPLE_MINT_TOKEN" # Ganti dengan parsing real dari logs
     async def get_solana_ticker(self, mint):
         return self.dex_provider.get_ticker('solana', mint) # Return {'last': price, 'volume': vol}
+sekarang data providerku ini kenapa kalo error stop harusnya kan jalan truz contoh saham indo sampai 60error langsung bre forex pun gitu
