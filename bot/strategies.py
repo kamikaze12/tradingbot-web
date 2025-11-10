@@ -792,23 +792,24 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             action_threshold = 2 if self.market_type == "crypto" else 1
             action = "LONG" if final_score >= action_threshold else "SHORT" if final_score <= -action_threshold else "NEUTRAL"
             
-            # Calculate entry levels
-            if action in ["LONG", "SHORT"]:
-                ideal_entry = current_close
-                entry_low = ideal_entry * (1 - self.entry_range_pct)
-                entry_high = ideal_entry * (1 + self.entry_range_pct)
-                if action == "LONG":
-                    tp1 = ideal_entry + atr * self.atr_multiplier
-                    tp2 = ideal_entry + atr * self.atr_multiplier * 2
-                    tp3 = ideal_entry + atr * self.atr_multiplier * 3
-                    sl = ideal_entry - atr * self.atr_multiplier
-                else:  # SHORT
-                    tp1 = ideal_entry - atr * self.atr_multiplier
-                    tp2 = ideal_entry - atr * self.atr_multiplier * 2
-                    tp3 = ideal_entry - atr * self.atr_multiplier * 3
-                    sl = ideal_entry + atr * self.atr_multiplier
-            else:
-                ideal_entry = entry_low = entry_high = tp1 = tp2 = tp3 = sl = None
+            # FIXED: Always calculate entry levels, even for NEUTRAL
+            # Calculate entry levels based on current price and ATR
+            ideal_entry = current_close
+            entry_low = ideal_entry * (1 - self.entry_range_pct)
+            entry_high = ideal_entry * (1 + self.entry_range_pct)
+            
+            if action == "LONG":
+                tp1 = ideal_entry + atr * self.atr_multiplier
+                tp2 = ideal_entry + atr * self.atr_multiplier * 2
+                tp3 = ideal_entry + atr * self.atr_multiplier * 3
+                sl = ideal_entry - atr * self.atr_multiplier
+            elif action == "SHORT":
+                tp1 = ideal_entry - atr * self.atr_multiplier
+                tp2 = ideal_entry - atr * self.atr_multiplier * 2
+                tp3 = ideal_entry - atr * self.atr_multiplier * 3
+                sl = ideal_entry + atr * self.atr_multiplier
+            else:  # NEUTRAL - use current price for all levels
+                tp1 = tp2 = tp3 = sl = ideal_entry
             
             # Prepare pattern details
             detected_patterns = []
@@ -820,7 +821,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                         detected_patterns.append(pattern_name)
                     all_patterns[pattern_name] = pattern_data
             
-            # 🆕 FIX: Calculate drawdown risk
+            # Calculate drawdown risk
             drawdown_risk = self._calculate_drawdown_risk(volatility, current_rsi, atr, price_position)
             
             # Risk metrics dengan drawdown_risk
@@ -828,18 +829,18 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                 'reward_ratio': 2.0,  # Default
                 'risk_category': 'HIGH' if volatility > 0.03 else 'MEDIUM' if volatility > 0.01 else 'LOW',
                 'optimal_position_size': 0.1 if volatility > 0.03 else 0.15 if volatility > 0.01 else 0.2,
-                'drawdown_risk': drawdown_risk  # 🆕 FIXED - Now this field exists!
+                'drawdown_risk': drawdown_risk
             }
             
             result = {
                 'action': action,
-                'ideal_entry': float(ideal_entry) if ideal_entry is not None else None,
-                'entry_low': float(entry_low) if entry_low is not None else None,
-                'entry_high': float(entry_high) if entry_high is not None else None,
-                'tp1': float(tp1) if tp1 is not None else None,
-                'tp2': float(tp2) if tp2 is not None else None,
-                'tp3': float(tp3) if tp3 is not None else None,
-                'sl': float(sl) if sl is not None else None,
+                'ideal_entry': float(ideal_entry),
+                'entry_low': float(entry_low),
+                'entry_high': float(entry_high),
+                'tp1': float(tp1),
+                'tp2': float(tp2),
+                'tp3': float(tp3),
+                'sl': float(sl),
                 'current_price': float(current_close),
                 'rsi': float(current_rsi),
                 'trend': 'BULLISH' if trend_score > 0 else 'BEARISH' if trend_score < 0 else 'NEUTRAL',
@@ -865,7 +866,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                 'rsi_score': rsi_score,
                 'trend_score': int(trend_score),
                 'ml_confidence': float(ml_confidence),
-                'risk_metrics': risk_metrics  # 🆕 FIXED - Now includes drawdown_risk
+                'risk_metrics': risk_metrics
             }
             
             return result
