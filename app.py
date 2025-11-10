@@ -727,124 +727,135 @@ def main():
     # ===============================
     # Tab 4: Posisi Aktif
     # ===============================
-    with tab4:
-        st.subheader("💼 Posisi Aktif")
+  with tab4:
+    st.subheader("💼 Posisi Aktif")
+    
+    if st.button("🔄 Refresh Posisi", key="refresh_positions"):
+        st.session_state.positions_data = bot.get_active_positions()
+        st.success("Posisi diperbarui!")
+        st.rerun()
+    
+    if not st.session_state.positions_data:
+        st.info("📭 Tidak ada posisi aktif.")
+    else:
+        st.write(f"**📈 Total Posisi Aktif:** {len(st.session_state.positions_data)}")
         
-        if st.button("🔄 Refresh Posisi", key="refresh_positions"):
-            st.session_state.positions_data = bot.get_active_positions()
-            st.success("Posisi diperbarui!")
-            st.rerun()
-        
-        if not st.session_state.positions_data:
-            st.info("📭 Tidak ada posisi aktif.")
-        else:
-            st.write(f"**📈 Total Posisi Aktif:** {len(st.session_state.positions_data)}")
+        for pos in st.session_state.positions_data:
+            # ✅ PERBAIKAN: Gunakan urutan indeks yang benar dari database
+            pos_id = pos[0]        # id
+            symbol = pos[1]        # symbol
+            market_type = pos[2]   # market_type
+            action = pos[3]        # action
+            entry_price = pos[4]   # entry_price
+            # pos[5] = entry_low (skip)
+            # pos[6] = entry_high (skip)
+            tp1 = pos[7] if len(pos) > 7 else 0  # tp1
+            tp2 = pos[8] if len(pos) > 8 else 0  # tp2  
+            tp3 = pos[9] if len(pos) > 9 else 0  # tp3
+            sl = pos[10] if len(pos) > 10 else 0 # sl
+            current_price = pos[11] if len(pos) > 11 else entry_price  # current_price
             
-            for pos in st.session_state.positions_data:
-                pos_id = pos[0]
-                symbol = pos[1]
-                market_type = pos[2]
-                action = pos[3]
-                entry_price = pos[4]
-                current_price = pos[11] if len(pos) > 11 else entry_price
-                sl = pos[9] if len(pos) > 9 else 0
-                tp1 = pos[6] if len(pos) > 6 else 0
-                tp2 = pos[7] if len(pos) > 7 else 0
-                tp3 = pos[8] if len(pos) > 8 else 0
-                
-                # ✅ FIXED: Urutkan TP levels sebelum display
-                if action == "LONG":
-                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])  # Kecil ke besar
-                elif action == "SHORT":
-                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)  # Besar ke kecil
-                
-                # Calculate P/L
-                if action == "LONG":
-                    pl_pct = ((current_price - entry_price) / entry_price) * 100
-                    pl_color = "green" if pl_pct >= 0 else "red"
-                else:
-                    pl_pct = ((entry_price - current_price) / entry_price) * 100
-                    pl_color = "green" if pl_pct >= 0 else "red"
-                
-                # Hitung probabilitas TP untuk posisi aktif
-                tp_probabilities = calculate_tp_probability(
-                    current_price, tp1, tp2, tp3, sl, action
+            # ✅ VALIDASI: Pastikan urutan TP levels benar
+            if action == "LONG":
+                # Untuk LONG: TP1 < TP2 < TP3, SL < Entry
+                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                if not (sl < entry_price < tp1 < tp2 < tp3):
+                    st.error(f"⚠️ INVALID LEVELS untuk {symbol}: Pastikan SL < Entry < TP1 < TP2 < TP3")
+                    continue
+            elif action == "SHORT":
+                # Untuk SHORT: TP1 > TP2 > TP3, SL > Entry  
+                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                if not (sl > entry_price > tp1 > tp2 > tp3):
+                    st.error(f"⚠️ INVALID LEVELS untuk {symbol}: Pastikan SL > Entry > TP1 > TP2 > TP3")
+                    continue
+            
+            # Calculate P/L
+            if action == "LONG":
+                pl_pct = ((current_price - entry_price) / entry_price) * 100
+                pl_color = "green" if pl_pct >= 0 else "red"
+            else:
+                pl_pct = ((entry_price - current_price) / entry_price) * 100
+                pl_color = "green" if pl_pct >= 0 else "red"
+            
+            # Hitung probabilitas TP untuk posisi aktif
+            tp_probabilities = bot.calculate_tp_probability(
+                current_price, tp1, tp2, tp3, sl, action
+            )
+            
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
+            
+            with col1:
+                st.write(f"**{symbol}** ({market_type}) - {action}")
+                st.write(f"📥 Entry: `{entry_price:.5f}` | 📊 Current: `{current_price:.5f}`")
+                st.write(f"💰 P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
+            
+            with col2:
+                # Display TP levels dengan probabilitas
+                st.write(f"🎯 TP1: `{tp1:.5f}` ({tp_probabilities.get('tp1', 0)*100:.1f}%)")
+                st.write(f"🎯 TP2: `{tp2:.5f}` ({tp_probabilities.get('tp2', 0)*100:.1f}%)")
+                st.write(f"🎯 TP3: `{tp3:.5f}` ({tp_probabilities.get('tp3', 0)*100:.1f}%)")
+                st.write(f"🛑 SL: `{sl:.5f}`")
+            
+            with col3:
+                if st.button("🔄", key=f"update_{symbol}"):
+                    ticker = bot.data_provider.get_ticker(symbol)
+                    if ticker and 'last' in ticker:
+                        bot.db.update_position_current_price(symbol, ticker['last'])
+                        st.success(f"Harga {symbol} diperbarui!")
+                        st.session_state.positions_data = bot.get_active_positions()
+                        st.rerun()
+            
+            with col4:
+                exit_price = st.number_input(
+                    "Exit Price",
+                    value=float(current_price),
+                    step=0.0001,
+                    key=f"exit_{symbol}"
                 )
-                
-                st.markdown("---")
-                col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
-                
-                with col1:
-                    st.write(f"**{symbol}** ({market_type}) - {action}")
-                    st.write(f"📥 Entry: `{entry_price:.5f}` | 📊 Current: `{current_price:.5f}`")
-                    st.write(f"💰 P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
-                
-                with col2:
-                    # Display TP levels dengan probabilitas
-                    st.write(f"🎯 TP1: `{tp1:.5f}` ({tp_probabilities.get('tp1', 0)*100:.1f}%)")
-                    st.write(f"🎯 TP2: `{tp2:.5f}` ({tp_probabilities.get('tp2', 0)*100:.1f}%)")
-                    st.write(f"🎯 TP3: `{tp3:.5f}` ({tp_probabilities.get('tp3', 0)*100:.1f}%)")
-                    st.write(f"🛑 SL: `{sl:.5f}`")
-                
-                with col3:
-                    if st.button("🔄", key=f"update_{symbol}"):
-                        ticker = bot.data_provider.get_ticker(symbol)
-                        if ticker and 'last' in ticker:
-                            bot.db.update_position_current_price(symbol, ticker['last'])
-                            st.success(f"Harga {symbol} diperbarui!")
-                            st.session_state.positions_data = bot.get_active_positions()
-                            st.rerun()
-                
-                with col4:
-                    exit_price = st.number_input(
-                        "Exit Price",
-                        value=float(current_price),
-                        step=0.0001,
-                        key=f"exit_{symbol}"
-                    )
-                    if st.button("🔒 Tutup", key=f"close_{symbol}"):
-                        if bot.close_position(pos_id, exit_price):
-                            st.success(f"Posisi {symbol} ditutup!")
-                            st.session_state.positions_data = bot.get_active_positions()
-                            st.rerun()
-                        else:
-                            st.error("Gagal menutup posisi.")
-
+                if st.button("🔒 Tutup", key=f"close_{symbol}"):
+                    if bot.close_position(pos_id, exit_price):
+                        st.success(f"Posisi {symbol} ditutup!")
+                        st.session_state.positions_data = bot.get_active_positions()
+                        st.rerun()
+                    else:
+                        st.error("Gagal menutup posisi.")
     # ===============================
     # Tab 5: History
     # ===============================
-    with tab5:
-        st.subheader("📋 History Trading")
+   with tab5:
+    st.subheader("📋 History Trading")
+    
+    if st.button("🔄 Refresh History", key="refresh_history"):
+        st.session_state.history_data = bot.get_trade_history(20)
+        st.success("History diperbarui!")
+        st.rerun()
+    
+    if not st.session_state.history_data:
+        st.info("📭 Tidak ada history trading.")
+    else:
+        st.write(f"**📊 Total Trade:** {len(st.session_state.history_data)}")
         
-        if st.button("🔄 Refresh History", key="refresh_history"):
-            st.session_state.history_data = bot.get_trade_history(20)
-            st.success("History diperbarui!")
-            st.rerun()
-        
-        if not st.session_state.history_data:
-            st.info("📭 Tidak ada history trading.")
-        else:
-            st.write(f"**📊 Total Trade:** {len(st.session_state.history_data)}")
+        for trade in st.session_state.history_data:
+            # ✅ PERBAIKAN: Gunakan urutan indeks yang benar
+            trade_id = trade[0]      # id
+            symbol = trade[1]        # symbol
+            market_type = trade[2]   # market_type
+            action = trade[3]        # action
+            entry_price = trade[4]   # entry_price
+            exit_price = trade[5]    # exit_price
+            profit_loss = trade[6]   # profit_loss
+            trade_type = trade[7]    # trade_type
+            timestamp = trade[8]     # timestamp
             
-            for trade in st.session_state.history_data:
-                trade_id = trade[0]
-                symbol = trade[1]
-                market_type = trade[2]
-                action = trade[3]
-                entry_price = trade[4]
-                exit_price = trade[5]
-                profit_loss = trade[6]
-                trade_type = trade[7]
-                timestamp = trade[8]
-                
-                color = "green" if profit_loss > 0 else "red"
-                emoji = "✅" if profit_loss > 0 else "❌"
-                
-                st.markdown("---")
-                st.write(f"{emoji} **{symbol}** ({market_type}) - {action} - {trade_type}")
-                st.write(f"📥 Entry: `{entry_price:.5f}` | 📤 Exit: `{exit_price:.5f}`")
-                st.write(f"💰 P/L: <span style='color:{color}'>{profit_loss:.5f}</span>", unsafe_allow_html=True)
-                st.write(f"⏰ Waktu: {timestamp}")
+            color = "green" if profit_loss > 0 else "red"
+            emoji = "✅" if profit_loss > 0 else "❌"
+            
+            st.markdown("---")
+            st.write(f"{emoji} **{symbol}** ({market_type}) - {action} - {trade_type}")
+            st.write(f"📥 Entry: `{entry_price:.5f}` | 📤 Exit: `{exit_price:.5f}`")
+            st.write(f"💰 P/L: <span style='color:{color}'>{profit_loss:.5f}</span>", unsafe_allow_html=True)
+            st.write(f"⏰ Waktu: {timestamp}")
 
     # ===============================
     # Tab 6: Live Scanner
