@@ -648,7 +648,7 @@ def main():
                 st.error("Data analisis tidak valid. Coba analisis ulang.")
 
     # ===============================
-    # Tab 3: Custom Entry
+    # Tab 3: Custom Entry - DIPERBAIKI
     # ===============================
     with tab3:
         st.subheader("🎯 Custom Entry")
@@ -656,16 +656,34 @@ def main():
         symbol_custom = st.text_input("Masukkan simbol aset:", key="custom_symbol")
         entry_price_custom = st.number_input("Harga Entry:", value=0.0, step=0.0001, key="custom_entry")
         
+        # ✅ PERBAIKAN: Tambahkan input untuk action
+        action_custom = st.selectbox("Action:", ["LONG", "SHORT"], key="custom_action")
+        
         if st.button("🧮 Hitung TP/SL", key="calculate_custom"):
             if symbol_custom and entry_price_custom > 0:
                 with st.spinner("Menghitung..."):
                     result = bot.calculate_custom_entry(symbol_custom, entry_price_custom)
                     if result:
+                        # ✅ PERBAIKAN: Pastikan TP/SL berbeda dari entry price
+                        if (result['tp1'] == result['tp2'] == result['tp3'] == result['sl'] == entry_price_custom):
+                            st.warning("⚠️ Perhitungan ATR menghasilkan nilai 0. Menggunakan fallback calculation...")
+                            # Fallback calculation
+                            if action_custom == "LONG":
+                                result['tp1'] = entry_price_custom * 1.02
+                                result['tp2'] = entry_price_custom * 1.04
+                                result['tp3'] = entry_price_custom * 1.06
+                                result['sl'] = entry_price_custom * 0.98
+                            else:  # SHORT
+                                result['tp1'] = entry_price_custom * 0.98
+                                result['tp2'] = entry_price_custom * 0.96
+                                result['tp3'] = entry_price_custom * 0.94
+                                result['sl'] = entry_price_custom * 1.02
+                        
                         # Hitung probabilitas TP
                         result['tp_probabilities'] = calculate_tp_probability(
                             entry_price_custom,
                             result['tp1'], result['tp2'], result['tp3'],
-                            result['sl'], "LONG"  # Default LONG untuk custom entry
+                            result['sl'], action_custom
                         )
                         st.session_state.custom_result = result
                         st.success("Perhitungan selesai!")
@@ -688,7 +706,12 @@ def main():
             with col2:
                 st.metric("🎯 TP3", f"{result['tp3']:.5f}")
                 st.metric("🛡️ SL", f"{result['sl']:.5f}")
-                risk_reward = (result['tp1'] - result['entry_price']) / (result['entry_price'] - result['sl'])
+                
+                # Hitung risk/reward ratio
+                if action_custom == "LONG":
+                    risk_reward = (result['tp1'] - result['entry_price']) / (result['entry_price'] - result['sl'])
+                else:
+                    risk_reward = (result['entry_price'] - result['tp1']) / (result['sl'] - result['entry_price'])
                 st.metric("📊 Risk/Reward", f"{risk_reward:.2f}")
             
             # Tampilkan probabilitas TP
@@ -705,14 +728,21 @@ def main():
             
             # Tombol untuk menambahkan ke posisi
             if st.button("✅ Tambahkan ke Posisi Aktif", key="add_custom"):
+                # ✅ PERBAIKAN: Urutkan TP levels berdasarkan action
+                tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
+                if action_custom == "LONG":
+                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                else:  # SHORT
+                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                    
                 position_id = bot.db.save_position(
                     symbol=result['symbol'],
                     market_type=bot.mode,
-                    action="LONG",
+                    action=action_custom,
                     entry_price=result['entry_price'],
-                    tp1=result['tp1'],
-                    tp2=result['tp2'],
-                    tp3=result['tp3'],
+                    tp1=tp1,
+                    tp2=tp2,
+                    tp3=tp3,
                     sl=result['sl'],
                     entry_low=result['entry_price'] * 0.99,
                     entry_high=result['entry_price'] * 1.01,
@@ -778,7 +808,7 @@ def main():
                     pl_color = "green" if pl_pct >= 0 else "red"
                 
                 # Hitung probabilitas TP untuk posisi aktif
-                tp_probabilities = bot.calculate_tp_probability(
+                tp_probabilities = calculate_tp_probability(
                     current_price, tp1, tp2, tp3, sl, action
                 )
                 
