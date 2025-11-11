@@ -351,7 +351,9 @@ class BacktestEngine:
     
     def _should_enter_trade(self, analysis, current_price):
         """Enhanced entry logic"""
-        if analysis.get('score', 0) >= 2 and analysis.get('risk_metrics', {}).get('reward_ratio', 0) > 1.5:
+        # ✅ PERBAIKAN: Terima sinyal SHORT dengan skor negatif kuat
+        score = analysis.get('score', 0)
+        if (score >= 2 or score <= -2) and analysis.get('risk_metrics', {}).get('reward_ratio', 0) > 1.5:
             # Additional filters
             if analysis.get('volume_ratio', 0) > 0.8:  # Minimum volume
                 if analysis.get('rsi', 50) not in [0, 100]:  # Valid RSI
@@ -779,10 +781,16 @@ class TradingBot:
                     analysis = self.analyze_asset(asset)
                     
                     if analysis:
-                        if analysis.get("action") in ["LONG", "SHORT"] and analysis.get("score", 0) >= self.config.get("min_score", 3):
+                        # ✅ PERBAIKAN: Terima sinyal SHORT dengan skor negatif
+                        score = analysis.get("score", 0)
+                        min_score = self.config.get("min_score", 3)
+                        
+                        if (analysis.get("action") in ["LONG", "SHORT"] and 
+                            abs(score) >= min_score):  # Gunakan absolute value untuk SHORT
                             results.append(analysis)
                             successful_analysis += 1
-                            print(f"    ✅ Signal found: {analysis['action']} (Score: {analysis['score']})")
+                            action_emoji = "🟢" if analysis['action'] == "LONG" else "🔴"
+                            print(f"    {action_emoji} Signal found: {analysis['action']} (Score: {analysis['score']})")
                         else:
                             print(f"    ⚠️ No trade signal (Action: {analysis.get('action')}, Score: {analysis.get('score')})")
                     else:
@@ -796,8 +804,8 @@ class TradingBot:
                 # Delay untuk menghindari rate limit
                 time.sleep(self.config.get("scan_delay", 0.5))
             
-            # Urutkan berdasarkan score dan ambil yang terbaik
-            results.sort(key=lambda x: x.get('score', 0), reverse=True)
+            # ✅ PERBAIKAN: Urutkan berdasarkan absolute score untuk memasukkan SHORT yang kuat
+            results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
             max_signals = self.config.get("max_signals", 10)
             final_results = results[:max_signals]
             
