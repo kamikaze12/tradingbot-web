@@ -931,30 +931,46 @@ class TradingBot:
             print(f"Error scanning Pump Fun: {e}")
             return []
 
-    def calculate_custom_entry(self, symbol, entry_price):
-        """Calculate custom entry dengan TP/SL dan probabilitas"""
+    def calculate_custom_entry(self, symbol, entry_price, action="LONG"):
+        """Calculate custom entry dengan TP/SL dan probabilitas - DIPERBAIKI"""
         if not self.data_provider:
             print("No data provider for custom entry.")
-            return None
+            return self.calculate_fallback_entry(symbol, entry_price, action)
         try:
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
+            
             if df is not None and len(df) >= 20:
                 atr = self.strategy.calculate_atr(df)
                 
-                # Calculate raw TP levels
-                raw_tp1 = entry_price + atr * self.strategy.atr_multiplier
-                raw_tp2 = entry_price + atr * self.strategy.atr_multiplier * 2
-                raw_tp3 = entry_price + atr * self.strategy.atr_multiplier * 3
-                sl = entry_price - atr * self.strategy.atr_multiplier
+                # ✅ PERBAIKAN: Cek jika ATR 0 atau sangat kecil
+                if atr is None or atr == 0 or atr < entry_price * 0.0001:
+                    print(f"ATR invalid ({atr}) for {symbol}, using percentage-based calculation")
+                    # Gunakan percentage-based calculation
+                    return self.calculate_fallback_entry(symbol, entry_price, action)
                 
-                # ✅ FIXED: Sort TP levels for LONG (ascending)
-                tp1, tp2, tp3 = sorted([raw_tp1, raw_tp2, raw_tp3])
+                # Calculate raw TP levels
+                if action == "LONG":
+                    raw_tp1 = entry_price + atr * self.strategy.atr_multiplier
+                    raw_tp2 = entry_price + atr * self.strategy.atr_multiplier * 2
+                    raw_tp3 = entry_price + atr * self.strategy.atr_multiplier * 3
+                    sl = entry_price - atr * self.strategy.atr_multiplier
+                else:  # SHORT
+                    raw_tp1 = entry_price - atr * self.strategy.atr_multiplier
+                    raw_tp2 = entry_price - atr * self.strategy.atr_multiplier * 2
+                    raw_tp3 = entry_price - atr * self.strategy.atr_multiplier * 3
+                    sl = entry_price + atr * self.strategy.atr_multiplier
+                
+                # ✅ FIXED: Sort TP levels berdasarkan action
+                if action == "LONG":
+                    tp1, tp2, tp3 = sorted([raw_tp1, raw_tp2, raw_tp3])  # Kecil ke besar
+                else:
+                    tp1, tp2, tp3 = sorted([raw_tp1, raw_tp2, raw_tp3], reverse=True)  # Besar ke kecil
                 
                 # Calculate TP probabilities
                 tp_probabilities = self.strategy.calculate_tp_probability(
-                    entry_price, tp1, tp2, tp3, sl, "LONG"
+                    entry_price, tp1, tp2, tp3, sl, action
                 )
                 
                 return {
@@ -964,13 +980,63 @@ class TradingBot:
                     "tp2": float(tp2),
                     "tp3": float(tp3),
                     "sl": float(sl),
-                    "tp_probabilities": tp_probabilities  # ✅ NEW: TP probabilities
+                    "action": action,
+                    "tp_probabilities": tp_probabilities
                 }
-            print(f"Insufficient data for ATR calculation on {symbol}")
-            return None
+            else:
+                print(f"Insufficient data for ATR calculation on {symbol}, using fallback")
+                # Gunakan fallback calculation
+                return self.calculate_fallback_entry(symbol, entry_price, action)
+                
         except Exception as e:
             print(f"Error calculating custom entry for {symbol}: {e}")
-            return None
+            # Return fallback calculation jika ada error
+            return self.calculate_fallback_entry(symbol, entry_price, action)
+
+    def calculate_fallback_entry(self, symbol, entry_price, action="LONG"):
+        """Fallback calculation ketika data historis tidak cukup"""
+        try:
+            if action == "LONG":
+                tp1 = entry_price * 1.02  # +2%
+                tp2 = entry_price * 1.04  # +4%
+                tp3 = entry_price * 1.06  # +6%
+                sl = entry_price * 0.98   # -2%
+            else:  # SHORT
+                tp1 = entry_price * 0.98  # -2%
+                tp2 = entry_price * 0.96  # -4%
+                tp3 = entry_price * 0.94  # -6%
+                sl = entry_price * 1.02   # +2%
+            
+            # Calculate TP probabilities untuk fallback
+            tp_probabilities = self.strategy.calculate_tp_probability(
+                entry_price, tp1, tp2, tp3, sl, action
+            )
+            
+            return {
+                "symbol": symbol,
+                "entry_price": float(entry_price),
+                "tp1": float(tp1),
+                "tp2": float(tp2),
+                "tp3": float(tp3),
+                "sl": float(sl),
+                "action": action,
+                "tp_probabilities": tp_probabilities,
+                "fallback_used": True  # Flag untuk menunjukkan ini fallback
+            }
+        except Exception as e:
+            print(f"Error in fallback calculation: {e}")
+            # Ultimate fallback jika semua gagal
+            return {
+                "symbol": symbol,
+                "entry_price": float(entry_price),
+                "tp1": float(entry_price * 1.02),
+                "tp2": float(entry_price * 1.04),
+                "tp3": float(entry_price * 1.06),
+                "sl": float(entry_price * 0.98),
+                "action": action,
+                "tp_probabilities": {"tp1": 0.4, "tp2": 0.25, "tp3": 0.15},
+                "fallback_used": True
+            }
 
     def get_active_positions(self):
         try:
@@ -1151,3 +1217,95 @@ class TradingBot:
             return "Standard position sizing appropriate"
         else:
             return "Can consider larger position size with standard risk management"
+
+    # New method untuk comprehensive backtest
+    def run_comprehensive_backtest(self, symbol, days=180):
+        """Run comprehensive backtest dengan multiple timeframes"""
+        try:
+            print(f"📊 Running comprehensive backtest for {symbol} over {days} days...")
+            
+            # Get data for different timeframes
+            timeframes = ['1h', '4h', '1d']
+            results = {}
+            
+            for tf in timeframes:
+                df = self.data_provider.get_ohlcv(symbol, tf, days * 24)  # Estimate bars needed
+                if df is not None and len(df) > 100:
+                    result = self.backtest_engine.run_backtest(df, self.strategy)
+                    results[tf] = result
+                else:
+                    results[tf] = {"error": f"Insufficient data for {tf} timeframe"}
+            
+            return {
+                'symbol': symbol,
+                'timeframe_results': results,
+                'overall_score': self._calculate_overall_backtest_score(results)
+            }
+            
+        except Exception as e:
+            print(f"Error in comprehensive backtest: {e}")
+            return {"error": str(e)}
+
+    def _calculate_overall_backtest_score(self, results):
+        """Calculate overall score from multiple timeframe results"""
+        try:
+            scores = []
+            for tf, result in results.items():
+                if 'error' not in result:
+                    # Combine multiple metrics for score
+                    win_rate = result.get('win_rate', 0)
+                    sharpe = max(result.get('sharpe_ratio', 0), 0)
+                    profit_factor = min(result.get('profit_factor', 1), 10)
+                    
+                    timeframe_score = (win_rate * 0.4 + sharpe * 0.3 + profit_factor * 0.1)
+                    scores.append(timeframe_score)
+            
+            return np.mean(scores) if scores else 0
+        except:
+            return 0
+
+    # New method untuk ML-enhanced analysis
+    def analyze_with_ml(self, symbol):
+        """Enhanced analysis dengan machine learning features"""
+        try:
+            # Dapatkan analisis dasar terlebih dahulu
+            base_analysis = self.analyze_asset(symbol)
+            if not base_analysis:
+                return None
+            
+            # Extract ML features
+            df = self.data_provider.get_ohlcv(symbol, self.timeframe, 200)
+            if df is None or len(df) < 50:
+                return base_analysis
+                
+            ml_features = self.ml_bot.extract_features(df)
+            
+            # Enhanced scoring dengan ML (sederhana dulu)
+            ml_score_boost = 0
+            
+            # Analisis volume pattern
+            if len(df) > 20:
+                recent_volume = df['volume'].tail(5).mean()
+                avg_volume = df['volume'].mean()
+                if recent_volume > avg_volume * 1.5:
+                    ml_score_boost += 0.5
+            
+            # Analisis momentum
+            if len(df) > 10:
+                price_trend = (df['close'].iloc[-1] - df['close'].iloc[-10]) / df['close'].iloc[-10]
+                if abs(price_trend) > 0.05:  # 5% movement dalam 10 period
+                    ml_score_boost += 0.3
+            
+            # Update analysis dengan ML enhancements
+            base_analysis['ml_confidence'] = min(1.0, 0.7 + ml_score_boost)
+            base_analysis['final_score'] = base_analysis.get('score', 0) * base_analysis['ml_confidence']
+            base_analysis['ml_features'] = {
+                'volume_boost': recent_volume > avg_volume * 1.5 if len(df) > 20 else False,
+                'momentum_detected': abs(price_trend) > 0.05 if len(df) > 10 else False
+            }
+            
+            return base_analysis
+            
+        except Exception as e:
+            print(f"Error in ML analysis: {e}")
+            return self.analyze_asset(symbol)  # Fallback ke analisis biasa
