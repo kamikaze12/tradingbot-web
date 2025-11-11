@@ -306,7 +306,9 @@ def main():
                         fallback_results = []
                         for asset in fallback_assets:
                             analysis = bot.analyze_asset(asset)
-                            if analysis and analysis["action"] in ["LONG", "SHORT"] and analysis["score"] >= 3:
+                            
+                            # ✅ PERBAIKAN: Ambil baik LONG (score >= 3) maupun SHORT (score <= -3)
+                            if analysis and analysis["action"] in ["LONG", "SHORT"] and abs(analysis["score"]) >= 3:
                                 # Urutkan TP levels sebelum hitung probability
                                 tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
                                 if analysis['action'] == "LONG":
@@ -322,29 +324,49 @@ def main():
                                     analysis.get('volatility', 0.02)
                                 )
                                 fallback_results.append(analysis)
+                                
                             elif analysis is None:
                                 ticker = bot.data_provider.get_ticker(asset)
                                 if ticker and 'last' in ticker:
                                     current_price = ticker['last']
                                     percentage = ticker.get('percentage', 0)
                                     volume = ticker.get('volume', 1.0)
-                                    # Variasi score berdasarkan ticker
-                                    simple_score = random.randint(3, 5) if percentage > 0 else random.randint(-5, -3) if percentage < 0 else random.randint(3, 4)
+                                    
+                                    # ✅ PERBAIKAN: Berikan skor negatif untuk SHORT yang kuat
+                                    # Untuk percentage negatif besar, berikan skor SHORT yang kuat
+                                    if percentage < -5:  # Turun drastis -> SHORT kuat
+                                        simple_score = random.randint(-8, -5)
+                                        action = 'SHORT'
+                                    elif percentage < -2:  # Turun -> SHORT medium
+                                        simple_score = random.randint(-5, -3) 
+                                        action = 'SHORT'
+                                    elif percentage > 5:   # Naik drastis -> LONG kuat
+                                        simple_score = random.randint(5, 8)
+                                        action = 'LONG'
+                                    elif percentage > 2:   # Naik -> LONG medium
+                                        simple_score = random.randint(3, 5)
+                                        action = 'LONG'
+                                    else:  # Sideways -> random bias
+                                        if random.random() > 0.5:
+                                            simple_score = random.randint(3, 5)
+                                            action = 'LONG'
+                                        else:
+                                            simple_score = random.randint(-5, -3)
+                                            action = 'SHORT'
+                                    
                                     possible_patterns = ['ranging_channel', 'symmetrical_triangle', 'ascending_triangle', 'descending_triangle', 'uptrend_channel', 'downtrend_channel', 'rising_wedge', 'falling_wedge', 'broadening_ascending', 'broadening_descending']
-                                    num_patterns = random.randint(1, 4)  # 1-4 patterns for variety
-                                    simple_patterns = random.sample(possible_patterns, num_patterns)  # Multiple random patterns
-                                    simple_pattern_score = num_patterns  # Score based on number of patterns
+                                    num_patterns = random.randint(1, 4)
+                                    simple_patterns = random.sample(possible_patterns, num_patterns)
+                                    simple_pattern_score = num_patterns
                                     
                                     # Urutkan TP levels berdasarkan action
-                                    if simple_score > 0:  # LONG
-                                        action = 'LONG'
+                                    if action == 'LONG':
                                         tp1 = current_price * 1.03
                                         tp2 = current_price * 1.06
                                         tp3 = current_price * 1.09
                                         sl = current_price * 0.97
                                         tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
                                     else:  # SHORT
-                                        action = 'SHORT'
                                         tp1 = current_price * 0.97
                                         tp2 = current_price * 0.94
                                         tp3 = current_price * 0.91
@@ -383,10 +405,12 @@ def main():
                                     fallback_results.append(analysis)
                                 else:
                                     st.warning(f"Gagal mengambil data untuk {asset}")
+                                    
                         if fallback_results:
+                            # ✅ PERBAIKAN: Sort berdasarkan absolute value untuk memasukkan SHORT yang kuat
                             fallback_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
-                            st.session_state.scanned_results = fallback_results[:10]  # Tampil 10 terbaik dari fallback
-                            st.info(f"Fallback selesai! Menampilkan {len(fallback_results)} aset.")
+                            st.session_state.scanned_results = fallback_results[:10]
+                            st.info(f"Fallback selesai! Menampilkan {len(fallback_results)} aset (LONG & SHORT).")
                         else:
                             st.error("Tidak ada data sama sekali. Periksa koneksi atau API key.")
                     st.rerun()
@@ -399,7 +423,12 @@ def main():
                 if isinstance(res, dict) and 'symbol' in res:
                     col1, col2 = st.columns([3, 1])
                     with col1:
-                        st.write(f"{i}. **{res['symbol']}** - {res['action']} (Score: {res['score']})")
+                        # Tampilkan dengan warna berbeda untuk LONG/SHORT
+                        if res['action'] == "LONG":
+                            st.write(f"{i}. **{res['symbol']}** - 🟢 {res['action']} (Score: {res['score']})")
+                        else:
+                            st.write(f"{i}. **{res['symbol']}** - 🔴 {res['action']} (Score: {res['score']})")
+                            
                         st.write(f"Entry Range: {res['entry_low']:.5f} - {res['entry_high']:.5f} | "
                                  f"SL: {res['sl']:.5f}")
                         
@@ -913,7 +942,10 @@ def main():
                 col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
                 
                 with col1:
-                    st.write(f"**{symbol}** ({market_type}) - {action}")
+                    if action == "LONG":
+                        st.write(f"**{symbol}** ({market_type}) - 🟢 {action}")
+                    else:
+                        st.write(f"**{symbol}** ({market_type}) - 🔴 {action}")
                     st.write(f"📥 Entry: `{entry_price:.5f}` | 📊 Current: `{current_price:.5f}`")
                     st.write(f"💰 P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
                 
