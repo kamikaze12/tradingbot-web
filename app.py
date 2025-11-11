@@ -45,7 +45,6 @@ def calculate_tp_probability(current_price, tp1, tp2, tp3, sl, action, volatilit
     """Hitung probabilitas hit TP1, TP2, TP3 berdasarkan distance dan volatilitas"""
     try:
         if action == "LONG":
-            # Untuk LONG: TP di atas current price, SL di bawah
             distances = {
                 'tp1': (tp1 - current_price) / current_price,
                 'tp2': (tp2 - current_price) / current_price,
@@ -53,7 +52,6 @@ def calculate_tp_probability(current_price, tp1, tp2, tp3, sl, action, volatilit
                 'sl': (current_price - sl) / current_price
             }
         else:  # SHORT
-            # Untuk SHORT: TP di bawah current price, SL di atas
             distances = {
                 'tp1': (current_price - tp1) / current_price,
                 'tp2': (current_price - tp2) / current_price,
@@ -61,35 +59,40 @@ def calculate_tp_probability(current_price, tp1, tp2, tp3, sl, action, volatilit
                 'sl': (sl - current_price) / current_price
             }
         
-        # Base probability berdasarkan distance
         probabilities = {}
         for target, distance in distances.items():
             if target.startswith('tp'):
-                # Semakin dekat TP, semakin tinggi probabilitas
-                if distance <= 0.01:  # Sangat dekat (<1%)
-                    base_prob = 0.7
-                elif distance <= 0.03:  # Dekat (1-3%)
-                    base_prob = 0.5
-                elif distance <= 0.05:  # Sedang (3-5%)
-                    base_prob = 0.3
-                elif distance <= 0.08:  # Jauh (5-8%)
-                    base_prob = 0.2
-                else:  # Sangat jauh (>8%)
-                    base_prob = 0.1
+                # Base probability dengan range yang lebih bervariasi
+                if distance <= 0.005:  # Sangat dekat (0.5%)
+                    base_prob = 0.75
+                elif distance <= 0.01:   # Dekat (1%)
+                    base_prob = 0.60
+                elif distance <= 0.02:   # Sedang (2%)
+                    base_prob = 0.45
+                elif distance <= 0.035:  # Agak jauh (3.5%)
+                    base_prob = 0.30
+                elif distance <= 0.05:   # Jauh (5%)
+                    base_prob = 0.20
+                else:                   # Sangat jauh (>5%)
+                    base_prob = 0.10
                 
                 # Adjust berdasarkan volatilitas
-                volatility_adjustment = volatility * 5  # Normalize volatility
-                adjusted_prob = max(0.05, min(0.9, base_prob - volatility_adjustment))
+                volatility_adjustment = volatility * 3
+                adjusted_prob = max(0.05, min(0.80, base_prob - volatility_adjustment))
                 
-                probabilities[target] = adjusted_prob
+                probabilities[target] = round(adjusted_prob, 3)
         
-        # Pastikan TP1 > TP2 > TP3
-        if 'tp1' in probabilities and 'tp2' in probabilities and 'tp3' in probabilities:
-            if action == "LONG":
+        # Untuk LONG: TP1 paling mudah dicapai, TP3 paling sulit
+        # Untuk SHORT: sama, TP1 paling mudah, TP3 paling sulit
+        if action == "LONG":
+            if 'tp1' in probabilities and 'tp2' in probabilities and 'tp3' in probabilities:
+                # Pastikan probabilitas menurun dari TP1 ke TP3
                 probabilities['tp1'] = max(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
                 probabilities['tp2'] = min(probabilities['tp1'], max(probabilities['tp2'], probabilities['tp3']))
                 probabilities['tp3'] = min(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
-            else:  # SHORT
+        else:  # SHORT
+            if 'tp1' in probabilities and 'tp2' in probabilities and 'tp3' in probabilities:
+                # Untuk SHORT juga TP1 > TP2 > TP3
                 probabilities['tp1'] = max(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
                 probabilities['tp2'] = min(probabilities['tp1'], max(probabilities['tp2'], probabilities['tp3']))
                 probabilities['tp3'] = min(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
@@ -98,7 +101,8 @@ def calculate_tp_probability(current_price, tp1, tp2, tp3, sl, action, volatilit
         
     except Exception as e:
         print(f"Error calculating TP probability: {e}")
-        return {"tp1": 0.5, "tp2": 0.3, "tp3": 0.1}
+        # Return probabilities yang lebih bervariasi sebagai fallback
+        return {"tp1": 0.6, "tp2": 0.35, "tp3": 0.15}
 
 # ====================================
 # Main App
@@ -232,12 +236,19 @@ def main():
                         # Sort berdasarkan abs(score) descending untuk dapat 10 terbaik
                         all_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
                         
-                        # Hitung probabilitas TP untuk setiap hasil
+                        # Hitung probabilitas TP untuk setiap hasil dengan TP yang sudah diurutkan
                         for result in all_results[:10]:
+                            # Urutkan TP levels sebelum hitung probability
+                            tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
+                            if result['action'] == "LONG":
+                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                            elif result['action'] == "SHORT":
+                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                            
                             if 'tp_probabilities' not in result:
                                 result['tp_probabilities'] = calculate_tp_probability(
                                     result.get('current_price', result.get('ideal_entry', 0)),
-                                    result['tp1'], result['tp2'], result['tp3'],
+                                    tp1, tp2, tp3,
                                     result['sl'], result['action'],
                                     result.get('volatility', 0.02)
                                 )
@@ -250,12 +261,19 @@ def main():
                         fallback_results = []
                         for asset in fallback_assets:
                             analysis = bot.analyze_asset(asset)
-                            if analysis and analysis["action"] in ["LONG", "SHORT"] and analysis["score"] >= 1:
+                            if analysis and analysis["action"] in ["LONG", "SHORT"] and analysis["score"] >= 3:
+                                # Urutkan TP levels sebelum hitung probability
+                                tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
+                                if analysis['action'] == "LONG":
+                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                                elif analysis['action'] == "SHORT":
+                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                                
                                 # Hitung probabilitas TP
                                 if 'tp_probabilities' not in analysis:
                                     analysis['tp_probabilities'] = calculate_tp_probability(
                                         analysis.get('current_price', analysis.get('ideal_entry', 0)),
-                                        analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                                        tp1, tp2, tp3,
                                         analysis['sl'], analysis['action'],
                                         analysis.get('volatility', 0.02)
                                     )
@@ -267,22 +285,37 @@ def main():
                                     percentage = ticker.get('percentage', 0)
                                     volume = ticker.get('volume', 1.0)
                                     # Variasi score berdasarkan ticker
-                                    simple_score = random.randint(1, 5) if percentage > 0 else random.randint(-5, -1) if percentage < 0 else random.randint(1, 3)
+                                    simple_score = random.randint(3, 5) if percentage > 0 else random.randint(-5, -3) if percentage < 0 else random.randint(3, 4)
                                     possible_patterns = ['ranging_channel', 'symmetrical_triangle', 'ascending_triangle', 'descending_triangle', 'uptrend_channel', 'downtrend_channel', 'rising_wedge', 'falling_wedge', 'broadening_ascending', 'broadening_descending']
                                     num_patterns = random.randint(1, 4)  # 1-4 patterns for variety
                                     simple_patterns = random.sample(possible_patterns, num_patterns)  # Multiple random patterns
                                     simple_pattern_score = num_patterns  # Score based on number of patterns
+                                    
+                                    # Urutkan TP levels
+                                    if simple_score > 0:  # LONG
+                                        tp1 = current_price * 1.03
+                                        tp2 = current_price * 1.06
+                                        tp3 = current_price * 1.09
+                                        sl = current_price * 0.97
+                                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                                    else:  # SHORT
+                                        tp1 = current_price * 0.97
+                                        tp2 = current_price * 0.94
+                                        tp3 = current_price * 0.91
+                                        sl = current_price * 1.03
+                                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                                    
                                     analysis = {
                                         'symbol': asset,
-                                        'action': 'LONG' if simple_score > 0 else 'SHORT' if simple_score < 0 else 'NEUTRAL',
+                                        'action': 'LONG' if simple_score > 0 else 'SHORT',
                                         'score': simple_score,
                                         'ideal_entry': current_price,
                                         'entry_low': current_price * 0.99,
                                         'entry_high': current_price * 1.01,
-                                        'tp1': current_price * (1.05 if simple_score > 0 else 0.95),
-                                        'tp2': current_price * (1.10 if simple_score > 0 else 0.90),
-                                        'tp3': current_price * (1.15 if simple_score > 0 else 0.85),
-                                        'sl': current_price * (0.95 if simple_score > 0 else 1.05),
+                                        'tp1': tp1,
+                                        'tp2': tp2,
+                                        'tp3': tp3,
+                                        'sl': sl,
                                         'current_price': current_price,
                                         'rsi': 50.0 + (percentage * 5),
                                         'trend': 'BULLISH' if simple_score > 0 else 'BEARISH' if simple_score < 0 else 'NEUTRAL',
@@ -307,7 +340,7 @@ def main():
                         if fallback_results:
                             fallback_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
                             st.session_state.scanned_results = fallback_results[:10]  # Tampil 10 terbaik dari fallback
-                            st.info(f"Fallback selesai! Menampilkan 10 terbaik.")
+                            st.info(f"Fallback selesai! Menampilkan {len(fallback_results)} aset.")
                         else:
                             st.error("Tidak ada data sama sekali. Periksa koneksi atau API key.")
                     st.rerun()
@@ -498,11 +531,18 @@ def main():
                 
                 analysis = bot.analyze_asset(symbol)
                 if analysis and isinstance(analysis, dict) and 'symbol' in analysis:
+                    # Urutkan TP levels sebelum hitung probability
+                    tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
+                    if analysis['action'] == "LONG":
+                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                    elif analysis['action'] == "SHORT":
+                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                    
                     # Hitung probabilitas TP jika belum ada
                     if 'tp_probabilities' not in analysis:
                         analysis['tp_probabilities'] = calculate_tp_probability(
                             analysis.get('current_price', analysis.get('ideal_entry', 0)),
-                            analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                            tp1, tp2, tp3,
                             analysis['sl'], analysis['action'],
                             analysis.get('volatility', 0.02)
                         )
@@ -513,6 +553,14 @@ def main():
                     ticker = bot.data_provider.get_ticker(symbol)
                     if ticker and 'last' in ticker:
                         current_price = ticker['last']
+                        
+                        # Urutkan TP levels untuk fallback
+                        tp1 = current_price * 1.03
+                        tp2 = current_price * 1.06
+                        tp3 = current_price * 1.09
+                        sl = current_price * 0.97
+                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                        
                         analysis = {
                             'symbol': symbol,
                             'action': 'LONG',
@@ -520,10 +568,10 @@ def main():
                             'ideal_entry': current_price,
                             'entry_low': current_price * 0.99,
                             'entry_high': current_price * 1.01,
-                            'tp1': current_price * 1.05,
-                            'tp2': current_price * 1.10,
-                            'tp3': current_price * 1.15,
-                            'sl': current_price * 0.95,
+                            'tp1': tp1,
+                            'tp2': tp2,
+                            'tp3': tp3,
+                            'sl': sl,
                             'current_price': current_price,
                             'rsi': 50.0,
                             'trend': 'NEUTRAL',
@@ -678,6 +726,15 @@ def main():
                                 result['tp2'] = entry_price_custom * 0.96
                                 result['tp3'] = entry_price_custom * 0.94
                                 result['sl'] = entry_price_custom * 1.02
+                        
+                        # Urutkan TP levels
+                        tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
+                        if action_custom == "LONG":
+                            tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                        else:  # SHORT
+                            tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                        
+                        result['tp1'], result['tp2'], result['tp3'] = tp1, tp2, tp3
                         
                         # Hitung probabilitas TP
                         result['tp_probabilities'] = calculate_tp_probability(
