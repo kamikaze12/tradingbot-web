@@ -863,6 +863,29 @@ class TradingBot:
                 analysis["symbol"] = original_symbol
                 analysis["market_type"] = self.mode
                 
+                # ✅ PERBAIKAN KRITIS: Pastikan TP/SL tidak sama dengan current_price
+                current_price = df['close'].iloc[-1] if len(df) > 0 else 0
+                
+                # Jika TP/SL sama dengan current_price, gunakan custom calculation
+                if (analysis.get('tp1', 0) == analysis.get('tp2', 0) == 
+                    analysis.get('tp3', 0) == analysis.get('sl', 0) == current_price):
+                    print(f"   ⚠️ TP/SL sama dengan current price, menggunakan custom calculation...")
+                    custom_result = self.calculate_custom_entry(original_symbol, current_price, analysis.get('action', 'LONG'))
+                    if custom_result:
+                        analysis.update(custom_result)
+                
+                # ✅ VALIDASI: Pastikan TP levels urutannya benar
+                if analysis.get('action') == 'LONG':
+                    tp1, tp2, tp3 = sorted([analysis.get('tp1', 0), analysis.get('tp2', 0), analysis.get('tp3', 0)])
+                    analysis['tp1'] = tp1
+                    analysis['tp2'] = tp2
+                    analysis['tp3'] = tp3
+                elif analysis.get('action') == 'SHORT':
+                    tp1, tp2, tp3 = sorted([analysis.get('tp1', 0), analysis.get('tp2', 0), analysis.get('tp3', 0)], reverse=True)
+                    analysis['tp1'] = tp1
+                    analysis['tp2'] = tp2
+                    analysis['tp3'] = tp3
+                
                 # Simpan ke database
                 try:
                     self.db.save_signal(analysis)
@@ -936,78 +959,55 @@ class TradingBot:
         if not self.data_provider:
             print("No data provider for custom entry.")
             return self.calculate_fallback_entry(symbol, entry_price, action)
+        
         try:
             df = self.data_provider.get_ohlcv(
                 symbol, self.timeframe, self.config.get("ohlcv_limit", 200)
             )
             
-            if df is not None and len(df) >= 20:
-                atr = self.strategy.calculate_atr(df)
-                
-                # ✅ PERBAIKAN: Cek jika ATR 0 atau sangat kecil
-                if atr is None or atr == 0 or atr < entry_price * 0.0001:
-                    print(f"ATR invalid ({atr}) for {symbol}, using percentage-based calculation")
-                    # Gunakan percentage-based calculation
-                    return self.calculate_fallback_entry(symbol, entry_price, action)
-                
-                # Calculate raw TP levels
-                if action == "LONG":
-                    raw_tp1 = entry_price + atr * self.strategy.atr_multiplier
-                    raw_tp2 = entry_price + atr * self.strategy.atr_multiplier * 2
-                    raw_tp3 = entry_price + atr * self.strategy.atr_multiplier * 3
-                    sl = entry_price - atr * self.strategy.atr_multiplier
-                else:  # SHORT
-                    raw_tp1 = entry_price - atr * self.strategy.atr_multiplier
-                    raw_tp2 = entry_price - atr * self.strategy.atr_multiplier * 2
-                    raw_tp3 = entry_price - atr * self.strategy.atr_multiplier * 3
-                    sl = entry_price + atr * self.strategy.atr_multiplier
-                
-                # ✅ FIXED: Sort TP levels berdasarkan action
-                if action == "LONG":
-                    tp1, tp2, tp3 = sorted([raw_tp1, raw_tp2, raw_tp3])  # Kecil ke besar
-                else:
-                    tp1, tp2, tp3 = sorted([raw_tp1, raw_tp2, raw_tp3], reverse=True)  # Besar ke kecil
-                
-                # Calculate TP probabilities
-                tp_probabilities = self.strategy.calculate_tp_probability(
-                    entry_price, tp1, tp2, tp3, sl, action
-                )
-                
-                return {
-                    "symbol": symbol,
-                    "entry_price": float(entry_price),
-                    "tp1": float(tp1),
-                    "tp2": float(tp2),
-                    "tp3": float(tp3),
-                    "sl": float(sl),
-                    "action": action,
-                    "tp_probabilities": tp_probabilities
-                }
-            else:
-                print(f"Insufficient data for ATR calculation on {symbol}, using fallback")
-                # Gunakan fallback calculation
+            # ✅ PERBAIKAN: Jika tidak ada data, langsung gunakan fallback
+            if df is None or len(df) < 20:
+                print(f"Insufficient data for {symbol}, using fallback")
                 return self.calculate_fallback_entry(symbol, entry_price, action)
-                
-        except Exception as e:
-            print(f"Error calculating custom entry for {symbol}: {e}")
-            # Return fallback calculation jika ada error
-            return self.calculate_fallback_entry(symbol, entry_price, action)
-
-    def calculate_fallback_entry(self, symbol, entry_price, action="LONG"):
-        """Fallback calculation ketika data historis tidak cukup"""
-        try:
-            if action == "LONG":
-                tp1 = entry_price * 1.02  # +2%
-                tp2 = entry_price * 1.04  # +4%
-                tp3 = entry_price * 1.06  # +6%
-                sl = entry_price * 0.98   # -2%
-            else:  # SHORT
-                tp1 = entry_price * 0.98  # -2%
-                tp2 = entry_price * 0.96  # -4%
-                tp3 = entry_price * 0.94  # -6%
-                sl = entry_price * 1.02   # +2%
             
-            # Calculate TP probabilities untuk fallback
+            atr = self.strategy.calculate_atr(df)
+            
+            # ✅ PERBAIKAN: Validasi ATR lebih ketat
+            if (atr is None or atr <= 0 or atr < entry_price * 0.0001 or 
+                atr > entry_price * 0.5):  # ATR tidak boleh lebih dari 50% dari harga
+                print(f"ATR invalid ({atr}) for {symbol}, using percentage-based calculation")
+                return self.calculate_fallback_entry(symbol, entry_price, action)
+            
+            # Calculate TP/SL levels dengan ATR
+            atr_multiplier = self.strategy.atr_multiplier
+            
+            if action == "LONG":
+                tp1 = entry_price + (atr * atr_multiplier * 1)
+                tp2 = entry_price + (atr * atr_multiplier * 2)
+                tp3 = entry_price + (atr * atr_multiplier * 3)
+                sl = entry_price - (atr * atr_multiplier * 1)
+            else:  # SHORT
+                tp1 = entry_price - (atr * atr_multiplier * 1)
+                tp2 = entry_price - (atr * atr_multiplier * 2)
+                tp3 = entry_price - (atr * atr_multiplier * 3)
+                sl = entry_price + (atr * atr_multiplier * 1)
+            
+            # ✅ PERBAIKAN: Pastikan TP/SL berbeda dari entry price
+            # Jika masih sama, gunakan fallback
+            if (abs(tp1 - entry_price) < entry_price * 0.001 or 
+                abs(tp2 - entry_price) < entry_price * 0.001 or
+                abs(tp3 - entry_price) < entry_price * 0.001 or
+                abs(sl - entry_price) < entry_price * 0.001):
+                print(f"TP/SL too close to entry price, using fallback")
+                return self.calculate_fallback_entry(symbol, entry_price, action)
+            
+            # ✅ FIXED: Urutkan TP levels
+            if action == "LONG":
+                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+            else:
+                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+            
+            # Calculate TP probabilities
             tp_probabilities = self.strategy.calculate_tp_probability(
                 entry_price, tp1, tp2, tp3, sl, action
             )
@@ -1021,22 +1021,115 @@ class TradingBot:
                 "sl": float(sl),
                 "action": action,
                 "tp_probabilities": tp_probabilities,
-                "fallback_used": True  # Flag untuk menunjukkan ini fallback
+                "atr_used": True
             }
+            
         except Exception as e:
-            print(f"Error in fallback calculation: {e}")
-            # Ultimate fallback jika semua gagal
+            print(f"Error calculating custom entry for {symbol}: {e}")
+            return self.calculate_fallback_entry(symbol, entry_price, action)
+
+    def calculate_fallback_entry(self, symbol, entry_price, action="LONG"):
+        """Fallback calculation ketika data historis tidak cukup"""
+        try:
+            # ✅ PERBAIKAN: Gunakan persentase yang lebih reasonable
+            if action == "LONG":
+                tp1 = entry_price * 1.02  # +2%
+                tp2 = entry_price * 1.05  # +5%
+                tp3 = entry_price * 1.08  # +8%
+                sl = entry_price * 0.97   # -3%
+            else:  # SHORT
+                tp1 = entry_price * 0.98  # -2%
+                tp2 = entry_price * 0.95  # -5%
+                tp3 = entry_price * 0.92  # -8%
+                sl = entry_price * 1.03   # +3%
+            
+            # ✅ PERBAIKAN: Pastikan urutan TP levels benar
+            if action == "LONG":
+                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+            else:
+                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+            
+            # Calculate TP probabilities untuk fallback
+            tp_probabilities = self.calculate_tp_probability_fallback(
+                entry_price, tp1, tp2, tp3, sl, action
+            )
+            
             return {
                 "symbol": symbol,
                 "entry_price": float(entry_price),
-                "tp1": float(entry_price * 1.02),
-                "tp2": float(entry_price * 1.04),
-                "tp3": float(entry_price * 1.06),
-                "sl": float(entry_price * 0.98),
+                "tp1": float(tp1),
+                "tp2": float(tp2),
+                "tp3": float(tp3),
+                "sl": float(sl),
+                "action": action,
+                "tp_probabilities": tp_probabilities,
+                "fallback_used": True
+            }
+        except Exception as e:
+            print(f"Error in fallback calculation: {e}")
+            # Ultimate fallback
+            return {
+                "symbol": symbol,
+                "entry_price": float(entry_price),
+                "tp1": float(entry_price * 1.03),
+                "tp2": float(entry_price * 1.06),
+                "tp3": float(entry_price * 1.09),
+                "sl": float(entry_price * 0.95),
                 "action": action,
                 "tp_probabilities": {"tp1": 0.4, "tp2": 0.25, "tp3": 0.15},
                 "fallback_used": True
             }
+
+    def calculate_tp_probability_fallback(self, current_price, tp1, tp2, tp3, sl, action, volatility=0.02):
+        """Fallback TP probability calculation"""
+        try:
+            if action == "LONG":
+                distances = {
+                    'tp1': (tp1 - current_price) / current_price,
+                    'tp2': (tp2 - current_price) / current_price,
+                    'tp3': (tp3 - current_price) / current_price,
+                    'sl': (current_price - sl) / current_price
+                }
+            else:  # SHORT
+                distances = {
+                    'tp1': (current_price - tp1) / current_price,
+                    'tp2': (current_price - tp2) / current_price,
+                    'tp3': (current_price - tp3) / current_price,
+                    'sl': (sl - current_price) / current_price
+                }
+            
+            probabilities = {}
+            for target, distance in distances.items():
+                if target.startswith('tp'):
+                    if distance <= 0.02:  # 2%
+                        base_prob = 0.6
+                    elif distance <= 0.05:  # 5%
+                        base_prob = 0.4
+                    elif distance <= 0.08:  # 8%
+                        base_prob = 0.25
+                    else:  # >8%
+                        base_prob = 0.15
+                    
+                    volatility_adjustment = volatility * 10
+                    adjusted_prob = max(0.1, min(0.8, base_prob - volatility_adjustment))
+                    probabilities[target] = adjusted_prob
+            
+            # Ensure probabilities make sense
+            if 'tp1' in probabilities and 'tp2' in probabilities and 'tp3' in probabilities:
+                if action == "LONG":
+                    probabilities['tp1'] = max(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+                    probabilities['tp2'] = min(probabilities['tp1'], max(probabilities['tp2'], probabilities['tp3']))
+                    probabilities['tp3'] = min(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+                else:
+                    probabilities['tp1'] = max(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+                    probabilities['tp2'] = min(probabilities['tp1'], max(probabilities['tp2'], probabilities['tp3']))
+                    probabilities['tp3'] = min(probabilities['tp1'], probabilities['tp2'], probabilities['tp3'])
+            
+            return probabilities
+            
+        except Exception as e:
+            print(f"Error in fallback TP probability: {e}")
+            return {"tp1": 0.4, "tp2": 0.25, "tp3": 0.15}
 
     def get_active_positions(self):
         try:
@@ -1044,9 +1137,28 @@ class TradingBot:
             for position in positions:
                 symbol = position[1]
                 try:
+                    # Update current price
                     ticker = self.data_provider.get_ticker(symbol)
                     if ticker and 'last' in ticker:
-                        self.db.update_position_current_price(symbol, ticker['last'])
+                        current_price = ticker['last']
+                        self.db.update_position_current_price(symbol, current_price)
+                        
+                        # ✅ PERBAIKAN: Jika TP/SL sama, perbaiki data di database
+                        entry_price = position[4]
+                        tp1 = position[7] if len(position) > 7 else 0
+                        
+                        if abs(tp1 - entry_price) < entry_price * 0.001:  # Jika TP1 sama dengan entry
+                            print(f"⚠️ Fixing invalid TP/SL for {symbol}")
+                            # Recalculate TP/SL
+                            new_calculation = self.calculate_custom_entry(symbol, entry_price, position[3])
+                            if new_calculation:
+                                self.db.update_position_levels(
+                                    symbol, 
+                                    new_calculation['tp1'], 
+                                    new_calculation['tp2'], 
+                                    new_calculation['tp3'], 
+                                    new_calculation['sl']
+                                )
                 except Exception as e:
                     print(f"Error updating price for {symbol}: {e}")
             return self.db.get_active_positions(self.mode)
