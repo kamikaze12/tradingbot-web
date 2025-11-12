@@ -2,12 +2,22 @@ import os
 import time
 import json
 import warnings
-from datetime import datetime
+import joblib
+from datetime import datetime, timedelta
 import threading
 import schedule
 import pandas as pd
 import numpy as np
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.metrics import classification_report, accuracy_score
 from dotenv import load_dotenv
+
+warnings.filterwarnings("ignore")
+load_dotenv()
+
+# Import modul yang diperlukan
 from .strategies import TechnicalAnalysisStrategy
 from .data_provider import (
     CCXTDataProvider,
@@ -17,46 +27,343 @@ from .data_provider import (
 from .notifier import SoundNotifier
 from database.db_handler import DatabaseHandler
 
-warnings.filterwarnings("ignore")
-load_dotenv()
-
 class MLEnhancedBot:
-    """Machine Learning enhanced trading bot"""
-    def __init__(self):
+    """Machine Learning enhanced trading bot dengan model real"""
+    
+    def __init__(self, model_type='random_forest'):
+        self.model_type = model_type
         self.model = None
+        self.scaler = StandardScaler()
         self.is_trained = False
+        self.model_path = "models/trading_model.pkl"
+        self.scaler_path = "models/scaler.pkl"
+        self.feature_importance = {}
         
-    def extract_features(self, df):
-        """Extract features for ML model"""
+        # Buat directory models jika belum ada
+        os.makedirs("models", exist_ok=True)
+        
+        # Coba load model yang sudah ada
+        self.load_model()
+
+    def load_model(self):
+        """Load model dan scaler yang sudah ditraining"""
         try:
+            if os.path.exists(self.model_path) and os.path.exists(self.scaler_path):
+                self.model = joblib.load(self.model_path)
+                self.scaler = joblib.load(self.scaler_path)
+                self.is_trained = True
+                print("✅ ML model loaded successfully")
+                return True
+        except Exception as e:
+            print(f"❌ Error loading model: {e}")
+        
+        # Initialize new model jika tidak ada
+        self._initialize_model()
+        return False
+
+    def save_model(self):
+        """Save model dan scaler"""
+        try:
+            if self.model and self.scaler:
+                joblib.dump(self.model, self.model_path)
+                joblib.dump(self.scaler, self.scaler_path)
+                print("✅ ML model saved successfully")
+                return True
+        except Exception as e:
+            print(f"❌ Error saving model: {e}")
+        return False
+
+    def _initialize_model(self):
+        """Initialize model baru"""
+        if self.model_type == 'random_forest':
+            self.model = RandomForestClassifier(
+                n_estimators=100,
+                max_depth=10,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                random_state=42,
+                n_jobs=-1
+            )
+        elif self.model_type == 'gradient_boosting':
+            self.model = GradientBoostingClassifier(
+                n_estimators=100,
+                max_depth=6,
+                learning_rate=0.1,
+                random_state=42
+            )
+        
+        self.is_trained = False
+        print("🔄 New ML model initialized")
+
+    def prepare_training_data(self, historical_data):
+        """Prepare training data dari historical data"""
+        try:
+            features_list = []
+            targets = []
+            
+            for symbol, data in historical_data.items():
+                if len(data) < 100:  # Minimal data points
+                    continue
+                    
+                # Extract features untuk setiap point dalam data
+                for i in range(50, len(data) - 10):  # Leave room for future prediction
+                    current_window = data.iloc[:i+1]
+                    future_window = data.iloc[i+1:i+11]  # 10 period ke depan
+                    
+                    # Extract features
+                    features = self._extract_detailed_features(current_window)
+                    if features:
+                        # Determine target (1 jika harga naik, 0 jika turun)
+                        current_price = current_window['close'].iloc[-1]
+                        future_max = future_window['close'].max()
+                        future_min = future_window['close'].min()
+                        
+                        # Target: 1 jika naik 2%, -1 jika turun 2%, 0 jika sideways
+                        price_change = (future_max - current_price) / current_price
+                        if price_change >= 0.02:
+                            target = 1
+                        elif (future_min - current_price) / current_price <= -0.02:
+                            target = -1
+                        else:
+                            target = 0
+                            
+                        features_list.append(features)
+                        targets.append(target)
+            
+            if len(features_list) < 100:  # Minimal training samples
+                return None, None
+                
+            return np.array(features_list), np.array(targets)
+            
+        except Exception as e:
+            print(f"❌ Error preparing training data: {e}")
+            return None, None
+
+    def train_model(self, historical_data, test_size=0.2):
+        """Train model dengan historical data"""
+        try:
+            print("🔄 Preparing training data...")
+            X, y = self.prepare_training_data(historical_data)
+            
+            if X is None or len(X) < 100:
+                print("❌ Insufficient training data")
+                return False
+            
+            print(f"📊 Training data shape: {X.shape}, targets: {y.shape}")
+            
+            # Split data dengan time series split
+            tscv = TimeSeriesSplit(n_splits=5)
+            accuracies = []
+            
+            for train_idx, test_idx in tscv.split(X):
+                X_train, X_test = X[train_idx], X[test_idx]
+                y_train, y_test = y[train_idx], y[test_idx]
+                
+                # Scale features
+                X_train_scaled = self.scaler.fit_transform(X_train)
+                X_test_scaled = self.scaler.transform(X_test)
+                
+                # Train model
+                self.model.fit(X_train_scaled, y_train)
+                
+                # Evaluate
+                y_pred = self.model.predict(X_test_scaled)
+                accuracy = accuracy_score(y_test, y_pred)
+                accuracies.append(accuracy)
+            
+            # Final training dengan semua data
+            X_scaled = self.scaler.fit_transform(X)
+            self.model.fit(X_scaled, y)
+            
+            # Calculate feature importance
+            if hasattr(self.model, 'feature_importances_'):
+                feature_names = [
+                    'rsi', 'macd', 'sma_20', 'sma_50', 'ema_12', 'ema_26',
+                    'atr', 'volume_ratio', 'price_change_1d', 'price_change_5d',
+                    'volatility', 'momentum', 'williams_r', 'cci', 'obv'
+                ]
+                # Pastikan jumlah feature matches
+                if len(self.model.feature_importances_) == len(feature_names):
+                    self.feature_importance = dict(zip(feature_names, self.model.feature_importances_))
+                else:
+                    self.feature_importance = {f: 0.0 for f in feature_names}
+            
+            self.is_trained = True
+            avg_accuracy = np.mean(accuracies)
+            
+            print(f"✅ Model training completed! Average Accuracy: {avg_accuracy:.3f}")
+            print(f"📈 Feature Importance: {self.feature_importance}")
+            
+            # Save model
+            self.save_model()
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error training model: {e}")
+            return False
+
+    def _extract_detailed_features(self, df):
+        """Extract detailed features untuk training dan prediction"""
+        try:
+            if len(df) < 50:
+                return None
+                
             features = {}
             
-            if df is None or len(df) == 0:
-                return pd.DataFrame([features])
-                
+            # Price-based features
+            prices = df['close']
+            volumes = df['volume']
+            
+            # RSI
+            features['rsi'] = self._calculate_rsi(prices)
+            
+            # MACD
+            features['macd'] = self._calculate_macd(prices)
+            
+            # Moving Averages
+            features['sma_20'] = prices.rolling(20).mean().iloc[-1] if len(prices) >= 20 else prices.mean()
+            features['sma_50'] = prices.rolling(50).mean().iloc[-1] if len(prices) >= 50 else prices.mean()
+            features['ema_12'] = prices.ewm(span=12).mean().iloc[-1]
+            features['ema_26'] = prices.ewm(span=26).mean().iloc[-1]
+            
+            # ATR
+            features['atr'] = self._calculate_atr(df)
+            
+            # Volume features
+            vol_mean = volumes.rolling(20).mean().iloc[-1] if len(volumes) >= 20 else volumes.mean()
+            features['volume_ratio'] = volumes.iloc[-1] / vol_mean if vol_mean > 0 else 1
+            
+            # Price changes
             if len(df) > 1:
-                features['price_change_1d'] = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] if df['close'].iloc[-2] != 0 else 0
+                features['price_change_1d'] = (prices.iloc[-1] - prices.iloc[-2]) / prices.iloc[-2] if prices.iloc[-2] != 0 else 0
             else:
                 features['price_change_1d'] = 0
                 
-            if len(df) > 6:
-                features['price_change_5d'] = (df['close'].iloc[-1] - df['close'].iloc[-6]) / df['close'].iloc[-6] if df['close'].iloc[-6] != 0 else 0
+            if len(df) > 5:
+                features['price_change_5d'] = (prices.iloc[-1] - prices.iloc[-6]) / prices.iloc[-6] if prices.iloc[-6] != 0 else 0
             else:
                 features['price_change_5d'] = 0
-                
-            features['volatility'] = df['close'].pct_change().std() if len(df) > 1 else 0.02
             
-            vol_mean = df['volume'].rolling(20).mean().iloc[-1] if len(df) >= 20 else df['volume'].mean()
-            features['volume_ratio'] = df['volume'].iloc[-1] / vol_mean if vol_mean > 0 else 1
+            # Volatility
+            features['volatility'] = prices.pct_change().std() * np.sqrt(252) if len(prices) > 1 else 0.02
             
-            features['rsi'] = self._calculate_rsi(df['close'])
-            features['macd'] = self._calculate_macd(df['close'])
+            # Momentum
+            features['momentum'] = (prices.iloc[-1] - prices.iloc[-10]) / prices.iloc[-10] if len(prices) > 10 and prices.iloc[-10] != 0 else 0
             
-            return pd.DataFrame([features])
+            # Williams %R
+            features['williams_r'] = self._calculate_williams_r(df)
+            
+            # CCI
+            features['cci'] = self._calculate_cci(df)
+            
+            # OBV
+            features['obv'] = self._calculate_obv(df)
+            
+            # Pastikan tidak ada NaN values
+            for key, value in features.items():
+                if pd.isna(value):
+                    features[key] = 0
+            
+            return list(features.values())
+            
         except Exception as e:
-            print(f"Error extracting features: {e}")
-            return pd.DataFrame([{}])
-    
+            print(f"❌ Error extracting features: {e}")
+            return None
+
+    def extract_features(self, df):
+        """Extract features untuk prediction real-time"""
+        try:
+            features = self._extract_detailed_features(df)
+            if features is None:
+                return pd.DataFrame([self._get_default_features()])
+            
+            feature_names = [
+                'rsi', 'macd', 'sma_20', 'sma_50', 'ema_12', 'ema_26',
+                'atr', 'volume_ratio', 'price_change_1d', 'price_change_5d',
+                'volatility', 'momentum', 'williams_r', 'cci', 'obv'
+            ]
+            
+            return pd.DataFrame([features], columns=feature_names)
+            
+        except Exception as e:
+            print(f"❌ Error in extract_features: {e}")
+            return pd.DataFrame([self._get_default_features()])
+
+    def _get_default_features(self):
+        """Return default features jika extraction gagal"""
+        return [50, 0, 0, 0, 0, 0, 0.02, 1, 0, 0, 0.02, 0, -50, 0, 0]
+
+    def predict(self, df):
+        """Predict menggunakan model ML"""
+        try:
+            if not self.is_trained or self.model is None:
+                return 0.5, 0  # Return default confidence dan direction
+            
+            # Extract features
+            features_df = self.extract_features(df)
+            if features_df.empty:
+                return 0.5, 0
+            
+            # Scale features
+            features_scaled = self.scaler.transform(features_df)
+            
+            # Predict
+            prediction = self.model.predict(features_scaled)[0]
+            probabilities = self.model.predict_proba(features_scaled)[0]
+            
+            # Confidence score (ambil probability tertinggi)
+            confidence = np.max(probabilities)
+            
+            return confidence, prediction
+            
+        except Exception as e:
+            print(f"❌ Error in ML prediction: {e}")
+            return 0.5, 0
+
+    def batch_predict(self, symbols_data):
+        """Batch prediction untuk multiple symbols"""
+        try:
+            if not self.is_trained:
+                return {}
+            
+            predictions = {}
+            features_list = []
+            symbol_features = {}
+            
+            # Extract features untuk semua symbols
+            for symbol, df in symbols_data.items():
+                features_df = self.extract_features(df)
+                if not features_df.empty:
+                    features_list.append(features_df.iloc[0].values)
+                    symbol_features[symbol] = features_df.iloc[0].values
+            
+            if not features_list:
+                return {}
+            
+            # Batch prediction
+            features_array = np.array(features_list)
+            features_scaled = self.scaler.transform(features_array)
+            
+            batch_predictions = self.model.predict(features_scaled)
+            batch_probabilities = self.model.predict_proba(features_scaled)
+            
+            # Map predictions back to symbols
+            for i, (symbol, features) in enumerate(symbol_features.items()):
+                if i < len(batch_predictions):
+                    predictions[symbol] = {
+                        'direction': batch_predictions[i],
+                        'confidence': np.max(batch_probabilities[i]),
+                        'probability_up': batch_probabilities[i][1] if len(batch_probabilities[i]) > 1 else 0.5,
+                        'probability_down': batch_probabilities[i][-1] if len(batch_probabilities[i]) > 2 else 0.5
+                    }
+            
+            return predictions
+            
+        except Exception as e:
+            print(f"❌ Error in batch prediction: {e}")
+            return {}
+
+    # Technical Indicators
     def _calculate_rsi(self, prices, period=14):
         try:
             if len(prices) < period + 1:
@@ -65,22 +372,71 @@ class MLEnhancedBot:
             gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
             rs = gain / loss
-            return 100 - (100 / (1 + rs)).iloc[-1] if not np.isnan(rs.iloc[-1]) and loss.iloc[-1] != 0 else 50
+            rsi = 100 - (100 / (1 + rs))
+            return rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50
         except:
             return 50
-    
+
     def _calculate_macd(self, prices):
         try:
             if len(prices) < 26:
                 return 0
             exp1 = prices.ewm(span=12).mean()
             exp2 = prices.ewm(span=26).mean()
-            return (exp1 - exp2).iloc[-1]
+            macd = exp1 - exp2
+            return macd.iloc[-1]
+        except:
+            return 0
+
+    def _calculate_atr(self, df, period=14):
+        try:
+            high = df['high']
+            low = df['low']
+            close = df['close']
+            
+            tr1 = high - low
+            tr2 = abs(high - close.shift())
+            tr3 = abs(low - close.shift())
+            
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(period).mean()
+            return atr.iloc[-1] if not pd.isna(atr.iloc[-1]) else 0.02
+        except:
+            return 0.02
+
+    def _calculate_williams_r(self, df, period=14):
+        try:
+            high = df['high'].rolling(period).max()
+            low = df['low'].rolling(period).min()
+            close = df['close']
+            
+            williams_r = -100 * (high - close) / (high - low)
+            return williams_r.iloc[-1] if not pd.isna(williams_r.iloc[-1]) else -50
+        except:
+            return -50
+
+    def _calculate_cci(self, df, period=20):
+        try:
+            typical_price = (df['high'] + df['low'] + df['close']) / 3
+            sma = typical_price.rolling(period).mean()
+            mad = typical_price.rolling(period).apply(lambda x: np.mean(np.abs(x - np.mean(x))))
+            
+            cci = (typical_price - sma) / (0.015 * mad)
+            return cci.iloc[-1] if not pd.isna(cci.iloc[-1]) else 0
+        except:
+            return 0
+
+    def _calculate_obv(self, df):
+        try:
+            close = df['close']
+            volume = df['volume']
+            obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
+            return obv.iloc[-1] if len(obv) > 0 else 0
         except:
             return 0
 
 class BacktestEngine:
-    """Enhanced backtesting engine with advanced features"""
+    """Enhanced backtesting engine dengan advanced features"""
     def __init__(self, initial_balance=10000):
         self.initial_balance = initial_balance
         self.results = {}
@@ -659,6 +1015,10 @@ class TradingBot:
         self.scheduler_thread = None
         self.stop_scheduler = False
         self.scanning_in_progress = False
+        
+        # ML enhancements
+        self.ml_predictions_cache = {}
+        self.last_ml_update = 0
 
     def load_config(self):
         try:
@@ -743,8 +1103,132 @@ class TradingBot:
             schedule.run_pending()
             time.sleep(1)
 
+    def update_ml_predictions(self, symbols_data):
+        """Update ML predictions untuk multiple symbols sekaligus"""
+        try:
+            # Cache predictions untuk 5 menit
+            current_time = time.time()
+            if current_time - self.last_ml_update < 300:  # 5 menit
+                return self.ml_predictions_cache
+            
+            print("🔄 Updating ML predictions...")
+            predictions = self.ml_bot.batch_predict(symbols_data)
+            
+            self.ml_predictions_cache = predictions
+            self.last_ml_update = current_time
+            
+            print(f"✅ ML predictions updated for {len(predictions)} symbols")
+            return predictions
+            
+        except Exception as e:
+            print(f"❌ Error updating ML predictions: {e}")
+            return {}
+
+    def analyze_with_ml(self, symbol):
+        """Enhanced analysis dengan ML real"""
+        try:
+            # Dapatkan analisis dasar terlebih dahulu
+            base_analysis = self.analyze_asset(symbol)
+            if not base_analysis:
+                return None
+            
+            # Get data untuk ML
+            df = self.data_provider.get_ohlcv(symbol, self.timeframe, 100)
+            if df is None or len(df) < 50:
+                return base_analysis
+            
+            # Dapatkan ML prediction
+            ml_confidence, ml_direction = self.ml_bot.predict(df)
+            
+            # Enhanced scoring dengan ML
+            ml_score_boost = 0
+            
+            if ml_confidence > 0.7:  # High confidence
+                if ml_direction == 1:  # Bullish prediction
+                    ml_score_boost = 2.0
+                elif ml_direction == -1:  # Bearish prediction
+                    ml_score_boost = -2.0
+            
+            elif ml_confidence > 0.6:  # Medium confidence
+                if ml_direction == 1:
+                    ml_score_boost = 1.0
+                elif ml_direction == -1:
+                    ml_score_boost = -1.0
+            
+            # Update analysis dengan ML enhancements
+            base_score = base_analysis.get('score', 0)
+            final_score = base_score + ml_score_boost
+            
+            # Jangan biarkan score terlalu ekstrim
+            final_score = max(min(final_score, 10), -10)
+            
+            base_analysis['ml_confidence'] = ml_confidence
+            base_analysis['ml_direction'] = ml_direction
+            base_analysis['ml_score_boost'] = ml_score_boost
+            base_analysis['final_score'] = final_score
+            
+            # Update action berdasarkan final score
+            if final_score >= 3:
+                base_analysis['action'] = 'LONG'
+            elif final_score <= -3:
+                base_analysis['action'] = 'SHORT'
+            else:
+                base_analysis['action'] = 'NEUTRAL'
+            
+            base_analysis['ml_features'] = {
+                'model_used': self.ml_bot.model_type,
+                'feature_importance': self.ml_bot.feature_importance,
+                'is_trained': self.ml_bot.is_trained
+            }
+            
+            return base_analysis
+            
+        except Exception as e:
+            print(f"❌ Error in ML analysis: {e}")
+            return self.analyze_asset(symbol)  # Fallback ke analisis biasa
+
+    def train_ml_model(self, training_symbols=None, days=365):
+        """Train ML model dengan data historis"""
+        try:
+            if training_symbols is None:
+                training_symbols = self.get_popular_assets(50)  # Gunakan 50 aset populer
+            
+            historical_data = {}
+            
+            print(f"📊 Collecting historical data for {len(training_symbols)} symbols...")
+            
+            for symbol in training_symbols:
+                try:
+                    # Get data 1 tahun kebelakang
+                    df = self.data_provider.get_ohlcv(symbol, '1d', days)
+                    if df is not None and len(df) > 100:
+                        historical_data[symbol] = df
+                        print(f"  ✅ Collected data for {symbol}: {len(df)} bars")
+                    else:
+                        print(f"  ⚠️ Insufficient data for {symbol}")
+                except Exception as e:
+                    print(f"  ❌ Error getting data for {symbol}: {e}")
+            
+            if len(historical_data) < 10:
+                print("❌ Not enough historical data for training")
+                return False
+            
+            print(f"🔄 Training ML model with {len(historical_data)} symbols...")
+            success = self.ml_bot.train_model(historical_data)
+            
+            if success:
+                print("✅ ML model training completed successfully!")
+            else:
+                print("❌ ML model training failed")
+            
+            return success
+            
+        except Exception as e:
+            print(f"❌ Error in ML model training: {e}")
+            return False
+
     def scan_potential_assets(self, limit=None):
-        """Scan potential assets dengan error handling yang lebih baik"""
+        """Scan potential assets dengan ML enhancement"""
         if self.scanning_in_progress:
             print("⚠️ Scan already in progress, please wait...")
             return []
@@ -767,6 +1251,19 @@ class TradingBot:
                 
             print(f"🔄 Scanning {len(assets)} assets in {self.mode} mode...")
             
+            # Prepare data untuk batch ML prediction
+            symbols_data = {}
+            for asset in assets:
+                try:
+                    df = self.data_provider.get_ohlcv(asset, self.timeframe, 100)
+                    if df is not None and len(df) > 50:
+                        symbols_data[asset] = df
+                except:
+                    continue
+            
+            # Dapatkan batch ML predictions
+            ml_predictions = self.update_ml_predictions(symbols_data)
+            
             results = []
             successful_analysis = 0
             failed_analysis = 0
@@ -778,21 +1275,28 @@ class TradingBot:
                 print(f"  Analyzing {i+1}/{len(assets)}: {asset}")
                 
                 try:
-                    analysis = self.analyze_asset(asset)
+                    # Gunakan ML-enhanced analysis
+                    analysis = self.analyze_with_ml(asset)
                     
                     if analysis:
-                        # ✅ PERBAIKAN: Terima sinyal SHORT dengan skor negatif
-                        score = analysis.get("score", 0)
+                        score = analysis.get("final_score", analysis.get("score", 0))
                         min_score = self.config.get("min_score", 3)
                         
                         if (analysis.get("action") in ["LONG", "SHORT"] and 
-                            abs(score) >= min_score):  # Gunakan absolute value untuk SHORT
+                            abs(score) >= min_score):
+                            
+                            # Tambahkan ML info ke analysis
+                            if asset in ml_predictions:
+                                ml_info = ml_predictions[asset]
+                                analysis['ml_prediction'] = ml_info
+                            
                             results.append(analysis)
                             successful_analysis += 1
                             action_emoji = "🟢" if analysis['action'] == "LONG" else "🔴"
-                            print(f"    {action_emoji} Signal found: {analysis['action']} (Score: {analysis['score']})")
+                            ml_indicator = " 🤖" if analysis.get('ml_confidence', 0) > 0.6 else ""
+                            print(f"    {action_emoji} Signal found: {analysis['action']} (Score: {analysis['final_score']}){ml_indicator}")
                         else:
-                            print(f"    ⚠️ No trade signal (Action: {analysis.get('action')}, Score: {analysis.get('score')})")
+                            print(f"    ⚠️ No trade signal (Action: {analysis.get('action')}, Score: {analysis.get('final_score')})")
                     else:
                         failed_analysis += 1
                         print(f"    ❌ Analysis failed for {asset}")
@@ -804,12 +1308,14 @@ class TradingBot:
                 # Delay untuk menghindari rate limit
                 time.sleep(self.config.get("scan_delay", 0.5))
             
-            # ✅ PERBAIKAN: Urutkan berdasarkan absolute score untuk memasukkan SHORT yang kuat
-            results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
+            # Urutkan berdasarkan absolute final score
+            results.sort(key=lambda x: abs(x.get('final_score', 0)), reverse=True)
             max_signals = self.config.get("max_signals", 10)
             final_results = results[:max_signals]
             
-            print(f"📊 Scan complete: {successful_analysis} successful, {failed_analysis} failed, {len(final_results)} signals found")
+            ml_enhanced_count = sum(1 for r in final_results if r.get('ml_confidence', 0) > 0.6)
+            print(f"📊 Scan complete: {successful_analysis} successful, {failed_analysis} failed, {len(final_results)} signals found ({ml_enhanced_count} ML-enhanced)")
+            
             return final_results
             
         except Exception as e:
@@ -817,17 +1323,6 @@ class TradingBot:
             return []
         finally:
             self.scanning_in_progress = False
-
-    def get_popular_assets(self, limit=100):
-        if not self.data_provider:
-            print("No data provider for popular assets.")
-            return []
-        try:
-            assets = self.data_provider.get_popular_assets(limit)
-            return assets
-        except Exception as e:
-            print(f"Error loading popular assets: {e}")
-            return []
 
     def analyze_asset(self, symbol):
         """Analyze asset dengan error handling yang lebih robust"""
@@ -909,6 +1404,17 @@ class TradingBot:
         except Exception as e:
             print(f"❌ Error analyzing {symbol}: {str(e)}")
             return None
+
+    def get_popular_assets(self, limit=100):
+        if not self.data_provider:
+            print("No data provider for popular assets.")
+            return []
+        try:
+            assets = self.data_provider.get_popular_assets(limit)
+            return assets
+        except Exception as e:
+            print(f"Error loading popular assets: {e}")
+            return []
 
     def search_assets(self, query, limit=100):
         """Search assets berdasarkan query untuk web interface"""
@@ -1383,49 +1889,3 @@ class TradingBot:
             return np.mean(scores) if scores else 0
         except:
             return 0
-
-    # New method untuk ML-enhanced analysis
-    def analyze_with_ml(self, symbol):
-        """Enhanced analysis dengan machine learning features"""
-        try:
-            # Dapatkan analisis dasar terlebih dahulu
-            base_analysis = self.analyze_asset(symbol)
-            if not base_analysis:
-                return None
-            
-            # Extract ML features
-            df = self.data_provider.get_ohlcv(symbol, self.timeframe, 200)
-            if df is None or len(df) < 50:
-                return base_analysis
-                
-            ml_features = self.ml_bot.extract_features(df)
-            
-            # Enhanced scoring dengan ML (sederhana dulu)
-            ml_score_boost = 0
-            
-            # Analisis volume pattern
-            if len(df) > 20:
-                recent_volume = df['volume'].tail(5).mean()
-                avg_volume = df['volume'].mean()
-                if recent_volume > avg_volume * 1.5:
-                    ml_score_boost += 0.5
-            
-            # Analisis momentum
-            if len(df) > 10:
-                price_trend = (df['close'].iloc[-1] - df['close'].iloc[-10]) / df['close'].iloc[-10]
-                if abs(price_trend) > 0.05:  # 5% movement dalam 10 period
-                    ml_score_boost += 0.3
-            
-            # Update analysis dengan ML enhancements
-            base_analysis['ml_confidence'] = min(1.0, 0.7 + ml_score_boost)
-            base_analysis['final_score'] = base_analysis.get('score', 0) * base_analysis['ml_confidence']
-            base_analysis['ml_features'] = {
-                'volume_boost': recent_volume > avg_volume * 1.5 if len(df) > 20 else False,
-                'momentum_detected': abs(price_trend) > 0.05 if len(df) > 10 else False
-            }
-            
-            return base_analysis
-            
-        except Exception as e:
-            print(f"Error in ML analysis: {e}")
-            return self.analyze_asset(symbol)  # Fallback ke analisis biasa
