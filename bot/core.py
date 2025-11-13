@@ -19,12 +19,12 @@ load_dotenv()
 
 # Import modul yang diperlukan
 from .strategies import TechnicalAnalysisStrategy
-from data_provider import (
+from .data_provider import (
     CCXTDataProvider,
     YFinanceDataProvider,
     SolanaPumpFunProvider
 )
-from notifier import SoundNotifier
+from .notifier import SoundNotifier
 from database.db_handler import DatabaseHandler
 
 # =============================================
