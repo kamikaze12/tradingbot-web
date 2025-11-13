@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 # Import modul yang diperlukan
-from strategies import TechnicalAnalysisStrategy
+from .strategies import TechnicalAnalysisStrategy
 from data_provider import (
     CCXTDataProvider,
     YFinanceDataProvider,
