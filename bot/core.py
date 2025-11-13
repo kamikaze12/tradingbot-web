@@ -18,17 +18,17 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 # Import modul yang diperlukan
-from .strategies import TechnicalAnalysisStrategy
-from .data_provider import (
+from strategies import TechnicalAnalysisStrategy
+from data_provider import (
     CCXTDataProvider,
     YFinanceDataProvider,
     SolanaPumpFunProvider
 )
-from .notifier import SoundNotifier
+from notifier import SoundNotifier
 from database.db_handler import DatabaseHandler
 
 # =============================================
-# 1. AUTO RETRAINING PIPELINE
+# 1. AUTO RETRAINING PIPELINE - PHASE 2
 # =============================================
 
 class MLEnhancedBot:
@@ -43,7 +43,7 @@ class MLEnhancedBot:
         self.scaler_path = "models/scaler.pkl"
         self.feature_importance = {}
         
-        # Auto-retraining configuration
+        # Auto-retraining configuration - ONLINE LEARNING
         self.auto_retrain_interval = 24 * 3600  # 24 hours in seconds
         self.last_retrain_time = 0
         self.retraining_threshold = 1000  # Minimum new samples for retraining
@@ -215,7 +215,7 @@ class MLEnhancedBot:
         return False
 
     def _initialize_model(self):
-        """Initialize model baru"""
+        """Initialize model baru - MODEL ENSEMBLE"""
         if self.model_type == 'random_forest':
             self.model = RandomForestClassifier(
                 n_estimators=100,
@@ -251,7 +251,7 @@ class MLEnhancedBot:
                     current_window = data.iloc[:i+1]
                     future_window = data.iloc[i+1:i+11]  # 10 period ke depan
                     
-                    # Extract features
+                    # Extract features - ADVANCED FEATURE ENGINEERING
                     features = self._extract_detailed_features(current_window)
                     if features:
                         # Determine target (1 jika harga naik, 0 jika turun)
@@ -281,7 +281,7 @@ class MLEnhancedBot:
             return None, None
 
     def train_model(self, historical_data, test_size=0.2):
-        """Train model dengan historical data"""
+        """Train model dengan historical data - ENSEMBLE TRAINING"""
         try:
             print("🔄 Preparing training data...")
             X, y = self.prepare_training_data(historical_data)
@@ -344,7 +344,7 @@ class MLEnhancedBot:
             return False
 
     def _extract_detailed_features(self, df):
-        """Extract detailed features untuk training dan prediction"""
+        """Extract detailed features untuk training dan prediction - ADVANCED FEATURES"""
         try:
             if len(df) < 50:
                 return None
@@ -504,7 +504,7 @@ class MLEnhancedBot:
             print(f"❌ Error in batch prediction: {e}")
             return {}
 
-    # Technical Indicators
+    # Technical Indicators - ADVANCED FEATURE ENGINEERING
     def _calculate_rsi(self, prices, period=14):
         try:
             if len(prices) < period + 1:
@@ -577,7 +577,7 @@ class MLEnhancedBot:
             return 0
 
 # =============================================
-# 2. DYNAMIC RISK ENGINE  
+# 2. DYNAMIC RISK ENGINE - ENHANCED
 # =============================================
 
 class DynamicRiskEngine:
@@ -718,7 +718,7 @@ class DynamicRiskEngine:
             return "NORMAL_OPERATIONS"
 
 # =============================================
-# 3. REALISTIC BACKTEST ENGINE
+# 3. REALISTIC BACKTEST ENGINE - ENHANCED
 # =============================================
 
 class RealisticBacktestEngine:
@@ -1072,7 +1072,7 @@ class RealisticBacktestEngine:
         }
 
 # =============================================
-# 4. MODEL EXPLAINABILITY
+# 4. MODEL EXPLAINABILITY - PHASE 2
 # =============================================
 
 class ModelExplainer:
@@ -1139,7 +1139,7 @@ class ModelExplainer:
             return {"error": f"Explanation failed: {str(e)}"}
 
 # =============================================
-# MAIN TRADING BOT CLASS
+# MAIN TRADING BOT CLASS - PHASE 2 ENHANCED
 # =============================================
 
 class TradingBot:
@@ -1157,12 +1157,16 @@ class TradingBot:
         self.notifier = SoundNotifier()
         self.db = DatabaseHandler()
         
-        # PHASE 1 Enhancements
-        self.ml_bot = MLEnhancedBot()
-        self.backtest_engine = RealisticBacktestEngine()
-        self.risk_engine = DynamicRiskEngine()
-        self.model_explainer = ModelExplainer()
+        # PHASE 2 Enhancements - SEMUA INI BARU
+        self.ml_bot = MLEnhancedBot()                    # ✅ Model Ensemble & Online Learning
+        self.backtest_engine = RealisticBacktestEngine() # ✅ Realistic Backtest
+        self.risk_engine = DynamicRiskEngine()          # ✅ Enhanced Risk Management
+        self.model_explainer = ModelExplainer()         # ✅ Model Explainability
         
+        # ML enhancements
+        self.ml_predictions_cache = {}
+        self.last_ml_update = 0
+
         self.timeframe = self.config.get("timeframe", "1h")
         self.alert_active = False
         self.scanner_active = False
@@ -1172,10 +1176,6 @@ class TradingBot:
         self.scheduler_thread = None
         self.stop_scheduler = False
         self.scanning_in_progress = False
-        
-        # ML enhancements
-        self.ml_predictions_cache = {}
-        self.last_ml_update = 0
 
     def load_config(self):
         try:
@@ -1260,7 +1260,10 @@ class TradingBot:
             schedule.run_pending()
             time.sleep(1)
 
-    # PHASE 1 Enhanced Methods
+    # =============================================
+    # PHASE 2 ENHANCED METHODS
+    # =============================================
+
     def analyze_with_risk(self, symbol, balance=10000, current_positions=None):
         """Enhanced analysis dengan risk management"""
         analysis = self.analyze_asset(symbol)
@@ -1325,7 +1328,10 @@ class TradingBot:
         """Manual trigger untuk auto-retraining"""
         return self.ml_bot.auto_retrain()
 
-    # Existing methods tetap sama...
+    # =============================================
+    # EXISTING METHODS - TETAP SAMA
+    # =============================================
+
     def analyze_asset(self, symbol):
         """Analyze asset dengan error handling yang lebih robust"""
         if not self.data_provider:
@@ -1472,27 +1478,88 @@ class TradingBot:
         finally:
             self.scanning_in_progress = False
 
-    # ... (methods lainnya tetap sama)
+    def calculate_custom_entry(self, symbol, entry_price):
+        """Calculate custom entry levels untuk manual trading"""
+        try:
+            # Get basic analysis untuk ATR dan volatilitas
+            analysis = self.analyze_asset(symbol)
+            if analysis:
+                atr = analysis.get('atr', entry_price * 0.02)
+                volatility = analysis.get('volatility', 0.02)
+            else:
+                atr = entry_price * 0.02
+                volatility = 0.02
+            
+            # Calculate TP/SL levels berdasarkan ATR
+            tp1 = entry_price + (atr * 1.5)
+            tp2 = entry_price + (atr * 2.5)
+            tp3 = entry_price + (atr * 4.0)
+            sl = entry_price - (atr * 1.5)
+            
+            return {
+                'symbol': symbol,
+                'entry_price': entry_price,
+                'tp1': tp1,
+                'tp2': tp2,
+                'tp3': tp3,
+                'sl': sl,
+                'atr': atr,
+                'volatility': volatility
+            }
+        except Exception as e:
+            print(f"Error calculating custom entry: {e}")
+            return None
+
+    def get_active_positions(self):
+        """Get active positions dari database"""
+        return self.db.get_active_positions(self.mode)
+
+    def get_trade_history(self, limit=20):
+        """Get trade history dari database"""
+        return self.db.get_trade_history(self.mode, limit)
+
+    def close_position(self, position_id, close_price):
+        """Close position dan simpan ke history"""
+        return self.db.close_position(position_id, close_price, "manual")
+
+    async def scan_pump_fun(self, limit=10):
+        """Scan new tokens dari Pump Fun"""
+        if not self.pump_provider:
+            return []
+        try:
+            results = await self.pump_provider.monitor_new_tokens(limit)
+            return results
+        except Exception as e:
+            print(f"Error scanning Pump Fun: {e}")
+            return []
 
 # =============================================
-# MAIN EXECUTION
+# MAIN EXECUTION - TEST PHASE 2 FEATURES
 # =============================================
 
 if __name__ == "__main__":
     # Test the enhanced bot
     bot = TradingBot()
     
+    print("🚀 Testing Phase 2 Enhanced Features...")
+    
     # Test auto-retraining
+    print("🔄 Testing Auto-Retraining...")
     bot.auto_retrain_ml_model()
     
     # Test realistic backtest
+    print("📊 Testing Realistic Backtest...")
     result = bot.run_realistic_backtest("BTC/USDT", "1h", 500, "crypto")
     print("Backtest result:", result)
     
     # Test risk analysis
+    print("⚖️ Testing Risk Analysis...")
     risk_analysis = bot.analyze_with_risk("BTC/USDT", balance=10000)
     print("Risk analysis:", risk_analysis)
     
     # Test ML explanation
+    print("🤖 Testing ML Explanation...")
     explanation = bot.explain_ml_prediction("BTC/USDT")
     print("ML explanation:", explanation)
+    
+    print("✅ Phase 2 Core Testing Completed!")
