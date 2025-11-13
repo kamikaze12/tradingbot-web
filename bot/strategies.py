@@ -26,7 +26,7 @@ from scipy.signal import argrelextrema
 from scipy.stats import linregress
 
 # =============================================
-# DYNAMIC RISK ENGINE - PHASE 1
+# DYNAMIC RISK ENGINE - PHASE 2 ENHANCED
 # =============================================
 
 class DynamicRiskEngine:
@@ -174,6 +174,10 @@ class TradingStrategy(ABC):
     def analyze(self, df):
         pass
 
+# =============================================
+# ML STRATEGY ENHANCER - PHASE 2
+# =============================================
+
 class MLStrategyEnhancer:
     """Machine Learning enhancement for strategy validation"""
     def __init__(self):
@@ -182,7 +186,7 @@ class MLStrategyEnhancer:
         self.is_trained = False
         
     def prepare_features(self, df):
-        """Prepare features for ML model"""
+        """Prepare features for ML model - ADVANCED FEATURE ENGINEERING"""
         features = []
         
         # Price-based features
@@ -210,6 +214,19 @@ class MLStrategyEnhancer:
             low_20 = df['low'].rolling(20).min().iloc[-1]
             price_position = (df['close'].iloc[-1] - low_20) / (high_20 - low_20) if (high_20 - low_20) > 0 else 0.5
             features.append(price_position)
+            
+            # Momentum features
+            momentum_5 = (df['close'].iloc[-1] / df['close'].iloc[-5] - 1) * 100
+            momentum_10 = (df['close'].iloc[-1] / df['close'].iloc[-10] - 1) * 100
+            features.extend([momentum_5, momentum_10])
+            
+            # ATR
+            atr = self._calculate_atr(df)
+            features.append(atr)
+            
+            # MACD
+            macd = self._calculate_macd(df['close'])
+            features.append(macd)
         
         return np.array(features).reshape(1, -1) if features else None
     
@@ -239,8 +256,37 @@ class MLStrategyEnhancer:
         rs = gain / loss
         return 100 - (100 / (1 + rs)).iloc[-1] if not np.isnan(rs.iloc[-1]) and loss.iloc[-1] != 0 else 50
 
+    def _calculate_atr(self, df, period=14):
+        """Calculate ATR"""
+        try:
+            high = df['high']
+            low = df['low']
+            close = df['close']
+            
+            tr1 = high - low
+            tr2 = abs(high - close.shift())
+            tr3 = abs(low - close.shift())
+            
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(period).mean()
+            return atr.iloc[-1] if not pd.isna(atr.iloc[-1]) else 0.02
+        except:
+            return 0.02
+
+    def _calculate_macd(self, prices):
+        """Calculate MACD"""
+        try:
+            if len(prices) < 26:
+                return 0
+            exp1 = prices.ewm(span=12).mean()
+            exp2 = prices.ewm(span=26).mean()
+            macd = exp1 - exp2
+            return macd.iloc[-1]
+        except:
+            return 0
+
 # =============================================
-# MAIN TECHNICAL ANALYSIS STRATEGY
+# MAIN TECHNICAL ANALYSIS STRATEGY - PHASE 2 ENHANCED
 # =============================================
 
 class TechnicalAnalysisStrategy(TradingStrategy):
@@ -249,7 +295,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         self.atr_multiplier = atr_multiplier
         self.entry_range_pct = entry_range_pct
         self.ml_enhancer = MLStrategyEnhancer()
-        self.risk_engine = DynamicRiskEngine()  # ✅ PHASE 1: Dynamic Risk Engine
+        self.risk_engine = DynamicRiskEngine()
         self.set_market_parameters()
     
     def set_market_parameters(self):
@@ -295,9 +341,12 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             self.trend_weight = 1.0
             self.volatility_threshold = 0.01
 
-    # ✅ PHASE 1: Enhanced Risk Analysis Method
+    # =============================================
+    # PHASE 2 ENHANCED METHODS
+    # =============================================
+
     def analyze_with_risk(self, df, balance=10000, current_positions=None):
-        """Enhanced analysis dengan risk management"""
+        """Enhanced analysis dengan risk management - PHASE 2"""
         if current_positions is None:
             current_positions = []
             
@@ -341,7 +390,8 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             'risk_adjusted_sl': stop_loss,
             'risk_metrics': position_calc,
             'recommended_position_size': position_calc['position_size'],
-            'position_value_usd': position_calc['position_value']
+            'position_value_usd': position_calc['position_value'],
+            'final_score': score  # Untuk backward compatibility
         })
         
         # Portfolio risk assessment
@@ -355,7 +405,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         return analysis
 
     def calculate_tp_probability(self, current_price, tp1, tp2, tp3, sl, action, volatility=0.02):
-        """Calculate probability of hitting TP1, TP2, TP3"""
+        """Calculate probability of hitting TP1, TP2, TP3 - ENHANCED"""
         try:
             if action == "LONG":
                 # Untuk LONG: TP di atas current price, SL di bawah
@@ -460,7 +510,11 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             return "LOW"
         else:
             return "VERY LOW"
-    
+
+    # =============================================
+    # PATTERN DETECTION - PHASE 2 ENHANCED
+    # =============================================
+
     def identify_hh_hl_lh_ll(self, df, lookback=20):
         """Identify Higher High, Higher Low, Lower High, Lower Low patterns"""
         highs = df['high'].tail(lookback)
@@ -533,7 +587,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         return last_atr
     
     def detect_market_regime(self, df):
-        """Advanced market regime detection"""
+        """Advanced market regime detection - ENHANCED"""
         if len(df) < 50:
             return "UNKNOWN", 0, 0
         
@@ -559,13 +613,18 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             # Momentum regime
             momentum = (df['close'].iloc[-1] / df['close'].iloc[-20] - 1) if len(df) >= 20 else 0
             
+            # Volume regime
+            volume_trend = df['volume'].pct_change().mean() if len(df) > 1 else 0
+            
             # Determine regime
             if current_adx > self.adx_trend_threshold and abs(momentum) > 0.05:
                 regime = "TRENDING"
-            elif volatility < self.volatility_threshold:
+            elif volatility < self.volatility_threshold and abs(volume_trend) < 0.1:
                 regime = "RANGING_LOW_VOL"
             elif volatility > self.volatility_threshold * 2:
                 regime = "RANGING_HIGH_VOL"
+            elif current_adx < 15 and abs(momentum) < 0.02:
+                regime = "CONSOLIDATION"
             else:
                 regime = "TRANSITION"
                 
@@ -635,7 +694,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
         }
     
     def detect_harmonic_patterns(self, df, lookback=100):
-        """Real harmonic pattern detection dengan Fibonacci ratios"""
+        """Real harmonic pattern detection dengan Fibonacci ratios - ENHANCED"""
         patterns = {
             'gartley': {'detected': False, 'direction': None, 'confidence': 0},
             'bat': {'detected': False, 'direction': None, 'confidence': 0},
@@ -874,6 +933,10 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             
         return patterns
 
+    # =============================================
+    # TECHNICAL INDICATORS - PHASE 2 ENHANCED
+    # =============================================
+
     def analyze_volume_profile(self, df):
         """Enhanced volume analysis dengan market context"""
         vol_mean = df['volume'].rolling(20).mean().iloc[-1]
@@ -921,7 +984,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                 return 0
 
     def calculate_momentum_score(self, df):
-        """Calculate momentum-based score"""
+        """Calculate momentum-based score - ENHANCED"""
         if len(df) < 20:
             return 0
             
@@ -929,22 +992,27 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             # Price momentum
             price_change_5 = (df['close'].iloc[-1] / df['close'].iloc[-5] - 1) * 100
             price_change_10 = (df['close'].iloc[-1] / df['close'].iloc[-10] - 1) * 100
+            price_change_20 = (df['close'].iloc[-1] / df['close'].iloc[-20] - 1) * 100
             
             # Volume momentum
             volume_change = (df['volume'].iloc[-1] / df['volume'].rolling(10).mean().iloc[-1] - 1) * 100
             
             momentum_score = 0
             
-            # Positive momentum
-            if price_change_5 > 2 and price_change_10 > 5:
+            # Positive momentum dengan confirmation
+            if price_change_5 > 2 and price_change_10 > 5 and price_change_20 > 8:
+                momentum_score += 3
+            elif price_change_5 > 1 and price_change_10 > 2 and price_change_20 > 4:
                 momentum_score += 2
-            elif price_change_5 > 1 and price_change_10 > 2:
+            elif price_change_5 > 0.5 and price_change_10 > 1:
                 momentum_score += 1
                 
             # Negative momentum  
-            if price_change_5 < -2 and price_change_10 < -5:
+            if price_change_5 < -2 and price_change_10 < -5 and price_change_20 < -8:
+                momentum_score -= 3
+            elif price_change_5 < -1 and price_change_10 < -2 and price_change_20 < -4:
                 momentum_score -= 2
-            elif price_change_5 < -1 and price_change_10 < -2:
+            elif price_change_5 < -0.5 and price_change_10 < -1:
                 momentum_score -= 1
                 
             # Volume confirmation
@@ -959,8 +1027,12 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             print(f"Momentum calculation error: {e}")
             return 0
 
+    # =============================================
+    # MAIN ANALYSIS METHOD - PHASE 2 ENHANCED
+    # =============================================
+
     def analyze(self, df):
-        """Main analysis method dengan semua enhancements"""
+        """Main analysis method dengan semua enhancements Phase 2"""
         if df is None or len(df) < 50:
             return None
         
@@ -981,12 +1053,12 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             ema_trend, ema_score = self.analyze_ema_cross(df)
             volume_score, volume_ratio = self.analyze_volume_profile(df)
             
-            # Advanced analysis
+            # Advanced analysis - PHASE 2 ENHANCEMENTS
             market_regime, adx_value, volatility = self.detect_market_regime(df)
             momentum_score = self.calculate_momentum_score(df)
             ml_confidence = self.ml_enhancer.predict_confidence(df)
             
-            # Pattern detection dengan confidence
+            # Pattern detection dengan confidence - PHASE 2
             harmonic_patterns = self.detect_harmonic_patterns(df)
             triangle_patterns = self.detect_triangle_patterns(df)
             channel_wedge_patterns = self.detect_channel_wedge_patterns(df)
@@ -1008,7 +1080,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             else:
                 trend_score += ema_score * self.trend_weight
             
-            # Enhanced pattern scoring with confidence
+            # Enhanced pattern scoring with confidence - PHASE 2
             pattern_score = 0
             
             # Harmonic patterns
@@ -1040,7 +1112,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             # Market-specific RSI scoring
             rsi_score = self.calculate_rsi_score(current_rsi)
             
-            # Calculate final score dengan ML confidence
+            # Calculate final score dengan ML confidence - PHASE 2
             raw_score = trend_score + rsi_score + volume_score + pattern_score + momentum_score
             final_score = raw_score * ml_confidence  # Apply ML confidence
             
@@ -1051,6 +1123,8 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                 final_score *= 0.7
             elif market_regime == "RANGING_HIGH_VOL":
                 final_score *= 1.1
+            elif market_regime == "CONSOLIDATION":
+                final_score *= 0.8  # Reduce signals during consolidation
             
             # Round to integer
             final_score = int(round(final_score))
@@ -1078,7 +1152,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             else:  # NEUTRAL
                 raw_tp1 = raw_tp2 = raw_tp3 = sl = ideal_entry
             
-            # ✅ FIXED: Apply TP ordering correction
+            # Apply TP ordering correction
             if action == "LONG":
                 # Untuk LONG: TP1 < TP2 < TP3 (semua di atas current price)
                 tp_levels = sorted([raw_tp1, raw_tp2, raw_tp3])
@@ -1090,7 +1164,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             else:  # NEUTRAL
                 tp1, tp2, tp3 = raw_tp1, raw_tp2, raw_tp3
             
-            # Calculate TP probabilities
+            # Calculate TP probabilities - PHASE 2
             tp_probabilities = self.calculate_tp_probability(
                 current_close, tp1, tp2, tp3, sl, action, volatility
             )
@@ -1105,15 +1179,16 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                         detected_patterns.append(pattern_name)
                     all_patterns[pattern_name] = pattern_data
             
-            # Calculate drawdown risk
+            # Calculate drawdown risk - PHASE 2
             drawdown_risk = self._calculate_drawdown_risk(volatility, current_rsi, atr, price_position)
             
-            # Risk metrics dengan drawdown_risk
+            # Risk metrics dengan drawdown_risk - PHASE 2
             risk_metrics = {
-                'reward_ratio': 2.0,  # Default
+                'reward_ratio': (tp1 - ideal_entry) / (ideal_entry - sl) if action == "LONG" else (ideal_entry - tp1) / (sl - ideal_entry),
                 'risk_category': 'HIGH' if volatility > 0.03 else 'MEDIUM' if volatility > 0.01 else 'LOW',
                 'optimal_position_size': 0.1 if volatility > 0.03 else 0.15 if volatility > 0.01 else 0.2,
-                'drawdown_risk': drawdown_risk
+                'drawdown_risk': drawdown_risk,
+                'volatility_level': volatility
             }
             
             result = {
@@ -1131,6 +1206,7 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                 'volume_ratio': float(volume_ratio),
                 'score': final_score,
                 'raw_score': int(raw_score),
+                'final_score': final_score,  # Untuk compatibility
                 'atr': float(atr),
                 'hh': hh,
                 'hl': hl,
@@ -1151,7 +1227,8 @@ class TechnicalAnalysisStrategy(TradingStrategy):
                 'trend_score': int(trend_score),
                 'ml_confidence': float(ml_confidence),
                 'risk_metrics': risk_metrics,
-                'tp_probabilities': tp_probabilities  # ✅ NEW: TP probabilities
+                'tp_probabilities': tp_probabilities,  # PHASE 2
+                'price_position': float(price_position)
             }
             
             return result
@@ -1176,11 +1253,11 @@ class TechnicalAnalysisStrategy(TradingStrategy):
             return 50
 
 # =============================================
-# STRATEGY TESTING
+# STRATEGY TESTING - PHASE 2
 # =============================================
 
 if __name__ == "__main__":
-    # Test the strategy
+    # Test the enhanced strategy
     strategy = TechnicalAnalysisStrategy(market_type="crypto")
     
     # Create sample data for testing
@@ -1196,13 +1273,17 @@ if __name__ == "__main__":
     
     # Test basic analysis
     result = strategy.analyze(df)
-    print("Basic Analysis Result:")
+    print("Phase 2 Enhanced Analysis Result:")
     print(f"Action: {result['action']}")
-    print(f"Score: {result['score']}")
+    print(f"Final Score: {result['final_score']}")
+    print(f"Market Regime: {result['market_regime']}")
+    print(f"ML Confidence: {result['ml_confidence']:.2f}")
     print(f"TP Probabilities: {result['tp_probabilities']}")
+    print(f"Detected Patterns: {result['detected_patterns']}")
     
     # Test risk analysis
     risk_result = strategy.analyze_with_risk(df, balance=10000)
-    print("\nRisk Analysis Result:")
-    print(f"Recommended Position Size: {risk_result['recommended_position_size']}")
+    print("\nPhase 2 Risk Analysis Result:")
+    print(f"Recommended Position Size: {risk_result['recommended_position_size']:.4f}")
     print(f"Risk Profile: {risk_result['risk_metrics']['risk_profile']}")
+    print(f"Drawdown Risk: {risk_result['risk_metrics']['drawdown_risk']}")
