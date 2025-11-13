@@ -6,6 +6,11 @@ import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 import random  # For varied fallback patterns
+import sys
+import os
+
+# ✅ FIX: Add the project root to Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Try to import plotly, fallback to streamlit charts if not available
 try:
@@ -15,7 +20,13 @@ except ImportError:
     PLOTLY_AVAILABLE = False
     st.warning("Plotly not available. Install with: pip install plotly")
 
-from bot.core import TradingBot
+# ✅ FIX: Import from bot package
+try:
+    from bot.core import TradingBot
+    print("✅ Successfully imported TradingBot from bot.core")
+except ImportError as e:
+    st.error(f"❌ Import Error: {e}")
+    st.stop()
 
 # ====================================
 # Setup
@@ -150,7 +161,13 @@ def calculate_tp_probability(current_price, tp1, tp2, tp3, sl, action, volatilit
 # ====================================
 def main():
     st.title("🚀 TradingBot Pro - Enhanced Dashboard")
-    bot = init_bot()
+    
+    try:
+        bot = init_bot()
+        print("✅ TradingBot initialized successfully")
+    except Exception as e:
+        st.error(f"❌ Failed to initialize TradingBot: {e}")
+        return
 
     # Enhanced session state
     defaults = {
@@ -180,28 +197,38 @@ def main():
         mode_choice = st.selectbox("Market:", ["Crypto", "Forex", "Saham Indonesia"], key="mode")
 
         if st.button("Set Market"):
-            if mode_choice == "Crypto":
-                bot.set_mode("crypto")
-            elif mode_choice == "Forex":
-                bot.set_mode("forex")
-            elif mode_choice == "Saham Indonesia":
-                bot.set_mode("saham_id")
+            try:
+                if mode_choice == "Crypto":
+                    success = bot.set_mode("crypto")
+                elif mode_choice == "Forex":
+                    success = bot.set_mode("forex")
+                elif mode_choice == "Saham Indonesia":
+                    success = bot.set_mode("saham_id")
 
-            st.session_state.scanned_results = []
-            st.session_state.selected_symbols = []
-            st.session_state.selected_analysis = None
-            st.session_state.selected_for_entry = {}
-            st.rerun()
+                if success:
+                    st.session_state.scanned_results = []
+                    st.session_state.selected_symbols = []
+                    st.session_state.selected_analysis = None
+                    st.session_state.selected_for_entry = {}
+                    st.success(f"✅ Market set to {mode_choice}")
+                    st.rerun()
+                else:
+                    st.error("❌ Failed to set market")
+            except Exception as e:
+                st.error(f"❌ Error setting market: {e}")
 
         if bot.mode:
             st.success(f"Mode: {bot.mode.upper()}")
 
             if st.button("🔄 Refresh Semua Data", key="refresh_all"):
-                st.session_state.positions_data = bot.get_active_positions()
-                st.session_state.history_data = bot.get_trade_history()
-                st.session_state.last_refresh = {"positions": time.time(), "history": time.time()}
-                st.success("Data berhasil direfresh!")
-                st.rerun()
+                try:
+                    st.session_state.positions_data = bot.get_active_positions()
+                    st.session_state.history_data = bot.get_trade_history()
+                    st.session_state.last_refresh = {"positions": time.time(), "history": time.time()}
+                    st.success("Data berhasil direfresh!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error refreshing data: {e}")
 
     if not bot.mode:
         st.warning("Pilih market di sidebar!")
@@ -227,193 +254,197 @@ def main():
 
         if st.button("Scan Aset", key="scan_assets"):
             with st.spinner("Scanning..."):
-                if bot.mode == "crypto" and scan_option == "Pump Fun Solana":
-                    results = asyncio.run(bot.scan_pump_fun())
-                    if results:
-                        st.subheader("Token Baru di Pump Fun:")
-                        for res in results:
-                            st.write(f"**{res['symbol']}** - Price: {res['ticker']['last']}, "
-                                     f"Volume: {res['ticker']['volume']}")
-                            if st.button(f"Pilih {res['symbol']}", key=f"select_pump_{res['symbol']}"):
-                                symbol = res['symbol']
-                                analysis = bot.analyze_asset(symbol)
-                                if analysis is None:
-                                    entry_price = res['ticker']['last']
-                                    analysis = bot.calculate_custom_entry(symbol, entry_price)
+                try:
+                    if bot.mode == "crypto" and scan_option == "Pump Fun Solana":
+                        results = asyncio.run(bot.scan_pump_fun())
+                        if results:
+                            st.subheader("Token Baru di Pump Fun:")
+                            for res in results:
+                                st.write(f"**{res['symbol']}** - Price: {res['ticker']['last']}, "
+                                         f"Volume: {res['ticker']['volume']}")
+                                if st.button(f"Pilih {res['symbol']}", key=f"select_pump_{res['symbol']}"):
+                                    symbol = res['symbol']
+                                    analysis = bot.analyze_asset(symbol)
                                     if analysis is None:
-                                        analysis = {
-                                            'symbol': symbol,
-                                            'entry_price': entry_price,
-                                            'tp1': entry_price * 1.1,
-                                            'tp2': entry_price * 1.2,
-                                            'tp3': entry_price * 1.3,
-                                            'sl': entry_price * 0.9,
-                                            'action': 'LONG',
-                                            'score': 5,
-                                            'ideal_entry': entry_price
-                                        }
-                                    else:
-                                        analysis['action'] = "LONG"
-                                        analysis['score'] = 5
-                                        analysis['ideal_entry'] = analysis['entry_price']
-                                
-                                # Hitung probabilitas TP dengan TP levels yang benar
-                                tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
-                                if analysis['action'] == "LONG":
-                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                                elif analysis['action'] == "SHORT":
-                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
-                                
-                                analysis['tp_probabilities'] = calculate_tp_probability(
-                                    analysis.get('current_price', entry_price),
-                                    tp1, tp2, tp3,
-                                    analysis['sl'], analysis['action']
-                                )
-                                
-                                st.session_state.selected_for_entry[symbol] = analysis
-                                st.success(f"Selected {res['symbol']}!")
-                                st.rerun()
-                    else:
-                        st.info("Tidak ada token baru di Pump Fun.")
-
-                else:
-                    all_results = bot.scan_potential_assets(100)  # Scan 100 koin
-                    if all_results:
-                        # Sort berdasarkan abs(score) descending untuk dapat 10 terbaik
-                        all_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
-                        
-                        # Hitung probabilitas TP untuk setiap hasil dengan TP yang sudah diurutkan
-                        for result in all_results[:10]:
-                            # Urutkan TP levels sebelum hitung probability
-                            tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
-                            if result['action'] == "LONG":
-                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                            elif result['action'] == "SHORT":
-                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
-                            
-                            result['tp_probabilities'] = calculate_tp_probability(
-                                result.get('current_price', result.get('ideal_entry', 0)),
-                                tp1, tp2, tp3,
-                                result['sl'], result['action'],
-                                result.get('volatility', 0.02)
-                            )
-                        
-                        st.session_state.scanned_results = all_results[:10]  # Tampil hanya 10 terbaik
-                        st.success("Scan selesai! Menampilkan 10 terbaik dari 100.")
-                    else:
-                        st.warning("Tidak ada hasil scan dari metode utama. Mencoba fallback dengan aset populer.")
-                        fallback_assets = bot.get_popular_assets(100)
-                        fallback_results = []
-                        for asset in fallback_assets:
-                            analysis = bot.analyze_asset(asset)
-                            
-                            # ✅ PERBAIKAN: Ambil baik LONG (score >= 3) maupun SHORT (score <= -3)
-                            if analysis and analysis["action"] in ["LONG", "SHORT"] and abs(analysis["score"]) >= 3:
-                                # Urutkan TP levels sebelum hitung probability
-                                tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
-                                if analysis['action'] == "LONG":
-                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                                elif analysis['action'] == "SHORT":
-                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
-                                
-                                # Hitung probabilitas TP
-                                analysis['tp_probabilities'] = calculate_tp_probability(
-                                    analysis.get('current_price', analysis.get('ideal_entry', 0)),
-                                    tp1, tp2, tp3,
-                                    analysis['sl'], analysis['action'],
-                                    analysis.get('volatility', 0.02)
-                                )
-                                fallback_results.append(analysis)
-                                
-                            elif analysis is None:
-                                ticker = bot.data_provider.get_ticker(asset)
-                                if ticker and 'last' in ticker:
-                                    current_price = ticker['last']
-                                    percentage = ticker.get('percentage', 0)
-                                    volume = ticker.get('volume', 1.0)
-                                    
-                                    # ✅ PERBAIKAN: Berikan skor negatif untuk SHORT yang kuat
-                                    # Untuk percentage negatif besar, berikan skor SHORT yang kuat
-                                    if percentage < -5:  # Turun drastis -> SHORT kuat
-                                        simple_score = random.randint(-8, -5)
-                                        action = 'SHORT'
-                                    elif percentage < -2:  # Turun -> SHORT medium
-                                        simple_score = random.randint(-5, -3) 
-                                        action = 'SHORT'
-                                    elif percentage > 5:   # Naik drastis -> LONG kuat
-                                        simple_score = random.randint(5, 8)
-                                        action = 'LONG'
-                                    elif percentage > 2:   # Naik -> LONG medium
-                                        simple_score = random.randint(3, 5)
-                                        action = 'LONG'
-                                    else:  # Sideways -> random bias
-                                        if random.random() > 0.5:
-                                            simple_score = random.randint(3, 5)
-                                            action = 'LONG'
+                                        entry_price = res['ticker']['last']
+                                        analysis = bot.calculate_custom_entry(symbol, entry_price)
+                                        if analysis is None:
+                                            analysis = {
+                                                'symbol': symbol,
+                                                'entry_price': entry_price,
+                                                'tp1': entry_price * 1.1,
+                                                'tp2': entry_price * 1.2,
+                                                'tp3': entry_price * 1.3,
+                                                'sl': entry_price * 0.9,
+                                                'action': 'LONG',
+                                                'score': 5,
+                                                'ideal_entry': entry_price
+                                            }
                                         else:
-                                            simple_score = random.randint(-5, -3)
-                                            action = 'SHORT'
+                                            analysis['action'] = "LONG"
+                                            analysis['score'] = 5
+                                            analysis['ideal_entry'] = analysis['entry_price']
                                     
-                                    possible_patterns = ['ranging_channel', 'symmetrical_triangle', 'ascending_triangle', 'descending_triangle', 'uptrend_channel', 'downtrend_channel', 'rising_wedge', 'falling_wedge', 'broadening_ascending', 'broadening_descending']
-                                    num_patterns = random.randint(1, 4)
-                                    simple_patterns = random.sample(possible_patterns, num_patterns)
-                                    simple_pattern_score = num_patterns
-                                    
-                                    # Urutkan TP levels berdasarkan action
-                                    if action == 'LONG':
-                                        tp1 = current_price * 1.03
-                                        tp2 = current_price * 1.06
-                                        tp3 = current_price * 1.09
-                                        sl = current_price * 0.97
+                                    # Hitung probabilitas TP dengan TP levels yang benar
+                                    tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
+                                    if analysis['action'] == "LONG":
                                         tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                                    else:  # SHORT
-                                        tp1 = current_price * 0.97
-                                        tp2 = current_price * 0.94
-                                        tp3 = current_price * 0.91
-                                        sl = current_price * 1.03
+                                    elif analysis['action'] == "SHORT":
                                         tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                                     
-                                    analysis = {
-                                        'symbol': asset,
-                                        'action': action,
-                                        'score': simple_score,
-                                        'ideal_entry': current_price,
-                                        'entry_low': current_price * 0.99,
-                                        'entry_high': current_price * 1.01,
-                                        'tp1': tp1,
-                                        'tp2': tp2,
-                                        'tp3': tp3,
-                                        'sl': sl,
-                                        'current_price': current_price,
-                                        'rsi': 50.0 + (percentage * 5),
-                                        'trend': 'BULLISH' if simple_score > 0 else 'BEARISH' if simple_score < 0 else 'NEUTRAL',
-                                        'volume_ratio': volume / 1000 if volume > 1000 else 1.0,
-                                        'atr': current_price * 0.01,
-                                        'detected_patterns': simple_patterns,
-                                        'pattern_score': simple_pattern_score,
-                                        'ema_trend': 'NEUTRAL',
-                                        'ema_score': 0,
-                                        'volatility': 0.02
-                                    }
+                                    analysis['tp_probabilities'] = calculate_tp_probability(
+                                        analysis.get('current_price', entry_price),
+                                        tp1, tp2, tp3,
+                                        analysis['sl'], analysis['action']
+                                    )
+                                    
+                                    st.session_state.selected_for_entry[symbol] = analysis
+                                    st.success(f"Selected {res['symbol']}!")
+                                    st.rerun()
+                        else:
+                            st.info("Tidak ada token baru di Pump Fun.")
+
+                    else:
+                        all_results = bot.scan_potential_assets(100)  # Scan 100 koin
+                        if all_results:
+                            # Sort berdasarkan abs(score) descending untuk dapat 10 terbaik
+                            all_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
+                            
+                            # Hitung probabilitas TP untuk setiap hasil dengan TP yang sudah diurutkan
+                            for result in all_results[:10]:
+                                # Urutkan TP levels sebelum hitung probability
+                                tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
+                                if result['action'] == "LONG":
+                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                                elif result['action'] == "SHORT":
+                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                                
+                                result['tp_probabilities'] = calculate_tp_probability(
+                                    result.get('current_price', result.get('ideal_entry', 0)),
+                                    tp1, tp2, tp3,
+                                    result['sl'], result['action'],
+                                    result.get('volatility', 0.02)
+                                )
+                            
+                            st.session_state.scanned_results = all_results[:10]  # Tampil hanya 10 terbaik
+                            st.success("Scan selesai! Menampilkan 10 terbaik dari 100.")
+                        else:
+                            st.warning("Tidak ada hasil scan dari metode utama. Mencoba fallback dengan aset populer.")
+                            fallback_assets = bot.get_popular_assets(100)
+                            fallback_results = []
+                            for asset in fallback_assets:
+                                analysis = bot.analyze_asset(asset)
+                                
+                                # ✅ PERBAIKAN: Ambil baik LONG (score >= 3) maupun SHORT (score <= -3)
+                                if analysis and analysis["action"] in ["LONG", "SHORT"] and abs(analysis["score"]) >= 3:
+                                    # Urutkan TP levels sebelum hitung probability
+                                    tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
+                                    if analysis['action'] == "LONG":
+                                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                                    elif analysis['action'] == "SHORT":
+                                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                                    
                                     # Hitung probabilitas TP
                                     analysis['tp_probabilities'] = calculate_tp_probability(
-                                        current_price,
-                                        analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                                        analysis.get('current_price', analysis.get('ideal_entry', 0)),
+                                        tp1, tp2, tp3,
                                         analysis['sl'], analysis['action'],
-                                        0.02
+                                        analysis.get('volatility', 0.02)
                                     )
                                     fallback_results.append(analysis)
-                                else:
-                                    st.warning(f"Gagal mengambil data untuk {asset}")
                                     
-                        if fallback_results:
-                            # ✅ PERBAIKAN: Sort berdasarkan absolute value untuk memasukkan SHORT yang kuat
-                            fallback_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
-                            st.session_state.scanned_results = fallback_results[:10]
-                            st.info(f"Fallback selesai! Menampilkan {len(fallback_results)} aset (LONG & SHORT).")
-                        else:
-                            st.error("Tidak ada data sama sekali. Periksa koneksi atau API key.")
-                    st.rerun()
+                                elif analysis is None:
+                                    try:
+                                        ticker = bot.data_provider.get_ticker(asset)
+                                        if ticker and 'last' in ticker:
+                                            current_price = ticker['last']
+                                            percentage = ticker.get('percentage', 0)
+                                            volume = ticker.get('volume', 1.0)
+                                            
+                                            # ✅ PERBAIKAN: Berikan skor negatif untuk SHORT yang kuat
+                                            # Untuk percentage negatif besar, berikan skor SHORT yang kuat
+                                            if percentage < -5:  # Turun drastis -> SHORT kuat
+                                                simple_score = random.randint(-8, -5)
+                                                action = 'SHORT'
+                                            elif percentage < -2:  # Turun -> SHORT medium
+                                                simple_score = random.randint(-5, -3) 
+                                                action = 'SHORT'
+                                            elif percentage > 5:   # Naik drastis -> LONG kuat
+                                                simple_score = random.randint(5, 8)
+                                                action = 'LONG'
+                                            elif percentage > 2:   # Naik -> LONG medium
+                                                simple_score = random.randint(3, 5)
+                                                action = 'LONG'
+                                            else:  # Sideways -> random bias
+                                                if random.random() > 0.5:
+                                                    simple_score = random.randint(3, 5)
+                                                    action = 'LONG'
+                                                else:
+                                                    simple_score = random.randint(-5, -3)
+                                                    action = 'SHORT'
+                                            
+                                            possible_patterns = ['ranging_channel', 'symmetrical_triangle', 'ascending_triangle', 'descending_triangle', 'uptrend_channel', 'downtrend_channel', 'rising_wedge', 'falling_wedge', 'broadening_ascending', 'broadening_descending']
+                                            num_patterns = random.randint(1, 4)
+                                            simple_patterns = random.sample(possible_patterns, num_patterns)
+                                            simple_pattern_score = num_patterns
+                                            
+                                            # Urutkan TP levels berdasarkan action
+                                            if action == 'LONG':
+                                                tp1 = current_price * 1.03
+                                                tp2 = current_price * 1.06
+                                                tp3 = current_price * 1.09
+                                                sl = current_price * 0.97
+                                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                                            else:  # SHORT
+                                                tp1 = current_price * 0.97
+                                                tp2 = current_price * 0.94
+                                                tp3 = current_price * 0.91
+                                                sl = current_price * 1.03
+                                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                                            
+                                            analysis = {
+                                                'symbol': asset,
+                                                'action': action,
+                                                'score': simple_score,
+                                                'ideal_entry': current_price,
+                                                'entry_low': current_price * 0.99,
+                                                'entry_high': current_price * 1.01,
+                                                'tp1': tp1,
+                                                'tp2': tp2,
+                                                'tp3': tp3,
+                                                'sl': sl,
+                                                'current_price': current_price,
+                                                'rsi': 50.0 + (percentage * 5),
+                                                'trend': 'BULLISH' if simple_score > 0 else 'BEARISH' if simple_score < 0 else 'NEUTRAL',
+                                                'volume_ratio': volume / 1000 if volume > 1000 else 1.0,
+                                                'atr': current_price * 0.01,
+                                                'detected_patterns': simple_patterns,
+                                                'pattern_score': simple_pattern_score,
+                                                'ema_trend': 'NEUTRAL',
+                                                'ema_score': 0,
+                                                'volatility': 0.02
+                                            }
+                                            # Hitung probabilitas TP
+                                            analysis['tp_probabilities'] = calculate_tp_probability(
+                                                current_price,
+                                                analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                                                analysis['sl'], analysis['action'],
+                                                0.02
+                                            )
+                                            fallback_results.append(analysis)
+                                    except Exception as e:
+                                        st.warning(f"Gagal mengambil data untuk {asset}: {e}")
+                                        
+                            if fallback_results:
+                                # ✅ PERBAIKAN: Sort berdasarkan absolute value untuk memasukkan SHORT yang kuat
+                                fallback_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
+                                st.session_state.scanned_results = fallback_results[:10]
+                                st.info(f"Fallback selesai! Menampilkan {len(fallback_results)} aset (LONG & SHORT).")
+                            else:
+                                st.error("Tidak ada data sama sekali. Periksa koneksi atau API key.")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error during scan: {e}")
 
         # Tampilkan hasil scan
         if st.session_state.scanned_results:
@@ -483,42 +514,45 @@ def main():
                     
                     with col2:
                         if st.button(f"✅ Tambah Posisi {symbol}", key=f"add_{symbol}"):
-                            ideal_entry = analysis.get("ideal_entry", entry_price)
-                            
-                            # Urutkan TP levels sebelum simpan
-                            tp1, tp2, tp3 = analysis["tp1"], analysis["tp2"], analysis["tp3"]
-                            if analysis["action"] == "LONG":
-                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                            elif analysis["action"] == "SHORT":
-                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
-                            
-                            # Adjust TP levels berdasarkan entry price yang baru
-                            tp1_adj = entry_price + (tp1 - ideal_entry)
-                            tp2_adj = entry_price + (tp2 - ideal_entry)
-                            tp3_adj = entry_price + (tp3 - ideal_entry)
-                            sl_adj = entry_price - (ideal_entry - analysis["sl"])
-                            
-                            position_id = bot.db.save_position(
-                                symbol=symbol,
-                                market_type=bot.mode,
-                                action=analysis["action"],
-                                entry_price=entry_price,
-                                tp1=tp1_adj,
-                                tp2=tp2_adj,
-                                tp3=tp3_adj,
-                                sl=sl_adj,
-                                entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
-                                entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
-                            )
-                            if position_id:
-                                st.success(f"Posisi {symbol} ditambahkan!")
-                                st.session_state.positions_data = bot.get_active_positions()
-                                st.session_state.selected_positions.append(symbol)
-                                if symbol in st.session_state.selected_for_entry:
-                                    del st.session_state.selected_for_entry[symbol]
-                                st.rerun()
-                            else:
-                                st.error("Gagal tambah posisi.")
+                            try:
+                                ideal_entry = analysis.get("ideal_entry", entry_price)
+                                
+                                # Urutkan TP levels sebelum simpan
+                                tp1, tp2, tp3 = analysis["tp1"], analysis["tp2"], analysis["tp3"]
+                                if analysis["action"] == "LONG":
+                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                                elif analysis["action"] == "SHORT":
+                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                                
+                                # Adjust TP levels berdasarkan entry price yang baru
+                                tp1_adj = entry_price + (tp1 - ideal_entry)
+                                tp2_adj = entry_price + (tp2 - ideal_entry)
+                                tp3_adj = entry_price + (tp3 - ideal_entry)
+                                sl_adj = entry_price - (ideal_entry - analysis["sl"])
+                                
+                                position_id = bot.db.save_position(
+                                    symbol=symbol,
+                                    market_type=bot.mode,
+                                    action=analysis["action"],
+                                    entry_price=entry_price,
+                                    tp1=tp1_adj,
+                                    tp2=tp2_adj,
+                                    tp3=tp3_adj,
+                                    sl=sl_adj,
+                                    entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
+                                    entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
+                                )
+                                if position_id:
+                                    st.success(f"Posisi {symbol} ditambahkan!")
+                                    st.session_state.positions_data = bot.get_active_positions()
+                                    st.session_state.selected_positions.append(symbol)
+                                    if symbol in st.session_state.selected_for_entry:
+                                        del st.session_state.selected_for_entry[symbol]
+                                    st.rerun()
+                                else:
+                                    st.error("Gagal tambah posisi.")
+                            except Exception as e:
+                                st.error(f"❌ Error adding position: {e}")
                     
                     with st.expander("🔍 Detail Analisis"):
                         if 'momentum_quality' in analysis:
@@ -545,21 +579,24 @@ def main():
             st.markdown("---")
             st.subheader("⚙️ Kelola Sinyal")
             if st.button("🧹 Hapus Semua Sinyal Tidak Terpilih", key="confirm_delete"):
-                non_selected = [
-                    r["symbol"] for r in st.session_state.scanned_results
-                    if r["symbol"] not in st.session_state.selected_positions and 
-                    r["symbol"] not in st.session_state.selected_for_entry
-                ]
-                for sym in non_selected:
-                    bot.db.delete_signal_by_symbol(sym, bot.mode)
+                try:
+                    non_selected = [
+                        r["symbol"] for r in st.session_state.scanned_results
+                        if r["symbol"] not in st.session_state.selected_positions and 
+                        r["symbol"] not in st.session_state.selected_for_entry
+                    ]
+                    for sym in non_selected:
+                        bot.db.delete_signal_by_symbol(sym, bot.mode)
 
-                st.success("Sinyal tidak terpilih dihapus!")
-                st.session_state.scanned_results = [
-                    r for r in st.session_state.scanned_results
-                    if r["symbol"] in st.session_state.selected_positions or
-                    r["symbol"] in st.session_state.selected_for_entry
-                ]
-                st.rerun()
+                    st.success("Sinyal tidak terpilih dihapus!")
+                    st.session_state.scanned_results = [
+                        r for r in st.session_state.scanned_results
+                        if r["symbol"] in st.session_state.selected_positions or
+                        r["symbol"] in st.session_state.selected_for_entry
+                    ]
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error deleting signals: {e}")
 
         else:
             st.info("Tidak ada hasil scan. Periksa koneksi, API key, atau coba mode lain.")
@@ -590,86 +627,92 @@ def main():
 
         if st.button("Analisis", key="analyze_asset"):
             with st.spinner("Menganalisis..."):
-                symbol = symbol_input.upper()
-                if bot.mode == "crypto":
-                    symbol = f"{symbol}/USDT"
-                elif bot.mode == "forex":
-                    if symbol == "XAU":
-                        symbol = "GC=F"
-                    elif len(symbol) == 6:
-                        symbol = f"{symbol}=X"
-                    else:
-                        st.error("Format symbol forex: 6 huruf seperti EURUSD atau XAU untuk gold.")
-                        st.stop()
-                elif bot.mode == "saham_id":
-                    symbol = f"{symbol}.JK"
-                
-                analysis = bot.analyze_asset(symbol)
-                if analysis and isinstance(analysis, dict) and 'symbol' in analysis:
-                    # Urutkan TP levels sebelum hitung probability
-                    tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
-                    if analysis['action'] == "LONG":
-                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                    elif analysis['action'] == "SHORT":
-                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                try:
+                    symbol = symbol_input.upper()
+                    if bot.mode == "crypto":
+                        symbol = f"{symbol}/USDT"
+                    elif bot.mode == "forex":
+                        if symbol == "XAU":
+                            symbol = "GC=F"
+                        elif len(symbol) == 6:
+                            symbol = f"{symbol}=X"
+                        else:
+                            st.error("Format symbol forex: 6 huruf seperti EURUSD atau XAU untuk gold.")
+                            st.stop()
+                    elif bot.mode == "saham_id":
+                        symbol = f"{symbol}.JK"
                     
-                    # Hitung probabilitas TP
-                    analysis['tp_probabilities'] = calculate_tp_probability(
-                        analysis.get('current_price', analysis.get('ideal_entry', 0)),
-                        tp1, tp2, tp3,
-                        analysis['sl'], analysis['action'],
-                        analysis.get('volatility', 0.02)
-                    )
-                    
-                    st.session_state.selected_analysis = analysis
-                    st.rerun()
-                else:
-                    ticker = bot.data_provider.get_ticker(symbol)
-                    if ticker and 'last' in ticker:
-                        current_price = ticker['last']
+                    analysis = bot.analyze_asset(symbol)
+                    if analysis and isinstance(analysis, dict) and 'symbol' in analysis:
+                        # Urutkan TP levels sebelum hitung probability
+                        tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
+                        if analysis['action'] == "LONG":
+                            tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                        elif analysis['action'] == "SHORT":
+                            tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                         
-                        # Urutkan TP levels untuk fallback
-                        tp1 = current_price * 1.03
-                        tp2 = current_price * 1.06
-                        tp3 = current_price * 1.09
-                        sl = current_price * 0.97
-                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                        
-                        analysis = {
-                            'symbol': symbol,
-                            'action': 'LONG',
-                            'score': 1,
-                            'ideal_entry': current_price,
-                            'entry_low': current_price * 0.99,
-                            'entry_high': current_price * 1.01,
-                            'tp1': tp1,
-                            'tp2': tp2,
-                            'tp3': tp3,
-                            'sl': sl,
-                            'current_price': current_price,
-                            'rsi': 50.0,
-                            'trend': 'NEUTRAL',
-                            'volume_ratio': 1.0,
-                            'atr': current_price * 0.01,
-                            'detected_patterns': [],
-                            'pattern_score': 0,
-                            'ema_trend': 'NEUTRAL',
-                            'ema_score': 0,
-                            'volatility': 0.02
-                        }
                         # Hitung probabilitas TP
                         analysis['tp_probabilities'] = calculate_tp_probability(
-                            current_price,
-                            analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                            analysis.get('current_price', analysis.get('ideal_entry', 0)),
+                            tp1, tp2, tp3,
                             analysis['sl'], analysis['action'],
-                            0.02
+                            analysis.get('volatility', 0.02)
                         )
+                        
                         st.session_state.selected_analysis = analysis
-                        st.warning("Menggunakan analisis fallback karena data historis tidak cukup.")
                         st.rerun()
                     else:
-                        st.session_state.selected_analysis = None
-                        st.error("Tidak dapat menganalisis aset. Pastikan simbol valid.")
+                        try:
+                            ticker = bot.data_provider.get_ticker(symbol)
+                            if ticker and 'last' in ticker:
+                                current_price = ticker['last']
+                                
+                                # Urutkan TP levels untuk fallback
+                                tp1 = current_price * 1.03
+                                tp2 = current_price * 1.06
+                                tp3 = current_price * 1.09
+                                sl = current_price * 0.97
+                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                                
+                                analysis = {
+                                    'symbol': symbol,
+                                    'action': 'LONG',
+                                    'score': 1,
+                                    'ideal_entry': current_price,
+                                    'entry_low': current_price * 0.99,
+                                    'entry_high': current_price * 1.01,
+                                    'tp1': tp1,
+                                    'tp2': tp2,
+                                    'tp3': tp3,
+                                    'sl': sl,
+                                    'current_price': current_price,
+                                    'rsi': 50.0,
+                                    'trend': 'NEUTRAL',
+                                    'volume_ratio': 1.0,
+                                    'atr': current_price * 0.01,
+                                    'detected_patterns': [],
+                                    'pattern_score': 0,
+                                    'ema_trend': 'NEUTRAL',
+                                    'ema_score': 0,
+                                    'volatility': 0.02
+                                }
+                                # Hitung probabilitas TP
+                                analysis['tp_probabilities'] = calculate_tp_probability(
+                                    current_price,
+                                    analysis['tp1'], analysis['tp2'], analysis['tp3'],
+                                    analysis['sl'], analysis['action'],
+                                    0.02
+                                )
+                                st.session_state.selected_analysis = analysis
+                                st.warning("Menggunakan analisis fallback karena data historis tidak cukup.")
+                                st.rerun()
+                            else:
+                                st.session_state.selected_analysis = None
+                                st.error("Tidak dapat menganalisis aset. Pastikan simbol valid.")
+                        except Exception as e:
+                            st.error(f"❌ Error analyzing asset: {e}")
+                except Exception as e:
+                    st.error(f"❌ Error during analysis: {e}")
 
         # Tampilkan hasil analisis
         if st.session_state.selected_analysis:
@@ -745,27 +788,30 @@ def main():
                 )
                 
                 if st.button(f"✅ Tambah Posisi {analysis.get('symbol', 'Aset')}", key="add_analysis"):
-                    ideal_entry = analysis.get("ideal_entry", entry_price)
-                    
-                    # Gunakan TP yang sudah diurutkan
-                    position_id = bot.db.save_position(
-                        symbol=analysis['symbol'],
-                        market_type=bot.mode,
-                        action=analysis.get("action", "LONG"),
-                        entry_price=entry_price,
-                        tp1=entry_price + (tp1 - ideal_entry),
-                        tp2=entry_price + (tp2 - ideal_entry),
-                        tp3=entry_price + (tp3 - ideal_entry),
-                        sl=entry_price - (ideal_entry - analysis.get("sl", 0)),
-                        entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
-                        entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
-                    )
-                    if position_id:
-                        st.success(f"Posisi {analysis['symbol']} ditambahkan!")
-                        st.session_state.positions_data = bot.get_active_positions()
-                        st.rerun()
-                    else:
-                        st.error("Gagal tambah posisi.")
+                    try:
+                        ideal_entry = analysis.get("ideal_entry", entry_price)
+                        
+                        # Gunakan TP yang sudah diurutkan
+                        position_id = bot.db.save_position(
+                            symbol=analysis['symbol'],
+                            market_type=bot.mode,
+                            action=analysis.get("action", "LONG"),
+                            entry_price=entry_price,
+                            tp1=entry_price + (tp1 - ideal_entry),
+                            tp2=entry_price + (tp2 - ideal_entry),
+                            tp3=entry_price + (tp3 - ideal_entry),
+                            sl=entry_price - (ideal_entry - analysis.get("sl", 0)),
+                            entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
+                            entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
+                        )
+                        if position_id:
+                            st.success(f"Posisi {analysis['symbol']} ditambahkan!")
+                            st.session_state.positions_data = bot.get_active_positions()
+                            st.rerun()
+                        else:
+                            st.error("Gagal tambah posisi.")
+                    except Exception as e:
+                        st.error(f"❌ Error adding position: {e}")
             else:
                 st.error("Data analisis tidak valid. Coba analisis ulang.")
 
@@ -782,42 +828,45 @@ def main():
         if st.button("🧮 Hitung TP/SL", key="calculate_custom"):
             if symbol_custom and entry_price_custom > 0:
                 with st.spinner("Menghitung..."):
-                    result = bot.calculate_custom_entry(symbol_custom, entry_price_custom)
-                    if result:
-                        # Pastikan TP/SL berbeda dari entry price
-                        if (result['tp1'] == result['tp2'] == result['tp3'] == result['sl'] == entry_price_custom):
-                            st.warning("⚠️ Perhitungan ATR menghasilkan nilai 0. Menggunakan fallback calculation...")
-                            # Fallback calculation
+                    try:
+                        result = bot.calculate_custom_entry(symbol_custom, entry_price_custom)
+                        if result:
+                            # Pastikan TP/SL berbeda dari entry price
+                            if (result['tp1'] == result['tp2'] == result['tp3'] == result['sl'] == entry_price_custom):
+                                st.warning("⚠️ Perhitungan ATR menghasilkan nilai 0. Menggunakan fallback calculation...")
+                                # Fallback calculation
+                                if action_custom == "LONG":
+                                    result['tp1'] = entry_price_custom * 1.02
+                                    result['tp2'] = entry_price_custom * 1.04
+                                    result['tp3'] = entry_price_custom * 1.06
+                                    result['sl'] = entry_price_custom * 0.98
+                                else:  # SHORT
+                                    result['tp1'] = entry_price_custom * 0.98
+                                    result['tp2'] = entry_price_custom * 0.96
+                                    result['tp3'] = entry_price_custom * 0.94
+                                    result['sl'] = entry_price_custom * 1.02
+                            
+                            # Urutkan TP levels
+                            tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
                             if action_custom == "LONG":
-                                result['tp1'] = entry_price_custom * 1.02
-                                result['tp2'] = entry_price_custom * 1.04
-                                result['tp3'] = entry_price_custom * 1.06
-                                result['sl'] = entry_price_custom * 0.98
+                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
                             else:  # SHORT
-                                result['tp1'] = entry_price_custom * 0.98
-                                result['tp2'] = entry_price_custom * 0.96
-                                result['tp3'] = entry_price_custom * 0.94
-                                result['sl'] = entry_price_custom * 1.02
-                        
-                        # Urutkan TP levels
-                        tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
-                        if action_custom == "LONG":
-                            tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                        else:  # SHORT
-                            tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
-                        
-                        result['tp1'], result['tp2'], result['tp3'] = tp1, tp2, tp3
-                        
-                        # Hitung probabilitas TP
-                        result['tp_probabilities'] = calculate_tp_probability(
-                            entry_price_custom,
-                            result['tp1'], result['tp2'], result['tp3'],
-                            result['sl'], action_custom
-                        )
-                        st.session_state.custom_result = result
-                        st.success("Perhitungan selesai!")
-                    else:
-                        st.error("Tidak dapat menghitung TP/SL. Pastikan simbol valid.")
+                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                            
+                            result['tp1'], result['tp2'], result['tp3'] = tp1, tp2, tp3
+                            
+                            # Hitung probabilitas TP
+                            result['tp_probabilities'] = calculate_tp_probability(
+                                entry_price_custom,
+                                result['tp1'], result['tp2'], result['tp3'],
+                                result['sl'], action_custom
+                            )
+                            st.session_state.custom_result = result
+                            st.success("Perhitungan selesai!")
+                        else:
+                            st.error("Tidak dapat menghitung TP/SL. Pastikan simbol valid.")
+                    except Exception as e:
+                        st.error(f"❌ Error calculating TP/SL: {e}")
             else:
                 st.warning("Masukkan simbol dan harga entry yang valid.")
         
@@ -857,31 +906,34 @@ def main():
             
             # Tombol untuk menambahkan ke posisi
             if st.button("✅ Tambahkan ke Posisi Aktif", key="add_custom"):
-                # Urutkan TP levels berdasarkan action
-                tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
-                if action_custom == "LONG":
-                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                else:  # SHORT
-                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
-                    
-                position_id = bot.db.save_position(
-                    symbol=result['symbol'],
-                    market_type=bot.mode,
-                    action=action_custom,
-                    entry_price=result['entry_price'],
-                    tp1=tp1,
-                    tp2=tp2,
-                    tp3=tp3,
-                    sl=result['sl'],
-                    entry_low=result['entry_price'] * 0.99,
-                    entry_high=result['entry_price'] * 1.01,
-                )
-                if position_id:
-                    st.success(f"Posisi {result['symbol']} ditambahkan!")
-                    st.session_state.positions_data = bot.get_active_positions()
-                    st.rerun()
-                else:
-                    st.error("Gagal tambah posisi.")
+                try:
+                    # Urutkan TP levels berdasarkan action
+                    tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
+                    if action_custom == "LONG":
+                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                    else:  # SHORT
+                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                        
+                    position_id = bot.db.save_position(
+                        symbol=result['symbol'],
+                        market_type=bot.mode,
+                        action=action_custom,
+                        entry_price=result['entry_price'],
+                        tp1=tp1,
+                        tp2=tp2,
+                        tp3=tp3,
+                        sl=result['sl'],
+                        entry_low=result['entry_price'] * 0.99,
+                        entry_high=result['entry_price'] * 1.01,
+                    )
+                    if position_id:
+                        st.success(f"Posisi {result['symbol']} ditambahkan!")
+                        st.session_state.positions_data = bot.get_active_positions()
+                        st.rerun()
+                    else:
+                        st.error("Gagal tambah posisi.")
+                except Exception as e:
+                    st.error(f"❌ Error adding position: {e}")
 
     # ===============================
     # Tab 4: Posisi Aktif
@@ -890,9 +942,12 @@ def main():
         st.subheader("💼 Posisi Aktif")
         
         if st.button("🔄 Refresh Posisi", key="refresh_positions"):
-            st.session_state.positions_data = bot.get_active_positions()
-            st.success("Posisi diperbarui!")
-            st.rerun()
+            try:
+                st.session_state.positions_data = bot.get_active_positions()
+                st.success("Posisi diperbarui!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error refreshing positions: {e}")
         
         if not st.session_state.positions_data:
             st.info("📭 Tidak ada posisi aktif.")
@@ -900,85 +955,94 @@ def main():
             st.write(f"**📈 Total Posisi Aktif:** {len(st.session_state.positions_data)}")
             
             for pos in st.session_state.positions_data:
-                pos_id = pos[0]        # id
-                symbol = pos[1]        # symbol
-                market_type = pos[2]   # market_type
-                action = pos[3]        # action
-                entry_price = pos[4]   # entry_price
-                tp1 = pos[7] if len(pos) > 7 else 0  # tp1
-                tp2 = pos[8] if len(pos) > 8 else 0  # tp2  
-                tp3 = pos[9] if len(pos) > 9 else 0  # tp3
-                sl = pos[10] if len(pos) > 10 else 0 # sl
-                current_price = pos[11] if len(pos) > 11 else entry_price  # current_price
-                
-                # Validasi dan urutkan TP levels
-                if action == "LONG":
-                    # Untuk LONG: TP1 < TP2 < TP3, SL < Entry
-                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                    if not (sl < entry_price < tp1 < tp2 < tp3):
-                        st.error(f"⚠️ INVALID LEVELS untuk {symbol}: Pastikan SL < Entry < TP1 < TP2 < TP3")
-                        continue
-                elif action == "SHORT":
-                    # Untuk SHORT: TP1 > TP2 > TP3, SL > Entry  
-                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
-                    if not (sl > entry_price > tp1 > tp2 > tp3):
-                        st.error(f"⚠️ INVALID LEVELS untuk {symbol}: Pastikan SL > Entry > TP1 > TP2 > TP3")
-                        continue
-                
-                # Calculate P/L
-                if action == "LONG":
-                    pl_pct = ((current_price - entry_price) / entry_price) * 100
-                    pl_color = "green" if pl_pct >= 0 else "red"
-                else:
-                    pl_pct = ((entry_price - current_price) / entry_price) * 100
-                    pl_color = "green" if pl_pct >= 0 else "red"
-                
-                # Hitung probabilitas TP untuk posisi aktif
-                tp_probabilities = calculate_tp_probability(
-                    current_price, tp1, tp2, tp3, sl, action
-                )
-                
-                st.markdown("---")
-                col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
-                
-                with col1:
+                try:
+                    pos_id = pos[0]        # id
+                    symbol = pos[1]        # symbol
+                    market_type = pos[2]   # market_type
+                    action = pos[3]        # action
+                    entry_price = pos[4]   # entry_price
+                    tp1 = pos[7] if len(pos) > 7 else 0  # tp1
+                    tp2 = pos[8] if len(pos) > 8 else 0  # tp2  
+                    tp3 = pos[9] if len(pos) > 9 else 0  # tp3
+                    sl = pos[10] if len(pos) > 10 else 0 # sl
+                    current_price = pos[11] if len(pos) > 11 else entry_price  # current_price
+                    
+                    # Validasi dan urutkan TP levels
                     if action == "LONG":
-                        st.write(f"**{symbol}** ({market_type}) - 🟢 {action}")
+                        # Untuk LONG: TP1 < TP2 < TP3, SL < Entry
+                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                        if not (sl < entry_price < tp1 < tp2 < tp3):
+                            st.error(f"⚠️ INVALID LEVELS untuk {symbol}: Pastikan SL < Entry < TP1 < TP2 < TP3")
+                            continue
+                    elif action == "SHORT":
+                        # Untuk SHORT: TP1 > TP2 > TP3, SL > Entry  
+                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                        if not (sl > entry_price > tp1 > tp2 > tp3):
+                            st.error(f"⚠️ INVALID LEVELS untuk {symbol}: Pastikan SL > Entry > TP1 > TP2 > TP3")
+                            continue
+                    
+                    # Calculate P/L
+                    if action == "LONG":
+                        pl_pct = ((current_price - entry_price) / entry_price) * 100
+                        pl_color = "green" if pl_pct >= 0 else "red"
                     else:
-                        st.write(f"**{symbol}** ({market_type}) - 🔴 {action}")
-                    st.write(f"📥 Entry: `{entry_price:.5f}` | 📊 Current: `{current_price:.5f}`")
-                    st.write(f"💰 P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
-                
-                with col2:
-                    # Display TP levels dengan probabilitas
-                    st.write(f"🎯 TP1: `{tp1:.5f}` ({tp_probabilities.get('tp1', 0)*100:.1f}%)")
-                    st.write(f"🎯 TP2: `{tp2:.5f}` ({tp_probabilities.get('tp2', 0)*100:.1f}%)")
-                    st.write(f"🎯 TP3: `{tp3:.5f}` ({tp_probabilities.get('tp3', 0)*100:.1f}%)")
-                    st.write(f"🛑 SL: `{sl:.5f}`")
-                
-                with col3:
-                    if st.button("🔄", key=f"update_{symbol}"):
-                        ticker = bot.data_provider.get_ticker(symbol)
-                        if ticker and 'last' in ticker:
-                            bot.db.update_position_current_price(symbol, ticker['last'])
-                            st.success(f"Harga {symbol} diperbarui!")
-                            st.session_state.positions_data = bot.get_active_positions()
-                            st.rerun()
-                
-                with col4:
-                    exit_price = st.number_input(
-                        "Exit Price",
-                        value=float(current_price),
-                        step=0.0001,
-                        key=f"exit_{symbol}"
+                        pl_pct = ((entry_price - current_price) / entry_price) * 100
+                        pl_color = "green" if pl_pct >= 0 else "red"
+                    
+                    # Hitung probabilitas TP untuk posisi aktif
+                    tp_probabilities = calculate_tp_probability(
+                        current_price, tp1, tp2, tp3, sl, action
                     )
-                    if st.button("🔒 Tutup", key=f"close_{symbol}"):
-                        if bot.close_position(pos_id, exit_price):
-                            st.success(f"Posisi {symbol} ditutup!")
-                            st.session_state.positions_data = bot.get_active_positions()
-                            st.rerun()
+                    
+                    st.markdown("---")
+                    col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
+                    
+                    with col1:
+                        if action == "LONG":
+                            st.write(f"**{symbol}** ({market_type}) - 🟢 {action}")
                         else:
-                            st.error("Gagal menutup posisi.")
+                            st.write(f"**{symbol}** ({market_type}) - 🔴 {action}")
+                        st.write(f"📥 Entry: `{entry_price:.5f}` | 📊 Current: `{current_price:.5f}`")
+                        st.write(f"💰 P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
+                    
+                    with col2:
+                        # Display TP levels dengan probabilitas
+                        st.write(f"🎯 TP1: `{tp1:.5f}` ({tp_probabilities.get('tp1', 0)*100:.1f}%)")
+                        st.write(f"🎯 TP2: `{tp2:.5f}` ({tp_probabilities.get('tp2', 0)*100:.1f}%)")
+                        st.write(f"🎯 TP3: `{tp3:.5f}` ({tp_probabilities.get('tp3', 0)*100:.1f}%)")
+                        st.write(f"🛑 SL: `{sl:.5f}`")
+                    
+                    with col3:
+                        if st.button("🔄", key=f"update_{symbol}"):
+                            try:
+                                ticker = bot.data_provider.get_ticker(symbol)
+                                if ticker and 'last' in ticker:
+                                    bot.db.update_position_current_price(symbol, ticker['last'])
+                                    st.success(f"Harga {symbol} diperbarui!")
+                                    st.session_state.positions_data = bot.get_active_positions()
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error updating price: {e}")
+                    
+                    with col4:
+                        exit_price = st.number_input(
+                            "Exit Price",
+                            value=float(current_price),
+                            step=0.0001,
+                            key=f"exit_{symbol}"
+                        )
+                        if st.button("🔒 Tutup", key=f"close_{symbol}"):
+                            try:
+                                if bot.close_position(pos_id, exit_price):
+                                    st.success(f"Posisi {symbol} ditutup!")
+                                    st.session_state.positions_data = bot.get_active_positions()
+                                    st.rerun()
+                                else:
+                                    st.error("Gagal menutup posisi.")
+                            except Exception as e:
+                                st.error(f"❌ Error closing position: {e}")
+                except Exception as e:
+                    st.error(f"❌ Error processing position: {e}")
 
     # ===============================
     # Tab 5: History
@@ -987,9 +1051,12 @@ def main():
         st.subheader("📋 History Trading")
         
         if st.button("🔄 Refresh History", key="refresh_history"):
-            st.session_state.history_data = bot.get_trade_history(20)
-            st.success("History diperbarui!")
-            st.rerun()
+            try:
+                st.session_state.history_data = bot.get_trade_history(20)
+                st.success("History diperbarui!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error refreshing history: {e}")
         
         if not st.session_state.history_data:
             st.info("📭 Tidak ada history trading.")
@@ -997,24 +1064,27 @@ def main():
             st.write(f"**📊 Total Trade:** {len(st.session_state.history_data)}")
             
             for trade in st.session_state.history_data:
-                trade_id = trade[0]      # id
-                symbol = trade[1]        # symbol
-                market_type = trade[2]   # market_type
-                action = trade[3]        # action
-                entry_price = trade[4]   # entry_price
-                exit_price = trade[5]    # exit_price
-                profit_loss = trade[6]   # profit_loss
-                trade_type = trade[7]    # trade_type
-                timestamp = trade[8]     # timestamp
-                
-                color = "green" if profit_loss > 0 else "red"
-                emoji = "✅" if profit_loss > 0 else "❌"
-                
-                st.markdown("---")
-                st.write(f"{emoji} **{symbol}** ({market_type}) - {action} - {trade_type}")
-                st.write(f"📥 Entry: `{entry_price:.5f}` | 📤 Exit: `{exit_price:.5f}`")
-                st.write(f"💰 P/L: <span style='color:{color}'>{profit_loss:.5f}</span>", unsafe_allow_html=True)
-                st.write(f"⏰ Waktu: {timestamp}")
+                try:
+                    trade_id = trade[0]      # id
+                    symbol = trade[1]        # symbol
+                    market_type = trade[2]   # market_type
+                    action = trade[3]        # action
+                    entry_price = trade[4]   # entry_price
+                    exit_price = trade[5]    # exit_price
+                    profit_loss = trade[6]   # profit_loss
+                    trade_type = trade[7]    # trade_type
+                    timestamp = trade[8]     # timestamp
+                    
+                    color = "green" if profit_loss > 0 else "red"
+                    emoji = "✅" if profit_loss > 0 else "❌"
+                    
+                    st.markdown("---")
+                    st.write(f"{emoji} **{symbol}** ({market_type}) - {action} - {trade_type}")
+                    st.write(f"📥 Entry: `{entry_price:.5f}` | 📤 Exit: `{exit_price:.5f}`")
+                    st.write(f"💰 P/L: <span style='color:{color}'>{profit_loss:.5f}</span>", unsafe_allow_html=True)
+                    st.write(f"⏰ Waktu: {timestamp}")
+                except Exception as e:
+                    st.error(f"❌ Error processing trade: {e}")
 
     # ===============================
     # Tab 6: Live Scanner
@@ -1032,24 +1102,27 @@ def main():
             if st.session_state.positions_data:
                 st.subheader("📊 Posisi Aktif - Live")
                 for pos in st.session_state.positions_data:
-                    symbol = pos[1]
-                    entry_price = pos[4]
-                    current_price = pos[11] if len(pos) > 11 else entry_price
-                    
-                    ticker = bot.data_provider.get_ticker(symbol)
-                    if ticker and 'last' in ticker:
-                        latest_price = ticker['last']
-                        price_change = ((latest_price - current_price) / current_price) * 100
-                        total_change = ((latest_price - entry_price) / entry_price) * 100
+                    try:
+                        symbol = pos[1]
+                        entry_price = pos[4]
+                        current_price = pos[11] if len(pos) > 11 else entry_price
                         
-                        color = "green" if price_change >= 0 else "red"
-                        total_color = "green" if total_change >= 0 else "red"
-                        
-                        st.write(f"**{symbol}**")
-                        st.write(f"📊 Current: `{current_price:.5f}` → Live: `{latest_price:.5f}`")
-                        st.write(f"📈 Change: <span style='color:{color}'>{price_change:+.2f}%</span>", unsafe_allow_html=True)
-                        st.write(f"💰 Total P/L: <span style='color:{total_color}'>{total_change:+.2f}%</span>", unsafe_allow_html=True)
-                        st.markdown("---")
+                        ticker = bot.data_provider.get_ticker(symbol)
+                        if ticker and 'last' in ticker:
+                            latest_price = ticker['last']
+                            price_change = ((latest_price - current_price) / current_price) * 100
+                            total_change = ((latest_price - entry_price) / entry_price) * 100
+                            
+                            color = "green" if price_change >= 0 else "red"
+                            total_color = "green" if total_change >= 0 else "red"
+                            
+                            st.write(f"**{symbol}**")
+                            st.write(f"📊 Current: `{current_price:.5f}` → Live: `{latest_price:.5f}`")
+                            st.write(f"📈 Change: <span style='color:{color}'>{price_change:+.2f}%</span>", unsafe_allow_html=True)
+                            st.write(f"💰 Total P/L: <span style='color:{total_color}'>{total_change:+.2f}%</span>", unsafe_allow_html=True)
+                            st.markdown("---")
+                    except Exception as e:
+                        st.error(f"❌ Error updating live data for {symbol}: {e}")
             
             st_auto_refresh = st.checkbox("🔄 Auto Refresh (30s)")
             if st_auto_refresh:
@@ -1079,54 +1152,63 @@ def main():
             if st.button("🚀 Run Backtest", key="run_backtest"):
                 if backtest_symbol:
                     with st.spinner("Running comprehensive backtest..."):
-                        symbol = backtest_symbol.upper()
-                        if bot.mode == "crypto":
-                            symbol = f"{symbol}/USDT"
-                        elif bot.mode == "forex":
-                            if symbol == "XAU":
-                                symbol = "GC=F"
-                            elif len(symbol) == 6:
-                                symbol = f"{symbol}=X"
-                        elif bot.mode == "saham_id":
-                            symbol = f"{symbol}.JK"
-                        
-                        if hasattr(bot, 'run_comprehensive_backtest'):
-                            results = bot.run_comprehensive_backtest(symbol, backtest_days)
-                        else:
-                            results = {"error": "Backtest feature not available"}
-                        st.session_state.backtest_results = results
-                        st.rerun()
+                        try:
+                            symbol = backtest_symbol.upper()
+                            if bot.mode == "crypto":
+                                symbol = f"{symbol}/USDT"
+                            elif bot.mode == "forex":
+                                if symbol == "XAU":
+                                    symbol = "GC=F"
+                                elif len(symbol) == 6:
+                                    symbol = f"{symbol}=X"
+                            elif bot.mode == "saham_id":
+                                symbol = f"{symbol}.JK"
+                            
+                            if hasattr(bot, 'run_comprehensive_backtest'):
+                                results = bot.run_comprehensive_backtest(symbol, backtest_days)
+                            else:
+                                results = {"error": "Backtest feature not available"}
+                            st.session_state.backtest_results = results
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error running backtest: {e}")
         
         with col2:
             if st.button("📊 Enhanced Analysis", key="enhanced_analysis"):
                 if backtest_symbol:
                     with st.spinner("Running enhanced analysis..."):
-                        symbol = backtest_symbol.upper()
-                        if bot.mode == "crypto":
-                            symbol = f"{symbol}/USDT"
-                        
-                        if hasattr(bot, 'analyze_with_ml'):
-                            analysis = bot.analyze_with_ml(symbol)
-                        else:
-                            analysis = bot.analyze_asset(symbol)
-                        if analysis:
-                            st.session_state.selected_analysis = analysis
-                            st.success("Enhanced analysis completed!")
-                        else:
-                            st.error("Enhanced analysis failed!")
+                        try:
+                            symbol = backtest_symbol.upper()
+                            if bot.mode == "crypto":
+                                symbol = f"{symbol}/USDT"
+                            
+                            if hasattr(bot, 'analyze_with_ml'):
+                                analysis = bot.analyze_with_ml(symbol)
+                            else:
+                                analysis = bot.analyze_asset(symbol)
+                            if analysis:
+                                st.session_state.selected_analysis = analysis
+                                st.success("Enhanced analysis completed!")
+                            else:
+                                st.error("Enhanced analysis failed!")
+                        except Exception as e:
+                            st.error(f"❌ Error in enhanced analysis: {e}")
         
         with col3:
             if st.button("📈 Risk Assessment", key="risk_assess"):
                 if backtest_symbol:
-                    if hasattr(bot, 'get_risk_assessment'):
-                        risk_assessment = bot.get_risk_assessment(backtest_symbol)
-                    else:
-                        risk_assessment = None
-                    if risk_assessment:
-                        st.session_state.risk_assessments[backtest_symbol] = risk_assessment
-                        st.success("Risk assessment completed!")
-                    else:
-                        st.error("Risk assessment failed!")
+                    try:
+                        if hasattr(bot, 'get_risk_assessment'):
+                            risk_assessment = bot.get_risk_assessment(backtest_symbol)
+                        else:
+                            risk_assessment = None
+                        if risk_assessment:
+                            st.session_state.risk_assessments[backtest_symbol] = risk_assessment
+                            st.success("Risk assessment completed!")
+                        else:
+                            st.error("Risk assessment failed!")
+                    except Exception as e:
+                        st.error(f"❌ Error in risk assessment: {e}")
 
         if st.session_state.backtest_results and 'error' not in st.session_state.backtest_results:
             results = st.session_state.backtest_results
@@ -1211,35 +1293,38 @@ def main():
         with col2:
             if st.button("🔄 Optimize Portfolio", key="optimize_portfolio"):
                 if st.session_state.scanned_results:
-                    if hasattr(bot, 'optimize_portfolio_allocation'):
-                        allocations = bot.optimize_portfolio_allocation(
-                            st.session_state.scanned_results, 
-                            portfolio_capital
-                        )
-                    else:
-                        signals = st.session_state.scanned_results[:5]  # Take top 5
-                        total_signals = len(signals)
-                        if total_signals > 0:
-                            base_allocation = 1.0 / total_signals
-                            allocations = {
-                                'signals': [
-                                    {
-                                        'symbol': s['symbol'],
-                                        'score': s.get('score', 1),
-                                        'risk_category': s.get('risk_category', 'MEDIUM'),
-                                        'allocation_percent': base_allocation,
-                                        'allocated_capital': portfolio_capital * base_allocation
-                                    }
-                                    for s in signals
-                                ],
-                                'total_allocated_percent': 1.0,
-                                'total_allocated_capital': portfolio_capital,
-                                'remaining_capital': 0
-                            }
+                    try:
+                        if hasattr(bot, 'optimize_portfolio_allocation'):
+                            allocations = bot.optimize_portfolio_allocation(
+                                st.session_state.scanned_results, 
+                                portfolio_capital
+                            )
                         else:
-                            allocations = {}
-                    st.session_state.portfolio_allocations = allocations
-                    st.rerun()
+                            signals = st.session_state.scanned_results[:5]  # Take top 5
+                            total_signals = len(signals)
+                            if total_signals > 0:
+                                base_allocation = 1.0 / total_signals
+                                allocations = {
+                                    'signals': [
+                                        {
+                                            'symbol': s['symbol'],
+                                            'score': s.get('score', 1),
+                                            'risk_category': s.get('risk_category', 'MEDIUM'),
+                                            'allocation_percent': base_allocation,
+                                            'allocated_capital': portfolio_capital * base_allocation
+                                        }
+                                        for s in signals
+                                    ],
+                                    'total_allocated_percent': 1.0,
+                                    'total_allocated_capital': portfolio_capital,
+                                    'remaining_capital': 0
+                                }
+                            else:
+                                allocations = {}
+                        st.session_state.portfolio_allocations = allocations
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error optimizing portfolio: {e}")
         
         # Display Portfolio Allocations
         if st.session_state.portfolio_allocations:
