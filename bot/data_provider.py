@@ -33,6 +33,24 @@ class DataQualityMetrics:
     validity: float
     overall_score: float
 
+# Define DataProvider abstract class FIRST
+class DataProvider(ABC):
+    @abstractmethod
+    def get_ohlcv(self, symbol, timeframe, limit):
+        pass
+        
+    @abstractmethod
+    def get_ticker(self, symbol):
+        pass
+        
+    @abstractmethod
+    def get_popular_assets(self, limit):
+        pass
+    
+    # Optional: Add health metrics method
+    def get_health_metrics(self) -> Dict:
+        return {}
+
 class CircuitBreaker:
     """Circuit breaker pattern for API rate limiting"""
     
@@ -283,10 +301,11 @@ class DataValidator:
             overall_score=overall_score
         )
 
-class EnhancedDataProvider(ABC):
+class EnhancedDataProvider(DataProvider, ABC):
     """Enhanced base data provider with common improvements"""
     
     def __init__(self):
+        super().__init__()
         self.circuit_breaker = CircuitBreaker()
         self.retry_mechanism = RetryMechanism()
         self.data_cache = DataCache(ttl_seconds=300)  # 5 minutes cache
@@ -334,11 +353,15 @@ class EnhancedDataProvider(ABC):
             'circuit_breaker_state': self.circuit_breaker.state,
             'cache_size': len(self.data_cache._cache)
         }
+    
+    def get_popular_assets(self, limit):
+        """Default implementation - can be overridden by subclasses"""
+        logger.warning("get_popular_assets not implemented for this provider")
+        return []
 
-class AlphaVantageProvider(EnhancedDataProvider, DataProvider):
+class AlphaVantageProvider(EnhancedDataProvider):
     def __init__(self, api_key=None):
-        EnhancedDataProvider.__init__(self)
-        DataProvider.__init__(self)
+        super().__init__()
         self.api_key = api_key or os.getenv('ALPHA_VANTAGE_KEY')
         if not self.api_key:
             logger.warning("Alpha Vantage API key not found.")
@@ -346,7 +369,6 @@ class AlphaVantageProvider(EnhancedDataProvider, DataProvider):
         self.base_url = "https://www.alphavantage.co/query"
 
     def _convert_symbol(self, symbol, market_type='crypto'):
-        # ... (existing implementation remains the same)
         if '/' in symbol:
             base, quote = symbol.split('/')
         elif '=X' in symbol:
@@ -360,7 +382,7 @@ class AlphaVantageProvider(EnhancedDataProvider, DataProvider):
             return f"{base[:3]}/{base[3:]}"
         return base
 
-    def get_ohlcv(self, symbol, timeframe, limit=200):
+    def get_ohlcv(self, symbol, timeframe='1d', limit=200):
         """Enhanced OHLCV with caching and validation"""
         # Check cache first
         cached_data = self._get_cached_data(symbol, timeframe, limit)
@@ -374,45 +396,79 @@ class AlphaVantageProvider(EnhancedDataProvider, DataProvider):
         def fetch_data():
             try:
                 symbol_av = self._convert_symbol(symbol)
+                market_type = 'crypto' if 'crypto' in symbol.lower() else 'forex'
+                
                 if '/' in symbol_av:
                     function = "FX_DAILY"
                 else:
-                    function = "DIGITAL_CURRENCY_DAILY" if 'crypto' in market_type else "TIME_SERIES_DAILY"
+                    function = "DIGITAL_CURRENCY_DAILY" if market_type == 'crypto' else "TIME_SERIES_DAILY"
                 
                 params = {
                     "function": function,
                     "symbol": symbol_av,
-                    "market": "USD" if function == "DIGITAL_CURRENCY_DAILY" else None,
                     "apikey": self.api_key,
                     "outputsize": "full" if limit > 100 else "compact"
                 }
                 
-                if function.startswith("FX_"):
+                if function == "FX_DAILY":
                     params["from_symbol"], params["to_symbol"] = symbol_av.split('/')
+                elif function == "DIGITAL_CURRENCY_DAILY":
+                    params["market"] = "USD"
                 
                 response = requests.get(self.base_url, params=params, timeout=10)
                 response.raise_for_status()
                 data = response.json()
                 
-                time_series_key = next((k for k in data if "Time Series" in k), None)
+                time_series_key = next((k for k in data.keys() if "Time Series" in k), None)
                 if time_series_key:
                     ohlcv_data = data[time_series_key]
                     df = pd.DataFrame.from_dict(ohlcv_data, orient='index')
-                    df = df.astype(float)
+                    
+                    # Convert string values to float
+                    for col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    
                     df['timestamp'] = pd.to_datetime(df.index)
-                    df = df[['timestamp', '1. open', '2. high', '3. low', '4. close', '5. volume' if '5. volume' in df else '4. close']]
-                    if '5. volume' not in df.columns:
-                        df['volume'] = 0
-                    df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-                    df_sorted = df.sort_index().tail(limit)
+                    
+                    # Rename columns appropriately
+                    column_mapping = {
+                        '1. open': 'open',
+                        '2. high': 'high', 
+                        '3. low': 'low',
+                        '4. close': 'close',
+                        '5. volume': 'volume'
+                    }
+                    
+                    # Find the actual column names in the dataframe
+                    actual_columns = {}
+                    for expected_col in column_mapping.keys():
+                        for actual_col in df.columns:
+                            if expected_col in actual_col:
+                                actual_columns[expected_col] = actual_col
+                                break
+                    
+                    # Create new dataframe with standardized column names
+                    result_df = pd.DataFrame()
+                    result_df['timestamp'] = df['timestamp']
+                    
+                    for expected_col, standardized_name in column_mapping.items():
+                        if expected_col in actual_columns:
+                            result_df[standardized_name] = df[actual_columns[expected_col]]
+                    
+                    # If volume column is missing, add it with zeros
+                    if 'volume' not in result_df.columns:
+                        result_df['volume'] = 0
+                    
+                    # Sort and limit
+                    result_df = result_df.sort_values('timestamp').tail(limit)
                     
                     # Validate and clean data
-                    is_valid, issues = self.validator.validate_ohlcv_data(df_sorted)
+                    is_valid, issues = self.validator.validate_ohlcv_data(result_df)
                     if not is_valid:
                         logger.warning(f"Data validation issues for {symbol}: {issues}")
-                        df_sorted = self.validator.clean_ohlcv_data(df_sorted)
+                        result_df = self.validator.clean_ohlcv_data(result_df)
                     
-                    return df_sorted
+                    return result_df
                 return None
                 
             except Exception as e:
@@ -461,38 +517,52 @@ class AlphaVantageProvider(EnhancedDataProvider, DataProvider):
 
         return self._safe_api_call(fetch_ticker)
 
-    # ... rest of AlphaVantage methods remain similar but with enhanced error handling
-
-class EnhancedCCXTDataProvider(EnhancedDataProvider, DataProvider):
+class EnhancedCCXTDataProvider(EnhancedDataProvider):
     """Enhanced CCXT provider with better error handling and fallbacks"""
     
     def __init__(self, exchange_id='kucoin', api_key='', secret=''):
-        EnhancedDataProvider.__init__(self)
-        DataProvider.__init__(self)
+        super().__init__()
         
         self.exchange_id = exchange_id
-        exchange_class = getattr(ccxt, exchange_id)
+        exchange_class = getattr(ccxt, exchange_id, None)
         
-        try:
-            self.exchange = exchange_class({
-                'apiKey': api_key,
-                'secret': secret,
-                'enableRateLimit': True,
-                'timeout': 30000,
-            })
-            
-            # Test connection
-            self.exchange.load_markets()
-            logger.info(f"Successfully connected to {exchange_id}")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize {exchange_id}: {str(e)}")
+        if exchange_class is None:
+            logger.error(f"Exchange {exchange_id} not found in CCXT")
             self.exchange = None
+        else:
+            try:
+                self.exchange = exchange_class({
+                    'apiKey': api_key,
+                    'secret': secret,
+                    'enableRateLimit': True,
+                    'timeout': 30000,
+                })
+                
+                # Test connection
+                self.exchange.load_markets()
+                logger.info(f"Successfully connected to {exchange_id}")
+                
+            except Exception as e:
+                logger.error(f"Failed to initialize {exchange_id}: {str(e)}")
+                self.exchange = None
         
         self.fallback_yf = YFinanceDataProvider(market_type='crypto')
         self.fallback_av = AlphaVantageProvider()
 
-    def get_ohlcv(self, symbol, timeframe, limit=200):
+    def _convert_symbol(self, symbol, target='yf'):
+        """Convert symbol format for different providers"""
+        if target == 'yf':
+            if '/' in symbol:
+                base, quote = symbol.split('/')
+                return f"{base}-{quote}"
+            return symbol
+        elif target == 'av':
+            if '/' in symbol:
+                return symbol
+            return symbol.replace('-', '/')
+        return symbol
+
+    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         """Enhanced OHLCV with multiple fallbacks and validation"""
         # Check cache first
         cached_data = self._get_cached_data(symbol, timeframe, limit)
@@ -562,16 +632,51 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider, DataProvider):
         self._set_cached_data(symbol, timeframe, limit, result)
         return result
 
-    # ... other methods with similar enhancements
+    def get_ticker(self, symbol):
+        """Get ticker data with fallback"""
+        if not self.exchange:
+            # Try fallback providers
+            for fallback in [self.fallback_yf, self.fallback_av]:
+                try:
+                    result = fallback.get_ticker(symbol)
+                    if result:
+                        return result
+                except Exception as e:
+                    logger.warning(f"Fallback ticker failed: {str(e)}")
+                    continue
+            return None
+        
+        def fetch_ticker():
+            try:
+                ticker = self.exchange.fetch_ticker(symbol)
+                return {
+                    'last': ticker.get('last'),
+                    'volume': ticker.get('baseVolume', 0),
+                    'high': ticker.get('high'),
+                    'low': ticker.get('low'),
+                    'bid': ticker.get('bid'),
+                    'ask': ticker.get('ask')
+                }
+            except Exception as e:
+                logger.error(f"CCXT ticker error: {str(e)}")
+                raise
+        
+        return self._safe_api_call(fetch_ticker)
 
-class EnhancedYFinanceDataProvider(EnhancedDataProvider, DataProvider):
+class EnhancedYFinanceDataProvider(EnhancedDataProvider):
     """Enhanced Yahoo Finance provider with better error handling"""
     
-    def __init__(self, market_type='saham_id'):
-        EnhancedDataProvider.__init__(self)
-        DataProvider.__init__(self)
+    def __init__(self, market_type='stock'):
+        super().__init__()
         self.market_type = market_type
         self.fallback_av = AlphaVantageProvider()
+
+    def _convert_symbol(self, symbol, target='av'):
+        """Convert symbol for different providers"""
+        if target == 'av':
+            if '-' in symbol:
+                return symbol.replace('-', '/')
+        return symbol
 
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         """Enhanced Yahoo Finance with validation and fallbacks"""
@@ -582,8 +687,15 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider, DataProvider):
         def fetch_yfinance_data():
             try:
                 interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
-                interval = interval_map.get(timeframe, '1h')
-                period = '5d' if interval == '1h' and limit <= 120 else '2mo' if interval == '1h' else '1y'
+                interval = interval_map.get(timeframe, '1d')
+                
+                # Determine period based on limit and interval
+                if interval == '1h':
+                    period = '2mo' if limit > 30 else '5d'
+                elif interval == '1d':
+                    period = '1y' if limit > 100 else '6mo'
+                else:
+                    period = '1y'
                 
                 ticker = yf.Ticker(symbol)
                 df = ticker.history(period=period, interval=interval)
@@ -652,7 +764,41 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider, DataProvider):
         self._set_cached_data(symbol, timeframe, limit, result)
         return result
 
-    # ... other methods with similar enhancements
+    def get_ticker(self, symbol):
+        """Get ticker data from Yahoo Finance"""
+        def fetch_ticker():
+            try:
+                ticker = yf.Ticker(symbol)
+                info = ticker.info
+                history = ticker.history(period='1d')
+                
+                if not history.empty:
+                    last_price = history['Close'].iloc[-1]
+                    volume = history['Volume'].iloc[-1] if 'Volume' in history.columns else 0
+                else:
+                    last_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                    volume = info.get('volume', 0)
+                
+                return {
+                    'last': last_price,
+                    'volume': volume,
+                    'high': info.get('dayHigh', 0),
+                    'low': info.get('dayLow', 0),
+                    'market_cap': info.get('marketCap', 0)
+                }
+            except Exception as e:
+                logger.error(f"YFinance ticker error: {str(e)}")
+                raise
+        
+        result = self._safe_api_call(fetch_ticker)
+        if result is None:
+            # Try fallback
+            try:
+                return self.fallback_av.get_ticker(symbol)
+            except Exception as e:
+                logger.warning(f"AlphaVantage fallback also failed: {str(e)}")
+        
+        return result
 
 # Update the existing classes to use enhanced versions
 class CCXTDataProvider(EnhancedCCXTDataProvider):
@@ -663,13 +809,12 @@ class YFinanceDataProvider(EnhancedYFinanceDataProvider):
     """Backward compatibility wrapper"""
     pass
 
-# Keep existing DexScreenerProvider and SolanaPumpFunProvider 
-# but add similar enhancements to their methods
-
-class EnhancedDexScreenerProvider:
+# Enhanced DexScreenerProvider
+class EnhancedDexScreenerProvider(DataProvider):
     """Enhanced DexScreener with error handling"""
     
     def __init__(self):
+        super().__init__()
         self.base_url = "https://api.dexscreener.com/latest/dex"
         self.circuit_breaker = CircuitBreaker()
         self.retry_mechanism = RetryMechanism(max_retries=2)
@@ -697,29 +842,33 @@ class EnhancedDexScreenerProvider:
 
         return self.retry_mechanism.execute_with_retry(fetch_ticker)
 
-    # ... other methods with similar enhancements
-
-# Update DataProvider abstract class if needed
-class DataProvider(ABC):
-    @abstractmethod
     def get_ohlcv(self, symbol, timeframe, limit):
-        pass
-        
-    @abstractmethod
-    def get_ticker(self, symbol):
-        pass
-        
-    @abstractmethod
+        """DexScreener doesn't provide OHLCV directly, return None"""
+        logger.warning("DexScreener does not support OHLCV data")
+        return None
+
     def get_popular_assets(self, limit):
-        pass
-    
-    # Optional: Add health metrics method
-    def get_health_metrics(self) -> Dict:
-        return {}
+        """Get popular assets from DexScreener"""
+        def fetch_popular():
+            try:
+                url = f"{self.base_url}/search?q=top"
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                if 'pairs' in data:
+                    return data['pairs'][:limit]
+                return []
+            except Exception as e:
+                logger.error(f"DexScreener popular assets error: {str(e)}")
+                raise
+        
+        return self.retry_mechanism.execute_with_retry(fetch_popular)
 
 # Enhanced Solana provider
-class EnhancedSolanaPumpFunProvider:
+class EnhancedSolanaPumpFunProvider(DataProvider):
     def __init__(self, rpc_url):
+        super().__init__()
         self.client = Client(rpc_url)
         self.program_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
         self.dex_provider = EnhancedDexScreenerProvider()
@@ -731,6 +880,21 @@ class EnhancedSolanaPumpFunProvider:
             pass
             
         return await self.retry_mechanism.execute_with_retry(fetch_tokens)
+
+    def get_ohlcv(self, symbol, timeframe, limit):
+        """Solana PumpFun doesn't provide OHLCV directly"""
+        logger.warning("Solana PumpFun does not support OHLCV data")
+        return None
+
+    def get_ticker(self, symbol):
+        """Get ticker data for Solana token"""
+        # This would need actual implementation for Solana tokens
+        return None
+
+    def get_popular_assets(self, limit):
+        """Get popular Solana tokens"""
+        # This would need actual implementation
+        return []
 
 # Factory for creating data providers
 class DataProviderFactory:
@@ -746,6 +910,8 @@ class DataProviderFactory:
             return AlphaVantageProvider(**kwargs)
         elif provider_type == "dexscreener":
             return EnhancedDexScreenerProvider()
+        elif provider_type == "solanapump":
+            return EnhancedSolanaPumpFunProvider(**kwargs)
         else:
             raise ValueError(f"Unknown provider type: {provider_type}")
 
