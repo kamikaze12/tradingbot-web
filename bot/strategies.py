@@ -45,6 +45,36 @@ except ImportError:
 import yfinance as yf
 
 # =============================================
+# BASE STRATEGY CLASS 
+# =============================================
+
+class TradingStrategy(ABC):
+    """Base class for all trading strategies"""
+    
+    def __init__(self, market_type="crypto", atr_multiplier=1.0, entry_range_pct=0.02):
+        self.market_type = market_type
+        self.atr_multiplier = atr_multiplier
+        self.entry_range_pct = entry_range_pct
+        
+    @abstractmethod
+    def analyze(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Analyze market data and return trading signals"""
+        pass
+    
+    def calculate_custom_entry(self, symbol: str, entry_price: float) -> Dict[str, Any]:
+        """Calculate TP/SL for custom entry"""
+        # Default implementation - should be overridden by subclasses
+        atr = entry_price * 0.02  # Default ATR
+        return {
+            'symbol': symbol,
+            'entry_price': entry_price,
+            'tp1': entry_price + atr * self.atr_multiplier,
+            'tp2': entry_price + atr * self.atr_multiplier * 2,
+            'tp3': entry_price + atr * self.atr_multiplier * 3,
+            'sl': entry_price - atr * self.atr_multiplier
+        }
+
+# =============================================
 # ENHANCED DATA STRUCTURES
 # =============================================
 
