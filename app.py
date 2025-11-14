@@ -34,6 +34,53 @@ except ImportError as e:
 load_dotenv()
 st.set_page_config(page_title="TradingBot Pro", layout="wide")
 
+# ====================================
+# Login System
+# ====================================
+def check_login(username, password):
+    """Simple login system with hardcoded users"""
+    users = ["muraga", "user2", "user3", "admin"]
+    passwords = ["namikaze", "password2", "password3", "admin123"]
+    
+    try:
+        if username in users:
+            user_index = users.index(username)
+            # Check if password matches based on user index
+            if user_index < len(passwords) and password == passwords[user_index]:
+                return True
+    except Exception as e:
+        st.error(f"Login error: {e}")
+    
+    return False
+
+def login_section():
+    """Display login form"""
+    st.title("🔐 TradingBot Pro - Login")
+    
+    with st.form("login_form"):
+        username = st.text_input("Username", placeholder="Enter your username")
+        password = st.text_input("Password", type="password", placeholder="Enter your password")
+        submit = st.form_submit_button("Login")
+        
+        if submit:
+            if check_login(username, password):
+                st.session_state.logged_in = True
+                st.session_state.username = username
+                st.success("Login successful!")
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
+    
+    # Display available users for testing
+    with st.expander("ℹ️ Test Accounts"):
+        st.write("""
+        **Available test accounts:**
+        - Username: `muraga` | Password: `namikaze`
+        - Username: `user2` | Password: `password2` 
+        - Username: `user3` | Password: `password3`
+        - Username: `admin` | Password: `admin123`
+        """)
+
 @st.cache_resource
 def init_bot():
     """Inisialisasi TradingBot."""
@@ -159,9 +206,19 @@ def calculate_tp_probability(current_price, tp1, tp2, tp3, sl, action, volatilit
 # ====================================
 # Main App
 # ====================================
-def main():
+def main_app():
     st.title("🚀 TradingBot Pro - Enhanced Dashboard")
     
+    # Display user info and logout button
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.write(f"Welcome, **{st.session_state.username}**! 👋")
+    with col2:
+        if st.button("🚪 Logout"):
+            st.session_state.logged_in = False
+            st.session_state.username = ""
+            st.rerun()
+
     try:
         bot = init_bot()
         print("✅ TradingBot initialized successfully")
@@ -1373,6 +1430,19 @@ def main():
         - Dynamic allocation optimization
         - Correlation analysis
         """)
+
+def main():
+    # Initialize session state for login
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+    if 'username' not in st.session_state:
+        st.session_state.username = ""
+
+    # Show login page if not logged in
+    if not st.session_state.logged_in:
+        login_section()
+    else:
+        main_app()
 
 if __name__ == "__main__":
     main()
