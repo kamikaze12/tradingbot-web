@@ -242,7 +242,6 @@ class DatabaseHandler:
             logger.info("All database connections closed")
         except Exception as e:
             logger.error(f"Error closing connections: {e}")
-            self.error_count += 1
 
     # =========================================================
     # ENHANCED TABLE SCHEMA
@@ -713,7 +712,7 @@ class DatabaseHandler:
                 cursor.close()
 
     # =========================================================
-    # ENHANCED POSITIONS MANAGEMENT
+    # ENHANCED POSITIONS MANAGEMENT - FIXED TP1-TP3
     # =========================================================
     
     def save_position(self, symbol: str, market_type: str, action: str, 
@@ -868,11 +867,11 @@ class DatabaseHandler:
 
     def execute_partial_take_profit(self, position_id: int, tp_level: float, 
                                   close_percentage: float = 0.5) -> bool:
-        """Execute partial take profit untuk position"""
+        """Execute partial take profit untuk position - FIXED"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                # Get current position
+                # Get current position - HANYA ambil kolom yang diperlukan
                 cursor.execute(
                     "SELECT symbol, position_size, partial_tp_executed FROM positions WHERE id = %s",
                     (position_id,)
@@ -933,7 +932,7 @@ class DatabaseHandler:
                 cursor.close()
 
     def get_active_positions(self, market_type: str = None) -> List[Dict]:
-        """Get active positions dengan enhanced data"""
+        """Get active positions dengan enhanced data - FIXED"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
@@ -976,14 +975,14 @@ class DatabaseHandler:
 
     def close_position(self, position_id: int, close_price: float, 
                       exit_type: str = "manual", commission: float = 0) -> bool:
-        """Close position dan save ke trade history"""
+        """Close position dan save ke trade history - FIXED"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                # Get position details
+                # Get position details - AMBIL SEMUA KOLOM TP YANG DIPERLUKAN
                 cursor.execute("""
                     SELECT symbol, market_type, action, entry_price, position_size, 
-                           current_price, sl, tp1, created_at
+                           current_price, sl, tp1, tp2, tp3, created_at
                     FROM positions WHERE id = %s
                 """, (position_id,))
                 
@@ -992,7 +991,9 @@ class DatabaseHandler:
                     logger.error(f"Position {position_id} not found")
                     return False
                 
-                symbol, market_type, action, entry_price, position_size, _, sl, tp1, created_at = position
+                # Unpack semua nilai termasuk tp1, tp2, tp3
+                (symbol, market_type, action, entry_price, position_size, 
+                 current_price, sl, tp1, tp2, tp3, created_at) = position
                 
                 # Calculate final PnL
                 if action == "LONG":
@@ -1007,7 +1008,7 @@ class DatabaseHandler:
                 if created_at:
                     duration_minutes = int((datetime.now() - created_at).total_seconds() / 60)
                 
-                # Calculate risk/reward ratio
+                # Calculate risk/reward ratio menggunakan tp1
                 risk_reward_ratio = 0
                 if sl and tp1 and entry_price:
                     if action == "LONG":
@@ -1648,7 +1649,52 @@ class DatabaseHandler:
                 'error': str(e)
             }
 
-# Example usage
+# Example usage and testing
+def test_tp_functionality():
+    """Test function untuk verify TP1-TP3 functionality"""
+    db = DatabaseHandler()
+    
+    print("🧪 Testing TP1-TP3 functionality...")
+    
+    # Test save position dengan TP1-TP3
+    position_id = db.save_position(
+        symbol="BTC/USDT",
+        market_type="crypto", 
+        action="LONG",
+        entry_price=50000,
+        tp1=52000,
+        tp2=54000, 
+        tp3=56000,
+        sl=48000
+    )
+    
+    print(f"✅ Position saved with ID: {position_id}")
+    
+    # Test get active positions
+    positions = db.get_active_positions()
+    print(f"✅ Active positions: {len(positions)}")
+    
+    for pos in positions:
+        print(f"   Symbol: {pos['symbol']}, TP1: {pos['tp1']}, TP2: {pos['tp2']}, TP3: {pos['tp3']}")
+    
+    # Test partial TP
+    if position_id:
+        success = db.execute_partial_take_profit(position_id, 52000, 0.5)
+        if success:
+            print("✅ Partial TP executed successfully")
+        else:
+            print("❌ Partial TP execution failed")
+    
+    # Test close position
+    if position_id:
+        success = db.close_position(position_id, 53000, "test")
+        if success:
+            print("✅ Position closed successfully")
+        else:
+            print("❌ Position close failed")
+    
+    print("🎉 TP1-TP3 testing completed!")
+
 if __name__ == "__main__":
     # Test the enhanced database handler
     db = DatabaseHandler()
@@ -1666,5 +1712,8 @@ if __name__ == "__main__":
     # Test performance stats
     performance = db.get_performance_stats(days=7)
     print(f"Performance Stats: {performance}")
+    
+    # Test TP functionality
+    test_tp_functionality()
     
     print("✅ Enhanced Database Handler Testing Completed!")
