@@ -71,13 +71,15 @@ class DatabaseHandler:
         self.thread_local = threading.local()
         self.connection_pool = {}
         self.max_pool_size = 5
-        self._initialize_database()
-        self.create_enhanced_tables()
         
-        # Performance monitoring
+        # Initialize performance monitoring FIRST
         self.query_count = 0
         self.error_count = 0
         self.last_cleanup = datetime.now()
+        
+        # Then initialize database
+        self._initialize_database()
+        self.create_enhanced_tables()
 
     # =========================================================
     # ENHANCED CONNECTION MANAGEMENT
@@ -99,6 +101,7 @@ class DatabaseHandler:
             
         except Exception as e:
             logger.error(f"❌ Database initialization failed: {e}")
+            self.error_count += 1  # Track error
             if hasattr(st, 'error'):
                 st.error(f"Database initialization failed: {e}")
 
@@ -218,6 +221,7 @@ class DatabaseHandler:
            
         except Exception as e:
             logger.error(f"Error getting connection params: {e}")
+            self.error_count += 1
             return None
 
     def close_all_connections(self):
@@ -238,6 +242,7 @@ class DatabaseHandler:
             logger.info("All database connections closed")
         except Exception as e:
             logger.error(f"Error closing connections: {e}")
+            self.error_count += 1
 
     # =========================================================
     # ENHANCED TABLE SCHEMA
@@ -466,6 +471,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error creating enhanced tables: {e}")
+                self.error_count += 1
                 raise
             finally:
                 cursor.close()
@@ -483,6 +489,7 @@ class DatabaseHandler:
                 logger.info(f"Dropped table: {table}")
             except Exception as e:
                 logger.warning(f"Error dropping table {table}: {e}")
+                self.error_count += 1
 
     # =========================================================
     # ENHANCED SIGNALS MANAGEMENT
@@ -568,6 +575,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error saving signal: {e}")
+                self.error_count += 1
                 raise
             finally:
                 cursor.close()
@@ -619,6 +627,7 @@ class DatabaseHandler:
                 
             except Exception as e:
                 logger.error(f"Error getting signals: {e}")
+                self.error_count += 1
                 return []
             finally:
                 cursor.close()
@@ -641,6 +650,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error deleting old signals: {e}")
+                self.error_count += 1
                 return 0
             finally:
                 cursor.close()
@@ -700,6 +710,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error saving position: {e}")
+                self.error_count += 1
                 return None
             finally:
                 cursor.close()
@@ -764,6 +775,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error updating current price: {e}")
+                self.error_count += 1
                 return False
             finally:
                 cursor.close()
@@ -792,6 +804,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error updating trailing stop: {e}")
+                self.error_count += 1
                 return False
             finally:
                 cursor.close()
@@ -857,6 +870,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error executing partial TP: {e}")
+                self.error_count += 1
                 return False
             finally:
                 cursor.close()
@@ -898,6 +912,7 @@ class DatabaseHandler:
                 
             except Exception as e:
                 logger.error(f"Error getting active positions: {e}")
+                self.error_count += 1
                 return []
             finally:
                 cursor.close()
@@ -982,6 +997,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error closing position: {e}")
+                self.error_count += 1
                 return False
             finally:
                 cursor.close()
@@ -1016,6 +1032,7 @@ class DatabaseHandler:
                 
             except Exception as e:
                 logger.error(f"Error getting trade history: {e}")
+                self.error_count += 1
                 return []
             finally:
                 cursor.close()
@@ -1083,6 +1100,7 @@ class DatabaseHandler:
                 
             except Exception as e:
                 logger.error(f"Error getting performance stats: {e}")
+                self.error_count += 1
                 return {}
             finally:
                 cursor.close()
@@ -1128,6 +1146,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error saving portfolio allocations: {e}")
+                self.error_count += 1
                 return False
             finally:
                 cursor.close()
@@ -1148,6 +1167,7 @@ class DatabaseHandler:
                 
             except Exception as e:
                 logger.error(f"Error getting portfolio allocations: {e}")
+                self.error_count += 1
                 return []
             finally:
                 cursor.close()
@@ -1197,6 +1217,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error saving backtest result: {e}")
+                self.error_count += 1
                 return False
             finally:
                 cursor.close()
@@ -1245,6 +1266,7 @@ class DatabaseHandler:
                 
             except Exception as e:
                 logger.error(f"Error getting backtest results: {e}")
+                self.error_count += 1
                 return []
             finally:
                 cursor.close()
@@ -1286,6 +1308,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error saving ML analysis: {e}")
+                self.error_count += 1
                 return False
             finally:
                 cursor.close()
@@ -1361,6 +1384,7 @@ class DatabaseHandler:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error updating performance metrics: {e}")
+                self.error_count += 1
             finally:
                 cursor.close()
 
@@ -1380,6 +1404,7 @@ class DatabaseHandler:
                 
             except Exception as e:
                 logger.error(f"Error getting performance metrics: {e}")
+                self.error_count += 1
                 return []
             finally:
                 cursor.close()
@@ -1437,6 +1462,7 @@ class DatabaseHandler:
                 except Exception as e:
                     conn.rollback()
                     logger.error(f"Error during data cleanup: {e}")
+                    self.error_count += 1
                 finally:
                     cursor.close()
             
@@ -1446,6 +1472,7 @@ class DatabaseHandler:
             
         except Exception as e:
             logger.error(f"Error in cleanup_old_data: {e}")
+            self.error_count += 1
             return {}
 
     def get_database_stats(self) -> Dict[str, Any]:
@@ -1496,6 +1523,7 @@ class DatabaseHandler:
                 
             except Exception as e:
                 logger.error(f"Error getting database stats: {e}")
+                self.error_count += 1
                 return {}
             finally:
                 cursor.close()
@@ -1557,23 +1585,11 @@ class DatabaseHandler:
                 
         except Exception as e:
             logger.error(f"Health check failed: {e}")
+            self.error_count += 1
             return {
                 'status': 'unhealthy',
                 'error': str(e)
             }
-
-# =========================================================
-# BACKWARD COMPATIBILITY
-# =========================================================
-
-# Maintain original method names for backward compatibility
-def create_enhanced_tables(self):
-    """Backward compatibility method"""
-    pass
-
-def save_backtest_result(self, result_data):
-    """Backward compatibility method"""
-    return self.save_backtest_result(result_data)
 
 # Example usage
 if __name__ == "__main__":
