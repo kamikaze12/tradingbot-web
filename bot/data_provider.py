@@ -354,10 +354,17 @@ class EnhancedDataProvider(DataProvider, ABC):
             'cache_size': len(self.data_cache._cache)
         }
     
-    def get_popular_assets(self, limit):
-        """Default implementation - can be overridden by subclasses"""
-        logger.warning("get_popular_assets not implemented for this provider")
-        return []
+    def get_popular_assets(self, limit=100):
+        """Default implementation that should be overridden by subclasses"""
+        logger.warning(f"get_popular_assets not properly implemented for {self.__class__.__name__}")
+        
+        # Provide basic fallback based on common assets
+        fallback_assets = [
+            'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
+            'EUR/USD', 'USD/JPY', 'GBP/USD', 'AUD/USD', 'USD/CAD',
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA'
+        ]
+        return fallback_assets[:limit]
 
 class AlphaVantageProvider(EnhancedDataProvider):
     def __init__(self, api_key=None):
@@ -517,6 +524,34 @@ class AlphaVantageProvider(EnhancedDataProvider):
 
         return self._safe_api_call(fetch_ticker)
 
+    def get_popular_assets(self, limit=100):
+        """Get popular assets from Alpha Vantage"""
+        try:
+            # Alpha Vantage doesn't have a direct popular assets endpoint
+            # Return major forex pairs and stocks
+            assets = []
+            
+            # Major forex pairs
+            forex_pairs = ['EUR/USD', 'USD/JPY', 'GBP/USD', 'AUD/USD', 'USD/CAD']
+            assets.extend(forex_pairs)
+            
+            # Major stocks
+            stocks = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA']
+            assets.extend(stocks)
+            
+            # Major cryptocurrencies
+            cryptos = ['BTC', 'ETH', 'BNB', 'XRP', 'ADA']
+            assets.extend(cryptos)
+            
+            logger.info(f"AlphaVantage returning {len(assets[:limit])} popular assets")
+            return assets[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error getting popular assets from Alpha Vantage: {str(e)}")
+            # Fallback to basic assets
+            fallback_assets = ['EUR/USD', 'USD/JPY', 'GBP/USD', 'AAPL', 'MSFT', 'BTC', 'ETH']
+            return fallback_assets[:limit]
+
 class EnhancedCCXTDataProvider(EnhancedDataProvider):
     """Enhanced CCXT provider with better error handling and fallbacks"""
     
@@ -663,6 +698,53 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
         
         return self._safe_api_call(fetch_ticker)
 
+    def get_popular_assets(self, limit=100):
+        """Get popular crypto assets from the exchange"""
+        try:
+            if not self.exchange:
+                logger.warning(f"Exchange {self.exchange_id} not initialized, using fallback assets")
+                return ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT'][:limit]
+            
+            markets = self.exchange.load_markets()
+            
+            # Filter USDT pairs
+            usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
+            
+            # Exclude stablecoins and problematic pairs
+            excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST', 'FDUSD']
+            filtered_markets = [
+                symbol for symbol in usdt_markets 
+                if not any(excluded in symbol for excluded in excluded_coins)
+            ]
+            
+            # Sort by volume if available
+            try:
+                tickers = self.exchange.fetch_tickers()
+                filtered_markets.sort(
+                    key=lambda x: tickers[x]['quoteVolume'] if x in tickers else 0, 
+                    reverse=True
+                )
+                logger.info(f"Sorted {len(filtered_markets)} assets by volume")
+            except Exception as e:
+                logger.warning(f"Could not sort by volume: {str(e)}")
+                # Fallback: use market cap ranking or alphabetical
+                filtered_markets.sort()
+            
+            result = filtered_markets[:limit]
+            logger.info(f"CCXT returning {len(result)} popular assets from {self.exchange_id}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting popular assets from {self.exchange_id}: {str(e)}")
+            # Fallback to major cryptocurrencies
+            major_pairs = [
+                'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
+                'SOL/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
+                'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'XLM/USDT', 'BCH/USDT',
+                'ETC/USDT', 'FIL/USDT', 'THETA/USDT', 'EOS/USDT', 'XTZ/USDT'
+            ]
+            return major_pairs[:limit]
+
 class EnhancedYFinanceDataProvider(EnhancedDataProvider):
     """Enhanced Yahoo Finance provider with better error handling"""
     
@@ -799,6 +881,90 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 logger.warning(f"AlphaVantage fallback also failed: {str(e)}")
         
         return result
+
+    def get_popular_assets(self, limit=100):
+        """Get popular assets based on market type"""
+        try:
+            if self.market_type == "crypto":
+                return self._get_popular_crypto(limit)
+            elif self.market_type == "forex":
+                return self._get_popular_forex(limit)
+            elif self.market_type == "saham_id":
+                return self._get_popular_indonesian_stocks(limit)
+            elif self.market_type == "stocks":
+                return self._get_popular_international_stocks(limit)
+            else:
+                logger.warning(f"Unknown market type: {self.market_type}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error getting popular assets for {self.market_type}: {str(e)}")
+            return self._get_fallback_assets(limit)
+
+    def _get_popular_crypto(self, limit):
+        """Get popular cryptocurrencies"""
+        crypto_pairs = [
+            'BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD',
+            'SOL-USD', 'DOT-USD', 'DOGE-USD', 'AVAX-USD', 'MATIC-USD',
+            'LTC-USD', 'LINK-USD', 'ATOM-USD', 'XLM-USD', 'BCH-USD',
+            'ETC-USD', 'FIL-USD', 'THETA-USD', 'EOS-USD', 'XTZ-USD',
+            'ALGO-USD', 'NEAR-USD', 'FTM-USD', 'SAND-USD', 'MANA-USD',
+            'APE-USD', 'GALA-USD', 'ENJ-USD', 'CHZ-USD', 'BAT-USD'
+        ]
+        result = crypto_pairs[:limit]
+        logger.info(f"YFinance returning {len(result)} popular crypto assets")
+        return result
+
+    def _get_popular_forex(self, limit):
+        """Get popular forex pairs"""
+        forex_pairs = [
+            'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X',
+            'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+            'AUDJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'CADJPY=X',
+            'CHFJPY=X', 'EURCHF=X', 'GBPCHF=X', 'AUDCHF=X', 'NZDJPY=X'
+        ]
+        result = forex_pairs[:limit]
+        logger.info(f"YFinance returning {len(result)} popular forex pairs")
+        return result
+
+    def _get_popular_indonesian_stocks(self, limit):
+        """Get popular Indonesian stocks"""
+        id_stocks = [
+            'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'BNGA.JK',
+            'TLKM.JK', 'ASII.JK', 'UNVR.JK', 'ICBP.JK', 'INDF.JK',
+            'ANTM.JK', 'ADRO.JK', 'PTBA.JK', 'ITMG.JK', 'MEDC.JK',
+            'SMGR.JK', 'INTP.JK', 'TKIM.JK', 'KLBF.JK', 'GGRM.JK',
+            'HMSP.JK', 'JPFA.JK', 'LSIP.JK', 'MYOR.JK', 'SCMA.JK',
+            'SRIL.JK', 'TPIA.JK', 'UNTR.JK', 'WIKA.JK', 'WSKT.JK'
+        ]
+        result = id_stocks[:limit]
+        logger.info(f"YFinance returning {len(result)} popular Indonesian stocks")
+        return result
+
+    def _get_popular_international_stocks(self, limit):
+        """Get popular international stocks"""
+        stocks = [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 
+            'BRK-B', 'JNJ', 'JPM', 'V', 'PG', 'UNH', 'HD', 'DIS',
+            'PYPL', 'NFLX', 'ADBE', 'CRM', 'CSCO', 'PEP', 'ABT', 
+            'TMO', 'AVGO', 'COST', 'LLY', 'WMT', 'XOM', 'CVX', 'BAC'
+        ]
+        result = stocks[:limit]
+        logger.info(f"YFinance returning {len(result)} popular international stocks")
+        return result
+
+    def _get_fallback_assets(self, limit):
+        """Fallback assets when primary method fails"""
+        fallback_assets = {
+            "crypto": ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD'],
+            "forex": ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X'],
+            "saham_id": ['BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK'],
+            "stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']
+        }
+        
+        assets = fallback_assets.get(self.market_type, [])
+        logger.info(f"Using fallback assets for {self.market_type}: {len(assets[:limit])} assets")
+        return assets[:limit]
 
 # Update the existing classes to use enhanced versions
 class CCXTDataProvider(EnhancedCCXTDataProvider):
