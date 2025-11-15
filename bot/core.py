@@ -286,6 +286,30 @@ class EnhancedPositionManager:
             del self.positions[symbol]
             return None
     
+    def get_position_id_from_symbol(self, symbol: str, market_type: str) -> Optional[int]:
+        """Get position ID from symbol - FIXED VERSION"""
+        try:
+            active_positions = self.db_handler.get_active_positions(market_type)
+            position_id = None
+            
+            for pos in active_positions:
+                # Handle both dictionary and tuple responses
+                if isinstance(pos, dict):
+                    if pos.get('symbol') == symbol:
+                        position_id = pos.get('id')
+                        break
+                else:
+                    # Fallback for tuple response (backward compatibility)
+                    if len(pos) > 1 and pos[1] == symbol:  # symbol column
+                        position_id = pos[0]  # id column
+                        break
+            
+            return position_id
+            
+        except Exception as e:
+            logger.error(f"Error getting position ID for {symbol}: {e}")
+            return None
+
     def update_positions(self, price_data: Dict[str, float]) -> Dict[str, Dict]:
         """Update all positions dengan current prices"""
         results = {}
@@ -355,21 +379,16 @@ class EnhancedPositionManager:
         return executed_size
     
     def close_position(self, symbol: str, close_price: float, reason: str = "manual") -> bool:
-        """Close position"""
+        """Close position - FIXED VERSION"""
         if symbol not in self.positions:
+            logger.warning(f"Position for {symbol} not found in local manager")
             return False
             
         position = self.positions[symbol]
         
         try:
-            # Find position ID from database
-            active_positions = self.db_handler.get_active_positions(position.market_type)
-            position_id = None
-            
-            for pos in active_positions:
-                if pos[1] == symbol:  # symbol column
-                    position_id = pos[0]  # id column
-                    break
+            # Find position ID from database using new method
+            position_id = self.get_position_id_from_symbol(symbol, position.market_type)
             
             if position_id:
                 success = self.db_handler.close_position(position_id, close_price, reason)
@@ -947,7 +966,7 @@ class PortfolioOptimizer:
         return frontiers
 
 # =============================================
-# ENHANCED TRADING BOT CORE
+# ENHANCED TRADING BOT CORE - FIXED VERSION
 # =============================================
 
 class EnhancedTradingBot:
@@ -1227,7 +1246,7 @@ class EnhancedTradingBot:
             logger.error(f"Health check error: {e}")
 
     def get_popular_assets(self, limit=None):
-        """Get popular assets from the current data provider"""
+        """Get popular assets from the current data provider - FIXED VERSION"""
         if not self.data_provider:
             logger.warning("No data provider configured")
             return []
@@ -1238,18 +1257,36 @@ class EnhancedTradingBot:
             
             assets = self.data_provider.get_popular_assets(limit)
             
+            # FIX: Handle both string and dictionary responses
+            processed_assets = []
+            for asset in assets:
+                if isinstance(asset, str):
+                    # Jika asset adalah string, convert ke dictionary
+                    processed_assets.append({'symbol': asset})
+                elif isinstance(asset, dict) and 'symbol' in asset:
+                    # Jika sudah dictionary dengan symbol
+                    processed_assets.append(asset)
+                elif isinstance(asset, dict):
+                    # Jika dictionary tanpa symbol, cari key yang mungkin berisi symbol
+                    symbol = asset.get('symbol') or asset.get('id') or asset.get('name') or str(asset)
+                    processed_assets.append({'symbol': symbol})
+                else:
+                    # Fallback: convert ke string
+                    processed_assets.append({'symbol': str(asset)})
+            
             # Enhanced: Add basic validation and logging
-            if assets:
-                logger.info(f"Retrieved {len(assets)} popular assets for {self.mode}")
+            if processed_assets:
+                logger.info(f"Retrieved {len(processed_assets)} popular assets for {self.mode}")
                 
                 # Log first few assets for debugging
-                if len(assets) > 0:
-                    sample_assets = assets[:min(3, len(assets))]
-                    logger.debug(f"Sample assets: {[asset.get('symbol', asset) for asset in sample_assets]}")
+                if len(processed_assets) > 0:
+                    sample_assets = processed_assets[:min(3, len(processed_assets))]
+                    logger.debug(f"Sample assets: {[asset.get('symbol', 'N/A') for asset in sample_assets]}")
             else:
                 logger.warning("No popular assets returned from data provider")
+                return self._get_fallback_assets(limit)
                 
-            return assets
+            return processed_assets
             
         except Exception as e:
             logger.error(f"Error getting popular assets: {e}")
@@ -1387,7 +1424,7 @@ class EnhancedTradingBot:
             return False
 
     def scan_potential_assets(self, limit=None):
-        """Enhanced asset scanning dengan ML dan risk management"""
+        """Enhanced asset scanning dengan ML dan risk management - FIXED VERSION"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -1399,7 +1436,7 @@ class EnhancedTradingBot:
                 limit = self.config.get("max_signals", 10)
             
             # Get popular assets
-            assets = self.get_popular_assets(limit * 2)  # Get more for filtering
+            assets = self.get_popular_assets(limit * 2)
             
             if not assets:
                 logger.warning("No assets available for scanning")
@@ -1408,7 +1445,7 @@ class EnhancedTradingBot:
             signals = []
             scan_delay = self.config.get("scan_delay", 0.5)
             
-            for asset in assets[:limit * 2]:  # Process more assets for better filtering
+            for asset in assets[:limit * 2]:
                 try:
                     symbol = asset.get('symbol')
                     if not symbol:
@@ -1423,14 +1460,16 @@ class EnhancedTradingBot:
                         
                         # Filter based on minimum score
                         min_score = self.config.get("min_score", 3)
-                        if score >= min_score and action != 'NEUTRAL':
+                        if abs(score) >= min_score and action != 'NEUTRAL':
                             signals.append({
                                 'symbol': symbol,
                                 'score': score,
                                 'action': action,
                                 'entry_price': analysis.get('entry_price', 0),
                                 'sl': analysis.get('sl', 0),
-                                'tp': analysis.get('tp', 0),
+                                'tp1': analysis.get('tp1', analysis.get('tp', 0)),  # FIX: Handle both tp1 and tp
+                                'tp2': analysis.get('tp2', 0),
+                                'tp3': analysis.get('tp3', 0),
                                 'ml_confidence': analysis.get('ml_confidence', 0),
                                 'analysis': analysis
                             })
@@ -1439,11 +1478,11 @@ class EnhancedTradingBot:
                     time.sleep(scan_delay)
                     
                 except Exception as e:
-                    logger.error(f"Error analyzing {asset.get('symbol')}: {e}")
+                    logger.error(f"Error analyzing {asset.get('symbol', 'unknown')}: {e}")
                     continue
             
             # Sort by score and limit results
-            signals.sort(key=lambda x: x['score'], reverse=True)
+            signals.sort(key=lambda x: abs(x['score']), reverse=True)
             signals = signals[:limit]
             
             logger.info(f"Scan completed: Found {len(signals)} potential signals")
@@ -1480,6 +1519,51 @@ class EnhancedTradingBot:
 TradingBot = EnhancedTradingBot
 
 # =============================================
+# TESTING FUNCTIONALITY
+# =============================================
+
+def test_fixed_functionality():
+    """Test semua perbaikan"""
+    print("🧪 Testing fixed functionality...")
+    
+    # Test database handler
+    db = DatabaseHandler()
+    
+    # Test popular assets
+    bot = EnhancedTradingBot()
+    bot.set_mode("crypto")
+    assets = bot.get_popular_assets(3)
+    print(f"✅ Popular assets test: {len(assets)} assets found")
+    
+    # Test position operations
+    position_id = db.save_position(
+        symbol="TEST/USDT",
+        market_type="crypto",
+        action="LONG", 
+        entry_price=100,
+        tp1=110,
+        tp2=120,
+        tp3=130,
+        sl=90
+    )
+    print(f"✅ Position save test: ID {position_id}")
+    
+    if position_id:
+        # Test partial TP
+        success = db.execute_partial_take_profit(position_id, 105, 0.3)
+        print(f"✅ Partial TP test: {success}")
+        
+        # Test close position
+        success = db.close_position(position_id, 108, "test")
+        print(f"✅ Close position test: {success}")
+    
+    # Test scanning
+    signals = bot.scan_potential_assets(5)
+    print(f"✅ Scan test: {len(signals)} signals found")
+    
+    print("🎉 All tests completed!")
+
+# =============================================
 # MAIN EXECUTION
 # =============================================
 
@@ -1503,5 +1587,8 @@ if __name__ == "__main__":
     bot.set_mode("crypto")
     assets = bot.get_popular_assets(5)
     print(f"Found {len(assets)} assets: {[asset.get('symbol', 'N/A') for asset in assets]}")
+    
+    # Test fixed functionality
+    test_fixed_functionality()
     
     print("✅ Enhanced Core Testing Completed!")
