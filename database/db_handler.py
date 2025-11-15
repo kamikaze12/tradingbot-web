@@ -289,11 +289,7 @@ class DatabaseHandler:
                         confidence REAL DEFAULT 0.5,
                         pattern_details JSONB,
                         tp_probabilities JSONB,
-                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        
-                        -- Indexes untuk performance
-                        CONSTRAINT signals_symbol_market_timestamp_idx 
-                        UNIQUE (symbol, market_type, timestamp)
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
@@ -324,12 +320,7 @@ class DatabaseHandler:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         closed_at TIMESTAMP,
-                        close_reason TEXT,
-                        
-                        -- Indexes
-                        INDEX positions_symbol_status_idx (symbol, status),
-                        INDEX positions_market_type_status_idx (market_type, status),
-                        INDEX positions_created_at_idx (created_at)
+                        close_reason TEXT
                     )
                 """)
                 
@@ -353,12 +344,7 @@ class DatabaseHandler:
                         position_score INTEGER,
                         exit_reason TEXT,
                         strategy_version TEXT DEFAULT 'v2.0',
-                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        
-                        -- Indexes
-                        INDEX trade_history_symbol_timestamp_idx (symbol, timestamp),
-                        INDEX trade_history_market_type_idx (market_type),
-                        INDEX trade_history_timestamp_idx (timestamp)
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
@@ -374,10 +360,7 @@ class DatabaseHandler:
                         score INTEGER,
                         expected_return REAL,
                         risk_adjustment REAL DEFAULT 1.0,
-                        optimization_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        
-                        INDEX portfolio_allocations_symbol_idx (symbol),
-                        INDEX portfolio_allocations_optimization_date_idx (optimization_date)
+                        optimization_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
@@ -400,10 +383,7 @@ class DatabaseHandler:
                         period_days INTEGER,
                         test_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         parameters JSONB,
-                        equity_curve JSONB,
-                        
-                        INDEX backtest_results_symbol_idx (symbol),
-                        INDEX backtest_results_test_date_idx (test_date)
+                        equity_curve JSONB
                     )
                 """)
                 
@@ -419,9 +399,7 @@ class DatabaseHandler:
                         feature_importance JSONB,
                         prediction_metrics JSONB,
                         risk_metrics JSONB,
-                        analysis_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        
-                        INDEX ml_analysis_symbol_date_idx (symbol, analysis_date)
+                        analysis_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
@@ -437,10 +415,7 @@ class DatabaseHandler:
                         support_levels JSONB,
                         resistance_levels JSONB,
                         volume_profile JSONB,
-                        detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        
-                        INDEX market_regimes_symbol_regime_idx (symbol, regime_type),
-                        INDEX market_regimes_detected_at_idx (detected_at)
+                        detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
@@ -460,13 +435,15 @@ class DatabaseHandler:
                         max_drawdown REAL DEFAULT 0,
                         daily_return REAL DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        
                         UNIQUE (metric_date)
                     )
                 """)
                 
+                # Sekarang buat semua INDEX dengan statement terpisah
+                self._create_indexes(cursor)
+                
                 conn.commit()
-                logger.info("✅ Enhanced tables created successfully")
+                logger.info("✅ Enhanced tables and indexes created successfully")
                 
             except Exception as e:
                 conn.rollback()
@@ -475,6 +452,86 @@ class DatabaseHandler:
                 raise
             finally:
                 cursor.close()
+
+    def _create_indexes(self, cursor):
+        """Create all necessary indexes separately"""
+        try:
+            # Indexes for signals table
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS signals_symbol_market_timestamp_idx 
+                ON signals (symbol, market_type, timestamp)
+            """)
+            
+            # Indexes for positions table
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS positions_symbol_status_idx 
+                ON positions (symbol, status)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS positions_market_type_status_idx 
+                ON positions (market_type, status)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS positions_created_at_idx 
+                ON positions (created_at)
+            """)
+            
+            # Indexes for trade_history table
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS trade_history_symbol_timestamp_idx 
+                ON trade_history (symbol, timestamp)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS trade_history_market_type_idx 
+                ON trade_history (market_type)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS trade_history_timestamp_idx 
+                ON trade_history (timestamp)
+            """)
+            
+            # Indexes for portfolio_allocations table
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS portfolio_allocations_symbol_idx 
+                ON portfolio_allocations (symbol)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS portfolio_allocations_optimization_date_idx 
+                ON portfolio_allocations (optimization_date)
+            """)
+            
+            # Indexes for backtest_results table
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS backtest_results_symbol_idx 
+                ON backtest_results (symbol)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS backtest_results_test_date_idx 
+                ON backtest_results (test_date)
+            """)
+            
+            # Indexes for ml_analysis table
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS ml_analysis_symbol_date_idx 
+                ON ml_analysis (symbol, analysis_date)
+            """)
+            
+            # Indexes for market_regimes table
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS market_regimes_symbol_regime_idx 
+                ON market_regimes (symbol, regime_type)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS market_regimes_detected_at_idx 
+                ON market_regimes (detected_at)
+            """)
+            
+            logger.info("✅ All indexes created successfully")
+            
+        except Exception as e:
+            logger.error(f"Error creating indexes: {e}")
+            self.error_count += 1
+            raise
 
     def _drop_tables(self, cursor):
         """Drop tables untuk development (gunakan dengan hati-hati!)"""
@@ -588,7 +645,7 @@ class DatabaseHandler:
             try:
                 query = """
                     SELECT * FROM signals 
-                    WHERE timestamp >= NOW() - INTERVAL '%s hours'
+                    WHERE timestamp >= NOW() - INTERVAL %s hours
                 """
                 params = [hours_back]
                 
@@ -638,7 +695,7 @@ class DatabaseHandler:
             cursor = conn.cursor()
             try:
                 cursor.execute(
-                    "DELETE FROM signals WHERE timestamp < NOW() - INTERVAL '%s days'",
+                    "DELETE FROM signals WHERE timestamp < NOW() - INTERVAL %s days",
                     (days,)
                 )
                 deleted_count = cursor.rowcount
@@ -1014,7 +1071,7 @@ class DatabaseHandler:
             try:
                 query = """
                     SELECT * FROM trade_history 
-                    WHERE timestamp >= NOW() - INTERVAL '%s days'
+                    WHERE timestamp >= NOW() - INTERVAL %s days
                 """
                 params = [days_back]
                 
@@ -1052,7 +1109,7 @@ class DatabaseHandler:
                         SUM(profit_loss) as total_pnl,
                         AVG(profit_loss_percent) as avg_return_percent
                     FROM trade_history 
-                    WHERE timestamp >= NOW() - INTERVAL '%s days'
+                    WHERE timestamp >= NOW() - INTERVAL %s days
                 """, (days,))
                 
                 result = cursor.fetchone()
@@ -1070,7 +1127,7 @@ class DatabaseHandler:
                 cursor.execute("""
                     SELECT symbol, profit_loss, profit_loss_percent, timestamp
                     FROM trade_history 
-                    WHERE timestamp >= NOW() - INTERVAL '%s days'
+                    WHERE timestamp >= NOW() - INTERVAL %s days
                     ORDER BY profit_loss DESC LIMIT 5
                 """, (days,))
                 best_trades = cursor.fetchall()
@@ -1078,7 +1135,7 @@ class DatabaseHandler:
                 cursor.execute("""
                     SELECT symbol, profit_loss, profit_loss_percent, timestamp
                     FROM trade_history 
-                    WHERE timestamp >= NOW() - INTERVAL '%s days'
+                    WHERE timestamp >= NOW() - INTERVAL %s days
                     ORDER BY profit_loss ASC LIMIT 5
                 """, (days,))
                 worst_trades = cursor.fetchall()
@@ -1395,7 +1452,7 @@ class DatabaseHandler:
             try:
                 cursor.execute("""
                     SELECT * FROM performance_metrics 
-                    WHERE metric_date >= CURRENT_DATE - INTERVAL '%s days'
+                    WHERE metric_date >= CURRENT_DATE - INTERVAL %s days
                     ORDER BY metric_date DESC
                 """, (days,))
                 
@@ -1427,7 +1484,7 @@ class DatabaseHandler:
                 cursor = conn.cursor()
                 try:
                     cursor.execute(
-                        "DELETE FROM trade_history WHERE timestamp < NOW() - INTERVAL '%s days'",
+                        "DELETE FROM trade_history WHERE timestamp < NOW() - INTERVAL %s days",
                         (days,)
                     )
                     history_count = cursor.rowcount
@@ -1435,7 +1492,7 @@ class DatabaseHandler:
                     
                     # Clean up closed positions
                     cursor.execute(
-                        "DELETE FROM positions WHERE status = 'closed' AND closed_at < NOW() - INTERVAL '%s days'",
+                        "DELETE FROM positions WHERE status = 'closed' AND closed_at < NOW() - INTERVAL %s days",
                         (days,)
                     )
                     positions_count = cursor.rowcount
@@ -1443,7 +1500,7 @@ class DatabaseHandler:
                     
                     # Clean up old backtest results
                     cursor.execute(
-                        "DELETE FROM backtest_results WHERE test_date < NOW() - INTERVAL '%s days'",
+                        "DELETE FROM backtest_results WHERE test_date < NOW() - INTERVAL %s days",
                         (days * 3,)  # Keep backtests longer
                     )
                     backtest_count = cursor.rowcount
@@ -1451,7 +1508,7 @@ class DatabaseHandler:
                     
                     # Clean up old ML analysis
                     cursor.execute(
-                        "DELETE FROM ml_analysis WHERE analysis_date < NOW() - INTERVAL '%s days'",
+                        "DELETE FROM ml_analysis WHERE analysis_date < NOW() - INTERVAL %s days",
                         (days * 7,)  # Keep ML analysis longer
                     )
                     ml_count = cursor.rowcount
