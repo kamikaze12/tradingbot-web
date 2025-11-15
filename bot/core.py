@@ -1226,6 +1226,48 @@ class EnhancedTradingBot:
         except Exception as e:
             logger.error(f"Health check error: {e}")
 
+    def get_popular_assets(self, limit=None):
+        """Get popular assets from the current data provider"""
+        if not self.data_provider:
+            logger.warning("No data provider configured")
+            return []
+        
+        try:
+            if limit is None:
+                limit = self.config.get("analysis_coins_limit", 100)
+            
+            assets = self.data_provider.get_popular_assets(limit)
+            
+            # Enhanced: Add basic validation and logging
+            if assets:
+                logger.info(f"Retrieved {len(assets)} popular assets for {self.mode}")
+                
+                # Log first few assets for debugging
+                if len(assets) > 0:
+                    sample_assets = assets[:min(3, len(assets))]
+                    logger.debug(f"Sample assets: {[asset.get('symbol', asset) for asset in sample_assets]}")
+            else:
+                logger.warning("No popular assets returned from data provider")
+                
+            return assets
+            
+        except Exception as e:
+            logger.error(f"Error getting popular assets: {e}")
+            # Fallback to default assets based on mode
+            return self._get_fallback_assets(limit)
+    
+    def _get_fallback_assets(self, limit):
+        """Provide fallback assets when data provider fails"""
+        fallback_assets = {
+            "crypto": ["BTC/USDT", "ETH/USDT", "BNB/USDT", "ADA/USDT", "DOT/USDT"],
+            "forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X"],
+            "stocks": ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"],
+            "saham_id": ["BBCA.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "ASII.JK"]
+        }
+        
+        assets = fallback_assets.get(self.mode, [])
+        return [{"symbol": asset} for asset in assets[:limit]]
+
     # ENHANCED PUBLIC METHODS
     
     def analyze_with_enhanced_ml(self, symbol: str) -> Dict[str, Any]:
@@ -1344,16 +1386,79 @@ class EnhancedTradingBot:
             logger.error(f"ML training error: {e}")
             return False
 
+    def scan_potential_assets(self, limit=None):
+        """Enhanced asset scanning dengan ML dan risk management"""
+        if self.scanning_in_progress:
+            logger.warning("Scan already in progress")
+            return []
+        
+        self.scanning_in_progress = True
+        
+        try:
+            if limit is None:
+                limit = self.config.get("max_signals", 10)
+            
+            # Get popular assets
+            assets = self.get_popular_assets(limit * 2)  # Get more for filtering
+            
+            if not assets:
+                logger.warning("No assets available for scanning")
+                return []
+            
+            signals = []
+            scan_delay = self.config.get("scan_delay", 0.5)
+            
+            for asset in assets[:limit * 2]:  # Process more assets for better filtering
+                try:
+                    symbol = asset.get('symbol')
+                    if not symbol:
+                        continue
+                    
+                    # Analyze asset dengan enhanced ML
+                    analysis = self.analyze_with_enhanced_ml(symbol)
+                    
+                    if analysis and 'error' not in analysis:
+                        score = analysis.get('final_score', analysis.get('score', 0))
+                        action = analysis.get('action', 'NEUTRAL')
+                        
+                        # Filter based on minimum score
+                        min_score = self.config.get("min_score", 3)
+                        if score >= min_score and action != 'NEUTRAL':
+                            signals.append({
+                                'symbol': symbol,
+                                'score': score,
+                                'action': action,
+                                'entry_price': analysis.get('entry_price', 0),
+                                'sl': analysis.get('sl', 0),
+                                'tp': analysis.get('tp', 0),
+                                'ml_confidence': analysis.get('ml_confidence', 0),
+                                'analysis': analysis
+                            })
+                    
+                    # Rate limiting
+                    time.sleep(scan_delay)
+                    
+                except Exception as e:
+                    logger.error(f"Error analyzing {asset.get('symbol')}: {e}")
+                    continue
+            
+            # Sort by score and limit results
+            signals.sort(key=lambda x: x['score'], reverse=True)
+            signals = signals[:limit]
+            
+            logger.info(f"Scan completed: Found {len(signals)} potential signals")
+            return signals
+            
+        except Exception as e:
+            logger.error(f"Error during asset scanning: {e}")
+            return []
+        finally:
+            self.scanning_in_progress = False
+
     # Backward compatibility methods
     def analyze_asset(self, symbol):
         """Backward compatibility method"""
         return self.analyze_with_enhanced_ml(symbol)
-    
-    def scan_potential_assets(self, limit=None):
-        """Enhanced asset scanning"""
-        # Implementation similar to original but with enhanced error handling
-        # and using the new ML ensemble
-        pass
     
     def get_active_positions(self):
         """Get active positions"""
@@ -1392,5 +1497,11 @@ if __name__ == "__main__":
     
     # Test position management
     print("💼 Testing Position Management...")
+    
+    # Test popular assets method
+    print("📈 Testing Popular Assets...")
+    bot.set_mode("crypto")
+    assets = bot.get_popular_assets(5)
+    print(f"Found {len(assets)} assets: {[asset.get('symbol', 'N/A') for asset in assets]}")
     
     print("✅ Enhanced Core Testing Completed!")
