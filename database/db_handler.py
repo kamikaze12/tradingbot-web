@@ -1059,7 +1059,7 @@ class DatabaseHandler:
                 return False
             finally:
                 cursor.close()
-          def delete_signal_by_symbol(self, symbol, market_type):
+      def delete_signal_by_symbol(self, symbol, market_type):
         """Delete signals by symbol"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
