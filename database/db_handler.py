@@ -1059,28 +1059,28 @@ class DatabaseHandler:
                 return False
             finally:
                 cursor.close()
-      def delete_signal_by_symbol(self, symbol, market_type):
-    """Delete signals by symbol"""
-    with self.get_connection() as conn:
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                "DELETE FROM signals WHERE symbol = %s AND market_type = %s",
-                (symbol, market_type)
-            )
-            deleted_count = cursor.rowcount
-            conn.commit()
-            
-            logger.info(f"Deleted {deleted_count} signals for {symbol}")
-            return deleted_count
-            
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Error deleting signals: {e}")
-            self.error_count += 1
-            return 0
-        finally:
-            cursor.close()
+          def delete_signal_by_symbol(self, symbol, market_type):
+        """Delete signals by symbol"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    "DELETE FROM signals WHERE symbol = %s AND market_type = %s",
+                    (symbol, market_type)
+                )
+                deleted_count = cursor.rowcount
+                conn.commit()
+                
+                logger.info(f"Deleted {deleted_count} signals for {symbol}")
+                return deleted_count
+                
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"Error deleting signals: {e}")
+                self.error_count += 1
+                return 0
+            finally:
+                cursor.close()
     # =========================================================
     # ENHANCED TRADE HISTORY
     # =========================================================
