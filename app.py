@@ -203,6 +203,12 @@ def calculate_tp_probability(current_price, tp1, tp2, tp3, sl, action, volatilit
         # Return probabilities yang lebih realistis sebagai fallback
         return {"tp1": 0.6, "tp2": 0.35, "tp3": 0.15}
 
+def safe_get(data, key, default=0):
+    """Safe dictionary access dengan fallback"""
+    if isinstance(data, dict):
+        return data.get(key, default)
+    return default
+
 # ====================================
 # Main App
 # ====================================
@@ -365,22 +371,22 @@ def main_app():
                         all_results = bot.scan_potential_assets(100)  # Scan 100 koin
                         if all_results:
                             # Sort berdasarkan abs(score) descending untuk dapat 10 terbaik
-                            all_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
+                            all_results.sort(key=lambda x: abs(safe_get(x, 'score', 0)), reverse=True)
                             
                             # Hitung probabilitas TP untuk setiap hasil dengan TP yang sudah diurutkan
                             for result in all_results[:10]:
                                 # Urutkan TP levels sebelum hitung probability
-                                tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
-                                if result['action'] == "LONG":
+                                tp1, tp2, tp3 = safe_get(result, 'tp1', 0), safe_get(result, 'tp2', 0), safe_get(result, 'tp3', 0)
+                                if safe_get(result, 'action') == "LONG":
                                     tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                                elif result['action'] == "SHORT":
+                                elif safe_get(result, 'action') == "SHORT":
                                     tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                                 
                                 result['tp_probabilities'] = calculate_tp_probability(
-                                    result.get('current_price', result.get('ideal_entry', 0)),
+                                    safe_get(result, 'current_price', safe_get(result, 'ideal_entry', 0)),
                                     tp1, tp2, tp3,
-                                    result['sl'], result['action'],
-                                    result.get('volatility', 0.02)
+                                    safe_get(result, 'sl', 0), safe_get(result, 'action'),
+                                    safe_get(result, 'volatility', 0.02)
                                 )
                             
                             st.session_state.scanned_results = all_results[:10]  # Tampil hanya 10 terbaik
@@ -393,20 +399,20 @@ def main_app():
                                 analysis = bot.analyze_asset(asset)
                                 
                                 # ✅ PERBAIKAN: Ambil baik LONG (score >= 3) maupun SHORT (score <= -3)
-                                if analysis and analysis["action"] in ["LONG", "SHORT"] and abs(analysis["score"]) >= 3:
+                                if analysis and safe_get(analysis, "action") in ["LONG", "SHORT"] and abs(safe_get(analysis, "score", 0)) >= 3:
                                     # Urutkan TP levels sebelum hitung probability
-                                    tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
-                                    if analysis['action'] == "LONG":
+                                    tp1, tp2, tp3 = safe_get(analysis, 'tp1', 0), safe_get(analysis, 'tp2', 0), safe_get(analysis, 'tp3', 0)
+                                    if safe_get(analysis, 'action') == "LONG":
                                         tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                                    elif analysis['action'] == "SHORT":
+                                    elif safe_get(analysis, 'action') == "SHORT":
                                         tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                                     
                                     # Hitung probabilitas TP
                                     analysis['tp_probabilities'] = calculate_tp_probability(
-                                        analysis.get('current_price', analysis.get('ideal_entry', 0)),
+                                        safe_get(analysis, 'current_price', safe_get(analysis, 'ideal_entry', 0)),
                                         tp1, tp2, tp3,
-                                        analysis['sl'], analysis['action'],
-                                        analysis.get('volatility', 0.02)
+                                        safe_get(analysis, 'sl', 0), safe_get(analysis, 'action'),
+                                        safe_get(analysis, 'volatility', 0.02)
                                     )
                                     fallback_results.append(analysis)
                                     
@@ -494,7 +500,7 @@ def main_app():
                                         
                             if fallback_results:
                                 # ✅ PERBAIKAN: Sort berdasarkan absolute value untuk memasukkan SHORT yang kuat
-                                fallback_results.sort(key=lambda x: abs(x.get('score', 0)), reverse=True)
+                                fallback_results.sort(key=lambda x: abs(safe_get(x, 'score', 0)), reverse=True)
                                 st.session_state.scanned_results = fallback_results[:10]
                                 st.info(f"Fallback selesai! Menampilkan {len(fallback_results)} aset (LONG & SHORT).")
                             else:
@@ -512,19 +518,20 @@ def main_app():
                     col1, col2 = st.columns([3, 1])
                     with col1:
                         # Tampilkan dengan warna berbeda untuk LONG/SHORT
-                        if res['action'] == "LONG":
-                            st.write(f"{i}. **{res['symbol']}** - 🟢 {res['action']} (Score: {res['score']})")
+                        action = safe_get(res, 'action', 'NEUTRAL')
+                        if action == "LONG":
+                            st.write(f"{i}. **{safe_get(res, 'symbol')}** - 🟢 {action} (Score: {safe_get(res, 'score', 0)})")
                         else:
-                            st.write(f"{i}. **{res['symbol']}** - 🔴 {res['action']} (Score: {res['score']})")
+                            st.write(f"{i}. **{safe_get(res, 'symbol')}** - 🔴 {action} (Score: {safe_get(res, 'score', 0)})")
                             
-                        st.write(f"Entry Range: {res['entry_low']:.5f} - {res['entry_high']:.5f} | "
-                                 f"SL: {res['sl']:.5f}")
+                        st.write(f"Entry Range: {safe_get(res, 'entry_low', 0):.5f} - {safe_get(res, 'entry_high', 0):.5f} | "
+                                 f"SL: {safe_get(res, 'sl', 0):.5f}")
                         
                         # Urutkan TP levels untuk display
-                        tp1, tp2, tp3 = res['tp1'], res['tp2'], res['tp3']
-                        if res['action'] == "LONG":
+                        tp1, tp2, tp3 = safe_get(res, 'tp1', 0), safe_get(res, 'tp2', 0), safe_get(res, 'tp3', 0)
+                        if action == "LONG":
                             tp1, tp2, tp3 = sorted([tp1, tp2, tp3])  # Kecil ke besar
-                        elif res['action'] == "SHORT":
+                        elif action == "SHORT":
                             tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)  # Besar ke kecil
                         
                         st.write(f"🎯 TP1: {tp1:.5f} | 🎯 TP2: {tp2:.5f} | 🎯 TP3: {tp3:.5f}")
@@ -532,7 +539,7 @@ def main_app():
                         # Tampilkan probabilitas TP jika ada
                         if 'tp_probabilities' in res:
                             probs = res['tp_probabilities']
-                            st.write(f"📊 **Probabilitas:** TP1: {probs.get('tp1', 0)*100:.1f}% | TP2: {probs.get('tp2', 0)*100:.1f}% | TP3: {probs.get('tp3', 0)*100:.1f}%")
+                            st.write(f"📊 **Probabilitas:** TP1: {safe_get(probs, 'tp1', 0)*100:.1f}% | TP2: {safe_get(probs, 'tp2', 0)*100:.1f}% | TP3: {safe_get(probs, 'tp3', 0)*100:.1f}%")
                         
                         # Tampilkan pola yang terdeteksi
                         if 'detected_patterns' in res and res['detected_patterns']:
@@ -540,16 +547,16 @@ def main_app():
                         
                         # Tampilkan pattern score
                         if 'pattern_score' in res:
-                            st.write(f"⭐ **Pattern Score:** {res['pattern_score']}")
+                            st.write(f"⭐ **Pattern Score:** {safe_get(res, 'pattern_score', 0)}")
                             
                         # Tampilkan risk category
                         if 'risk_category' in res:
-                            st.write(f"⚖️ **Risk Category:** {res['risk_category']}")
+                            st.write(f"⚖️ **Risk Category:** {safe_get(res, 'risk_category', 'MEDIUM')}")
                             
                     with col2:
-                        if st.button(f"Pilih {i}", key=f"select_{res['symbol']}"):
-                            st.session_state.selected_for_entry[res['symbol']] = res
-                            st.success(f"Selected {res['symbol']}!")
+                        if st.button(f"Pilih {i}", key=f"select_{safe_get(res, 'symbol')}"):
+                            st.session_state.selected_for_entry[safe_get(res, 'symbol')] = res
+                            st.success(f"Selected {safe_get(res, 'symbol')}!")
                             st.rerun()
                 else:
                     st.warning("Data analisis tidak valid untuk salah satu aset.")
@@ -564,7 +571,7 @@ def main_app():
                     with col1:
                         entry_price = st.number_input(
                             "Entry Price",
-                            value=analysis.get("ideal_entry", analysis.get("entry_price", 0.0)),
+                            value=safe_get(analysis, "ideal_entry", safe_get(analysis, "entry_price", 0.0)),
                             step=0.001,
                             key=f"entry_{symbol}"
                         )
@@ -572,25 +579,25 @@ def main_app():
                     with col2:
                         if st.button(f"✅ Tambah Posisi {symbol}", key=f"add_{symbol}"):
                             try:
-                                ideal_entry = analysis.get("ideal_entry", entry_price)
+                                ideal_entry = safe_get(analysis, "ideal_entry", entry_price)
                                 
                                 # Urutkan TP levels sebelum simpan
-                                tp1, tp2, tp3 = analysis["tp1"], analysis["tp2"], analysis["tp3"]
-                                if analysis["action"] == "LONG":
+                                tp1, tp2, tp3 = safe_get(analysis, "tp1", 0), safe_get(analysis, "tp2", 0), safe_get(analysis, "tp3", 0)
+                                if safe_get(analysis, "action") == "LONG":
                                     tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                                elif analysis["action"] == "SHORT":
+                                elif safe_get(analysis, "action") == "SHORT":
                                     tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                                 
                                 # Adjust TP levels berdasarkan entry price yang baru
                                 tp1_adj = entry_price + (tp1 - ideal_entry)
                                 tp2_adj = entry_price + (tp2 - ideal_entry)
                                 tp3_adj = entry_price + (tp3 - ideal_entry)
-                                sl_adj = entry_price - (ideal_entry - analysis["sl"])
+                                sl_adj = entry_price - (ideal_entry - safe_get(analysis, "sl", 0))
                                 
                                 position_id = bot.db.save_position(
                                     symbol=symbol,
                                     market_type=bot.mode,
-                                    action=analysis["action"],
+                                    action=safe_get(analysis, "action"),
                                     entry_price=entry_price,
                                     tp1=tp1_adj,
                                     tp2=tp2_adj,
@@ -613,14 +620,14 @@ def main_app():
                     
                     with st.expander("🔍 Detail Analisis"):
                         if 'momentum_quality' in analysis:
-                            st.write(f"**Momentum Quality:** {analysis['momentum_quality']}")
+                            st.write(f"**Momentum Quality:** {safe_get(analysis, 'momentum_quality')}")
                         if 'market_phase' in analysis:
-                            st.write(f"**Market Phase:** {analysis['market_phase']}")
+                            st.write(f"**Market Phase:** {safe_get(analysis, 'market_phase')}")
                         if 'reward_ratio' in analysis:
-                            st.write(f"**Reward Ratio:** {analysis['reward_ratio']:.2f}")
+                            st.write(f"**Reward Ratio:** {safe_get(analysis, 'reward_ratio', 0):.2f}")
                         if 'tp_probabilities' in analysis:
                             probs = analysis['tp_probabilities']
-                            st.write(f"**Probabilitas TP:** TP1: {probs.get('tp1', 0)*100:.1f}% | TP2: {probs.get('tp2', 0)*100:.1f}% | TP3: {probs.get('tp3', 0)*100:.1f}%")
+                            st.write(f"**Probabilitas TP:** TP1: {safe_get(probs, 'tp1', 0)*100:.1f}% | TP2: {safe_get(probs, 'tp2', 0)*100:.1f}% | TP3: {safe_get(probs, 'tp3', 0)*100:.1f}%")
                     
                     if st.button(f"🗑️ Hapus {symbol} dari pilihan", key=f"remove_{symbol}"):
                         if symbol in st.session_state.selected_for_entry:
@@ -670,7 +677,7 @@ def main_app():
                 st.subheader("📡 Latest Scan Results:")
                 for res in st.session_state["latest_results"]:
                     if isinstance(res, dict) and 'symbol' in res:
-                        st.write(f"**{res['symbol']}** - {res['action']} (Score: {res['score']})")
+                        st.write(f"**{safe_get(res, 'symbol')}** - {safe_get(res, 'action')} (Score: {safe_get(res, 'score', 0)})")
                         if 'detected_patterns' in res and res['detected_patterns']:
                             st.write(f"📊 Pola: {', '.join(res['detected_patterns'])}")
 
@@ -702,18 +709,18 @@ def main_app():
                     analysis = bot.analyze_asset(symbol)
                     if analysis and isinstance(analysis, dict) and 'symbol' in analysis:
                         # Urutkan TP levels sebelum hitung probability
-                        tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
-                        if analysis['action'] == "LONG":
+                        tp1, tp2, tp3 = safe_get(analysis, 'tp1', 0), safe_get(analysis, 'tp2', 0), safe_get(analysis, 'tp3', 0)
+                        if safe_get(analysis, 'action') == "LONG":
                             tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                        elif analysis['action'] == "SHORT":
+                        elif safe_get(analysis, 'action') == "SHORT":
                             tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                         
                         # Hitung probabilitas TP
                         analysis['tp_probabilities'] = calculate_tp_probability(
-                            analysis.get('current_price', analysis.get('ideal_entry', 0)),
+                            safe_get(analysis, 'current_price', safe_get(analysis, 'ideal_entry', 0)),
                             tp1, tp2, tp3,
-                            analysis['sl'], analysis['action'],
-                            analysis.get('volatility', 0.02)
+                            safe_get(analysis, 'sl', 0), safe_get(analysis, 'action'),
+                            safe_get(analysis, 'volatility', 0.02)
                         )
                         
                         st.session_state.selected_analysis = analysis
@@ -775,27 +782,27 @@ def main_app():
         if st.session_state.selected_analysis:
             analysis = st.session_state.selected_analysis
             if isinstance(analysis, dict) and 'symbol' in analysis:
-                st.subheader(f"📊 Hasil Analisis untuk {analysis['symbol']}")
+                st.subheader(f"📊 Hasil Analisis untuk {safe_get(analysis, 'symbol')}")
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("💰 Current Price", f"{analysis.get('current_price', 0):.5f}")
-                    st.metric("📈 Trend", analysis.get('trend', 'NEUTRAL'))
-                    st.metric("📊 RSI", f"{analysis.get('rsi', 0):.2f}")
-                    st.metric("⭐ Score", analysis.get('score', 0))
+                    st.metric("💰 Current Price", f"{safe_get(analysis, 'current_price', 0):.5f}")
+                    st.metric("📈 Trend", safe_get(analysis, 'trend', 'NEUTRAL'))
+                    st.metric("📊 RSI", f"{safe_get(analysis, 'rsi', 0):.2f}")
+                    st.metric("⭐ Score", safe_get(analysis, 'score', 0))
                 
                 with col2:
-                    st.metric("📉 ATR", f"{analysis.get('atr', 0):.5f}")
-                    st.metric("🔄 Volume Ratio", f"{analysis.get('volume_ratio', 0):.2f}")
-                    st.metric("EMA Trend", analysis.get('ema_trend', 'NEUTRAL'))
-                    st.metric("EMA Score", analysis.get('ema_score', 0))
+                    st.metric("📉 ATR", f"{safe_get(analysis, 'atr', 0):.5f}")
+                    st.metric("🔄 Volume Ratio", f"{safe_get(analysis, 'volume_ratio', 0):.2f}")
+                    st.metric("EMA Trend", safe_get(analysis, 'ema_trend', 'NEUTRAL'))
+                    st.metric("EMA Score", safe_get(analysis, 'ema_score', 0))
                 
                 # Enhanced analysis details
                 if 'detected_patterns' in analysis and analysis['detected_patterns']:
                     st.write(f"📊 **Pola Terdeteksi:** {', '.join(analysis['detected_patterns'])}")
                 
                 if 'pattern_score' in analysis:
-                    st.write(f"⭐ **Pattern Score:** {analysis['pattern_score']}")
+                    st.write(f"⭐ **Pattern Score:** {safe_get(analysis, 'pattern_score', 0)}")
                 
                 # Tampilkan probabilitas TP
                 if 'tp_probabilities' in analysis:
@@ -803,66 +810,66 @@ def main_app():
                     probs = analysis['tp_probabilities']
                     col_prob1, col_prob2, col_prob3 = st.columns(3)
                     with col_prob1:
-                        st.metric("TP1 Probability", f"{probs.get('tp1', 0)*100:.1f}%")
+                        st.metric("TP1 Probability", f"{safe_get(probs, 'tp1', 0)*100:.1f}%")
                     with col_prob2:
-                        st.metric("TP2 Probability", f"{probs.get('tp2', 0)*100:.1f}%")
+                        st.metric("TP2 Probability", f"{safe_get(probs, 'tp2', 0)*100:.1f}%")
                     with col_prob3:
-                        st.metric("TP3 Probability", f"{probs.get('tp3', 0)*100:.1f}%")
+                        st.metric("TP3 Probability", f"{safe_get(probs, 'tp3', 0)*100:.1f}%")
                 
                 # Enhanced metrics
                 col3, col4 = st.columns(2)
                 with col3:
                     if 'risk_category' in analysis:
-                        st.metric("⚖️ Risk Category", analysis['risk_category'])
+                        st.metric("⚖️ Risk Category", safe_get(analysis, 'risk_category'))
                     if 'momentum_quality' in analysis:
-                        st.metric("📈 Momentum Quality", analysis['momentum_quality'])
+                        st.metric("📈 Momentum Quality", safe_get(analysis, 'momentum_quality'))
                 with col4:
                     if 'market_phase' in analysis:
-                        st.metric("🌊 Market Phase", analysis['market_phase'])
+                        st.metric("🌊 Market Phase", safe_get(analysis, 'market_phase'))
                     if 'reward_ratio' in analysis:
-                        st.metric("🎯 Reward Ratio", f"{analysis['reward_ratio']:.2f}")
+                        st.metric("🎯 Reward Ratio", f"{safe_get(analysis, 'reward_ratio', 0):.2f}")
                 
                 st.subheader("🎯 Take Profit & Stop Loss")
                 
                 # Urutkan TP levels untuk display
-                tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
-                if analysis['action'] == "LONG":
+                tp1, tp2, tp3 = safe_get(analysis, 'tp1', 0), safe_get(analysis, 'tp2', 0), safe_get(analysis, 'tp3', 0)
+                if safe_get(analysis, 'action') == "LONG":
                     tp1, tp2, tp3 = sorted([tp1, tp2, tp3])  # Kecil ke besar
-                elif analysis['action'] == "SHORT":
+                elif safe_get(analysis, 'action') == "SHORT":
                     tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)  # Besar ke kecil
                 
                 st.write(f"🎯 TP1: {tp1:.5f}")
                 st.write(f"🎯 TP2: {tp2:.5f}")
                 st.write(f"🎯 TP3: {tp3:.5f}")
-                st.write(f"🛑 SL: {analysis.get('sl', 0):.5f}")
+                st.write(f"🛑 SL: {safe_get(analysis, 'sl', 0):.5f}")
                 
                 # Input entry price
                 entry_price = st.number_input(
                     "Entry Price",
-                    value=analysis.get("ideal_entry", 0.0),
+                    value=safe_get(analysis, "ideal_entry", 0.0),
                     step=0.001,
                     key="entry_analysis"
                 )
                 
-                if st.button(f"✅ Tambah Posisi {analysis.get('symbol', 'Aset')}", key="add_analysis"):
+                if st.button(f"✅ Tambah Posisi {safe_get(analysis, 'symbol', 'Aset')}", key="add_analysis"):
                     try:
-                        ideal_entry = analysis.get("ideal_entry", entry_price)
+                        ideal_entry = safe_get(analysis, "ideal_entry", entry_price)
                         
                         # Gunakan TP yang sudah diurutkan
                         position_id = bot.db.save_position(
-                            symbol=analysis['symbol'],
+                            symbol=safe_get(analysis, 'symbol'),
                             market_type=bot.mode,
-                            action=analysis.get("action", "LONG"),
+                            action=safe_get(analysis, "action", "LONG"),
                             entry_price=entry_price,
                             tp1=entry_price + (tp1 - ideal_entry),
                             tp2=entry_price + (tp2 - ideal_entry),
                             tp3=entry_price + (tp3 - ideal_entry),
-                            sl=entry_price - (ideal_entry - analysis.get("sl", 0)),
+                            sl=entry_price - (ideal_entry - safe_get(analysis, "sl", 0)),
                             entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
                             entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
                         )
                         if position_id:
-                            st.success(f"Posisi {analysis['symbol']} ditambahkan!")
+                            st.success(f"Posisi {safe_get(analysis, 'symbol')} ditambahkan!")
                             st.session_state.positions_data = bot.get_active_positions()
                             st.rerun()
                         else:
@@ -930,23 +937,23 @@ def main_app():
         # Tampilkan hasil custom entry
         if st.session_state.custom_result:
             result = st.session_state.custom_result
-            st.subheader(f"📊 Hasil untuk {result['symbol']}")
+            st.subheader(f"📊 Hasil untuk {safe_get(result, 'symbol')}")
             
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("💰 Entry Price", f"{result['entry_price']:.5f}")
-                st.metric("🎯 TP1", f"{result['tp1']:.5f}")
-                st.metric("🎯 TP2", f"{result['tp2']:.5f}")
+                st.metric("💰 Entry Price", f"{safe_get(result, 'entry_price', 0):.5f}")
+                st.metric("🎯 TP1", f"{safe_get(result, 'tp1', 0):.5f}")
+                st.metric("🎯 TP2", f"{safe_get(result, 'tp2', 0):.5f}")
             
             with col2:
-                st.metric("🎯 TP3", f"{result['tp3']:.5f}")
-                st.metric("🛡️ SL", f"{result['sl']:.5f}")
+                st.metric("🎯 TP3", f"{safe_get(result, 'tp3', 0):.5f}")
+                st.metric("🛡️ SL", f"{safe_get(result, 'sl', 0):.5f}")
                 
                 # Hitung risk/reward ratio
                 if action_custom == "LONG":
-                    risk_reward = (result['tp1'] - result['entry_price']) / (result['entry_price'] - result['sl'])
+                    risk_reward = (safe_get(result, 'tp1', 0) - safe_get(result, 'entry_price', 0)) / (safe_get(result, 'entry_price', 0) - safe_get(result, 'sl', 0))
                 else:
-                    risk_reward = (result['entry_price'] - result['tp1']) / (result['sl'] - result['entry_price'])
+                    risk_reward = (safe_get(result, 'entry_price', 0) - safe_get(result, 'tp1', 0)) / (safe_get(result, 'sl', 0) - safe_get(result, 'entry_price', 0))
                 st.metric("📊 Risk/Reward", f"{risk_reward:.2f}")
             
             # Tampilkan probabilitas TP
@@ -955,36 +962,36 @@ def main_app():
                 probs = result['tp_probabilities']
                 col_prob1, col_prob2, col_prob3 = st.columns(3)
                 with col_prob1:
-                    st.metric("TP1 Probability", f"{probs.get('tp1', 0)*100:.1f}%")
+                    st.metric("TP1 Probability", f"{safe_get(probs, 'tp1', 0)*100:.1f}%")
                 with col_prob2:
-                    st.metric("TP2 Probability", f"{probs.get('tp2', 0)*100:.1f}%")
+                    st.metric("TP2 Probability", f"{safe_get(probs, 'tp2', 0)*100:.1f}%")
                 with col_prob3:
-                    st.metric("TP3 Probability", f"{probs.get('tp3', 0)*100:.1f}%")
+                    st.metric("TP3 Probability", f"{safe_get(probs, 'tp3', 0)*100:.1f}%")
             
             # Tombol untuk menambahkan ke posisi
             if st.button("✅ Tambahkan ke Posisi Aktif", key="add_custom"):
                 try:
                     # Urutkan TP levels berdasarkan action
-                    tp1, tp2, tp3 = result['tp1'], result['tp2'], result['tp3']
+                    tp1, tp2, tp3 = safe_get(result, 'tp1', 0), safe_get(result, 'tp2', 0), safe_get(result, 'tp3', 0)
                     if action_custom == "LONG":
                         tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
                     else:  # SHORT
                         tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                         
                     position_id = bot.db.save_position(
-                        symbol=result['symbol'],
+                        symbol=safe_get(result, 'symbol'),
                         market_type=bot.mode,
                         action=action_custom,
-                        entry_price=result['entry_price'],
+                        entry_price=safe_get(result, 'entry_price', 0),
                         tp1=tp1,
                         tp2=tp2,
                         tp3=tp3,
-                        sl=result['sl'],
-                        entry_low=result['entry_price'] * 0.99,
-                        entry_high=result['entry_price'] * 1.01,
+                        sl=safe_get(result, 'sl', 0),
+                        entry_low=safe_get(result, 'entry_price', 0) * 0.99,
+                        entry_high=safe_get(result, 'entry_price', 0) * 1.01,
                     )
                     if position_id:
-                        st.success(f"Posisi {result['symbol']} ditambahkan!")
+                        st.success(f"Posisi {safe_get(result, 'symbol')} ditambahkan!")
                         st.session_state.positions_data = bot.get_active_positions()
                         st.rerun()
                     else:
@@ -1013,16 +1020,29 @@ def main_app():
             
             for pos in st.session_state.positions_data:
                 try:
-                    pos_id = pos[0]        # id
-                    symbol = pos[1]        # symbol
-                    market_type = pos[2]   # market_type
-                    action = pos[3]        # action
-                    entry_price = pos[4]   # entry_price
-                    tp1 = pos[7] if len(pos) > 7 else 0  # tp1
-                    tp2 = pos[8] if len(pos) > 8 else 0  # tp2  
-                    tp3 = pos[9] if len(pos) > 9 else 0  # tp3
-                    sl = pos[10] if len(pos) > 10 else 0 # sl
-                    current_price = pos[11] if len(pos) > 11 else entry_price  # current_price
+                    # Handle both tuple and dictionary responses
+                    if isinstance(pos, tuple):
+                        pos_id = pos[0]        # id
+                        symbol = pos[1]        # symbol
+                        market_type = pos[2]   # market_type
+                        action = pos[3]        # action
+                        entry_price = pos[4]   # entry_price
+                        tp1 = pos[7] if len(pos) > 7 else 0  # tp1
+                        tp2 = pos[8] if len(pos) > 8 else 0  # tp2  
+                        tp3 = pos[9] if len(pos) > 9 else 0  # tp3
+                        sl = pos[10] if len(pos) > 10 else 0 # sl
+                        current_price = pos[11] if len(pos) > 11 else entry_price  # current_price
+                    else:
+                        pos_id = safe_get(pos, 'id', 0)
+                        symbol = safe_get(pos, 'symbol', '')
+                        market_type = safe_get(pos, 'market_type', '')
+                        action = safe_get(pos, 'action', '')
+                        entry_price = safe_get(pos, 'entry_price', 0)
+                        tp1 = safe_get(pos, 'tp1', 0)
+                        tp2 = safe_get(pos, 'tp2', 0)
+                        tp3 = safe_get(pos, 'tp3', 0)
+                        sl = safe_get(pos, 'sl', 0)
+                        current_price = safe_get(pos, 'current_price', entry_price)
                     
                     # Validasi dan urutkan TP levels
                     if action == "LONG":
@@ -1064,9 +1084,9 @@ def main_app():
                     
                     with col2:
                         # Display TP levels dengan probabilitas
-                        st.write(f"🎯 TP1: `{tp1:.5f}` ({tp_probabilities.get('tp1', 0)*100:.1f}%)")
-                        st.write(f"🎯 TP2: `{tp2:.5f}` ({tp_probabilities.get('tp2', 0)*100:.1f}%)")
-                        st.write(f"🎯 TP3: `{tp3:.5f}` ({tp_probabilities.get('tp3', 0)*100:.1f}%)")
+                        st.write(f"🎯 TP1: `{tp1:.5f}` ({safe_get(tp_probabilities, 'tp1', 0)*100:.1f}%)")
+                        st.write(f"🎯 TP2: `{tp2:.5f}` ({safe_get(tp_probabilities, 'tp2', 0)*100:.1f}%)")
+                        st.write(f"🎯 TP3: `{tp3:.5f}` ({safe_get(tp_probabilities, 'tp3', 0)*100:.1f}%)")
                         st.write(f"🛑 SL: `{sl:.5f}`")
                     
                     with col3:
@@ -1122,15 +1142,27 @@ def main_app():
             
             for trade in st.session_state.history_data:
                 try:
-                    trade_id = trade[0]      # id
-                    symbol = trade[1]        # symbol
-                    market_type = trade[2]   # market_type
-                    action = trade[3]        # action
-                    entry_price = trade[4]   # entry_price
-                    exit_price = trade[5]    # exit_price
-                    profit_loss = trade[6]   # profit_loss
-                    trade_type = trade[7]    # trade_type
-                    timestamp = trade[8]     # timestamp
+                    # Handle both tuple and dictionary responses
+                    if isinstance(trade, tuple):
+                        trade_id = trade[0]      # id
+                        symbol = trade[1]        # symbol
+                        market_type = trade[2]   # market_type
+                        action = trade[3]        # action
+                        entry_price = trade[4]   # entry_price
+                        exit_price = trade[5]    # exit_price
+                        profit_loss = trade[6]   # profit_loss
+                        trade_type = trade[7]    # trade_type
+                        timestamp = trade[8]     # timestamp
+                    else:
+                        trade_id = safe_get(trade, 'id', 0)
+                        symbol = safe_get(trade, 'symbol', '')
+                        market_type = safe_get(trade, 'market_type', '')
+                        action = safe_get(trade, 'action', '')
+                        entry_price = safe_get(trade, 'entry_price', 0)
+                        exit_price = safe_get(trade, 'exit_price', 0)
+                        profit_loss = safe_get(trade, 'profit_loss', 0)
+                        trade_type = safe_get(trade, 'type', '')
+                        timestamp = safe_get(trade, 'timestamp', '')
                     
                     color = "green" if profit_loss > 0 else "red"
                     emoji = "✅" if profit_loss > 0 else "❌"
@@ -1160,9 +1192,15 @@ def main_app():
                 st.subheader("📊 Posisi Aktif - Live")
                 for pos in st.session_state.positions_data:
                     try:
-                        symbol = pos[1]
-                        entry_price = pos[4]
-                        current_price = pos[11] if len(pos) > 11 else entry_price
+                        # Handle both tuple and dictionary responses
+                        if isinstance(pos, tuple):
+                            symbol = pos[1]        # symbol
+                            entry_price = pos[4]   # entry_price
+                            current_price = pos[11] if len(pos) > 11 else entry_price  # current_price
+                        else:
+                            symbol = safe_get(pos, 'symbol', '')
+                            entry_price = safe_get(pos, 'entry_price', 0)
+                            current_price = safe_get(pos, 'current_price', entry_price)
                         
                         ticker = bot.data_provider.get_ticker(symbol)
                         if ticker and 'last' in ticker:
@@ -1273,15 +1311,15 @@ def main_app():
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Trades", results.get('total_trades', 0))
-                st.metric("Final Balance", f"${results.get('final_balance', 0):,.2f}")
+                st.metric("Total Trades", safe_get(results, 'total_trades', 0))
+                st.metric("Final Balance", f"${safe_get(results, 'final_balance', 0):,.2f}")
             with col2:
-                st.metric("Win Rate", f"{results.get('win_rate', 0):.1%}")
-                st.metric("Total P&L", f"${results.get('total_pnl', 0):,.2f}")
+                st.metric("Win Rate", f"{safe_get(results, 'win_rate', 0):.1%}")
+                st.metric("Total P&L", f"${safe_get(results, 'total_pnl', 0):,.2f}")
             with col3:
-                st.metric("Sharpe Ratio", f"{results.get('sharpe_ratio', 0):.2f}")
+                st.metric("Sharpe Ratio", f"{safe_get(results, 'sharpe_ratio', 0):.2f}")
             with col4:
-                st.metric("Max Drawdown", f"{results.get('max_drawdown', 0):.1%}")
+                st.metric("Max Drawdown", f"{safe_get(results, 'max_drawdown', 0):.1%}")
             
             if 'equity_curve' in results and PLOTLY_AVAILABLE:
                 fig = go.Figure()
@@ -1307,23 +1345,23 @@ def main_app():
             
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Base Score", analysis.get('base_score', analysis.get('score', 0)))
+                st.metric("Base Score", safe_get(analysis, 'base_score', safe_get(analysis, 'score', 0)))
                 if 'ml_confidence' in analysis:
-                    st.metric("ML Confidence", f"{analysis.get('ml_confidence', 1.0):.2f}")
+                    st.metric("ML Confidence", f"{safe_get(analysis, 'ml_confidence', 1.0):.2f}")
             with col2:
-                st.metric("Final Score", analysis.get('final_score', analysis.get('score', 0)))
-                st.metric("Action", analysis.get('action', 'NEUTRAL'))
+                st.metric("Final Score", safe_get(analysis, 'final_score', safe_get(analysis, 'score', 0)))
+                st.metric("Action", safe_get(analysis, 'action', 'NEUTRAL'))
             
             if 'risk_metrics' in analysis:
                 st.subheader("📊 Risk Metrics")
                 risk_cols = st.columns(3)
                 with risk_cols[0]:
-                    st.metric("Risk Category", analysis['risk_metrics']['risk_category'])
-                    st.metric("Reward Ratio", f"{analysis['risk_metrics']['reward_ratio']:.2f}")
+                    st.metric("Risk Category", safe_get(analysis['risk_metrics'], 'risk_category', ''))
+                    st.metric("Reward Ratio", f"{safe_get(analysis['risk_metrics'], 'reward_ratio', 0):.2f}")
                 with risk_cols[1]:
-                    st.metric("Position Size", f"{analysis['risk_metrics']['optimal_position_size']:.1%}")
+                    st.metric("Position Size", f"{safe_get(analysis['risk_metrics'], 'optimal_position_size', 0):.1%}")
                 with risk_cols[2]:
-                    st.metric("Drawdown Risk", analysis['risk_metrics']['drawdown_risk'])
+                    st.metric("Drawdown Risk", safe_get(analysis['risk_metrics'], 'drawdown_risk', ''))
 
         if st.session_state.risk_assessments:
             st.subheader("⚖️ Risk Assessments")
@@ -1331,12 +1369,12 @@ def main_app():
                 with st.expander(f"Risk Assessment for {symbol}"):
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.write(f"**Risk Category:** {assessment['risk_category']}")
-                        st.write(f"**Volatility Level:** {assessment['volatility_level']}")
+                        st.write(f"**Risk Category:** {safe_get(assessment, 'risk_category', '')}")
+                        st.write(f"**Volatility Level:** {safe_get(assessment, 'volatility_level', '')}")
                     with col2:
-                        st.write(f"**Optimal Position:** {assessment['optimal_position_size']:.1%}")
-                        st.write(f"**Reward Ratio:** {assessment['reward_ratio']:.2f}")
-                    st.info(f"**Recommendation:** {assessment['recommendation']}")
+                        st.write(f"**Optimal Position:** {safe_get(assessment, 'optimal_position_size', 0):.1%}")
+                        st.write(f"**Reward Ratio:** {safe_get(assessment, 'reward_ratio', 0):.2f}")
+                    st.info(f"**Recommendation:** {safe_get(assessment, 'recommendation', '')}")
 
     # ===============================
     # Tab 8: Portfolio Optimization
@@ -1365,8 +1403,8 @@ def main_app():
                                     'signals': [
                                         {
                                             'symbol': s['symbol'],
-                                            'score': s.get('score', 1),
-                                            'risk_category': s.get('risk_category', 'MEDIUM'),
+                                            'score': safe_get(s, 'score', 1),
+                                            'risk_category': safe_get(s, 'risk_category', 'MEDIUM'),
                                             'allocation_percent': base_allocation,
                                             'allocated_capital': portfolio_capital * base_allocation
                                         }
@@ -1390,23 +1428,23 @@ def main_app():
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Allocated", f"{allocations.get('total_allocated_percent', 0):.1%}")
+                st.metric("Total Allocated", f"{safe_get(allocations, 'total_allocated_percent', 0):.1%}")
             with col2:
-                st.metric("Allocated Capital", f"${allocations.get('total_allocated_capital', 0):,.2f}")
+                st.metric("Allocated Capital", f"${safe_get(allocations, 'total_allocated_capital', 0):,.2f}")
             with col3:
-                st.metric("Remaining Capital", f"${allocations.get('remaining_capital', 0):,.2f}")
+                st.metric("Remaining Capital", f"${safe_get(allocations, 'remaining_capital', 0):,.2f}")
             with col4:
-                st.metric("Number of Signals", len(allocations.get('signals', [])))
+                st.metric("Number of Signals", len(safe_get(allocations, 'signals', [])))
             
             st.subheader("📋 Position Details")
             allocation_data = []
-            for signal in allocations.get('signals', []):
+            for signal in safe_get(allocations, 'signals', []):
                 allocation_data.append({
-                    'Symbol': signal['symbol'],
-                    'Score': signal['score'],
-                    'Risk': signal['risk_category'],
-                    'Allocation %': f"{signal['allocation_percent']:.2%}",
-                    'Capital': f"${signal['allocated_capital']:,.2f}"
+                    'Symbol': safe_get(signal, 'symbol'),
+                    'Score': safe_get(signal, 'score', 0),
+                    'Risk': safe_get(signal, 'risk_category', 'MEDIUM'),
+                    'Allocation %': f"{safe_get(signal, 'allocation_percent', 0):.2%}",
+                    'Capital': f"${safe_get(signal, 'allocated_capital', 0):,.2f}"
                 })
             
             if allocation_data:
