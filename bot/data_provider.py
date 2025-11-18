@@ -82,7 +82,7 @@ class CircuitBreaker:
             logger.warning(f"Circuit breaker OPENED after {self.failure_count} failures")
 
 class DataCache:
-    """Enhanced caching with TTL and memory management - FIXED VERSION"""
+    """Enhanced caching with TTL and memory management - RELAXED VERSION"""
     
     def __init__(self, ttl_seconds=300, max_size=1000):
         self.ttl = ttl_seconds
@@ -115,7 +115,7 @@ class DataCache:
                 self._access_times.pop(key, None)
     
     def _is_valid_cached_data(self, data):
-        """Validasi data cached - FIXED: Periksa harga valid"""
+        """Validasi data cached - RELAXED: Terima data dengan harga rendah"""
         if data is None:
             return False
         if isinstance(data, pd.DataFrame):
@@ -124,12 +124,13 @@ class DataCache:
                 return False
             if 'close' in data.columns and (data['close'] <= 0).all():
                 return False
-            if len(data) < 5:  # Minimal 5 bar data (dikurangi dari 10)
+            # RELAXED: Minimal 1 bar data sudah cukup (dari 5)
+            if len(data) < 1:
                 return False
         return True
 
     def get(self, symbol, timeframe, limit):
-        """Get cached data dengan validasi - FIXED"""
+        """Get cached data dengan validasi - RELAXED"""
         self._clean_old_entries()
         key = self._generate_key(symbol, timeframe, limit)
         
@@ -148,7 +149,7 @@ class DataCache:
         return None
     
     def set(self, symbol, timeframe, limit, data):
-        """Cache data dengan validasi - FIXED"""
+        """Cache data dengan validasi - RELAXED"""
         self._clean_old_entries()
         
         # Hanya cache data yang valid
@@ -163,7 +164,7 @@ class DataCache:
         logger.debug(f"Data cached for {symbol}")
 
 class RetryMechanism:
-    """Enhanced retry mechanism with exponential backoff - FIXED VERSION"""
+    """Enhanced retry mechanism with exponential backoff - RELAXED VERSION"""
     
     def __init__(self, max_retries=3, base_delay=1, max_delay=30):
         self.max_retries = max_retries
@@ -178,7 +179,7 @@ class RetryMechanism:
             try:
                 result = func(*args, **kwargs)
                 
-                # Validate result if possible - FIXED: Lebih toleran
+                # Validate result if possible - RELAXED: Lebih toleran
                 if self._validate_result(result):
                     return result
                 else:
@@ -198,7 +199,7 @@ class RetryMechanism:
         raise last_exception or Exception("All retry attempts failed")
     
     def _validate_result(self, result):
-        """Better validation of data result - FIXED: Lebih toleran"""
+        """Better validation of data result - RELAXED: Lebih toleran"""
         if result is None:
             return False
             
@@ -206,10 +207,10 @@ class RetryMechanism:
             # DataFrame dengan sedikit data masih bisa valid
             if result.empty:
                 return False
-            # Periksa apakah ada harga yang valid
+            # RELAXED: Periksa apakah ada harga yang valid (minimal 1)
             if 'close' in result.columns:
                 valid_prices = result['close'].notna() & (result['close'] > 0)
-                if valid_prices.sum() < 3:  # Minimal 3 harga valid (dikurangi dari 5)
+                if valid_prices.sum() < 1:  # Minimal 1 harga valid (dari 3)
                     return False
             return True
             
@@ -222,11 +223,11 @@ class RetryMechanism:
         return True
 
 class DataValidator:
-    """Comprehensive data validation - FIXED VERSION"""
+    """Comprehensive data validation - RELAXED VERSION"""
     
     @staticmethod
     def validate_ohlcv_data(df: pd.DataFrame) -> Tuple[bool, List[str]]:
-        """Validate OHLCV data quality dengan toleransi lebih tinggi - FIXED"""
+        """Validate OHLCV data quality dengan toleransi tinggi - RELAXED"""
         issues = []
         
         if df is None or df.empty:
@@ -239,9 +240,9 @@ class DataValidator:
             issues.append(f"Missing columns: {missing_columns}")
             return False, issues  # Critical error
         
-        # **FIXED: Check for zero prices dengan toleransi**
+        # RELAXED: Check for zero prices dengan toleransi tinggi
         zero_prices = (df['close'] <= 0).sum()
-        if zero_prices > len(df) * 0.5:  # Jika >50% harga nol
+        if zero_prices > len(df) * 0.8:  # Jika >80% harga nol (dari 50%)
             issues.append(f"Too many zero prices: {zero_prices}/{len(df)}")
             return False, issues  # Critical error
         elif zero_prices > 0:
@@ -251,13 +252,13 @@ class DataValidator:
         nan_columns = df[required_columns].columns[df[required_columns].isna().any()].tolist()
         if nan_columns:
             nan_count = df[required_columns].isna().sum().sum()
-            if nan_count > len(df) * 0.3:  # Jika >30% NaN
+            if nan_count > len(df) * 0.5:  # Jika >50% NaN (dari 30%)
                 issues.append(f"Too many NaN values: {nan_count}")
                 return False, issues  # Critical error
             else:
                 issues.append(f"Some NaN values in: {nan_columns}")
         
-        # **FIXED: Data consistency dengan toleransi**
+        # RELAXED: Data consistency dengan toleransi tinggi
         if all(col in df.columns for col in ['high', 'low']):
             invalid_high_low = df[df['high'] < df['low']]
             if not invalid_high_low.empty:
@@ -269,7 +270,7 @@ class DataValidator:
     
     @staticmethod
     def clean_ohlcv_data(df: pd.DataFrame) -> pd.DataFrame:
-        """Clean and normalize OHLCV data - FIXED"""
+        """Clean and normalize OHLCV data - RELAXED"""
         if df is None or df.empty:
             return df
         
@@ -281,7 +282,7 @@ class DataValidator:
             if col in df_clean.columns:
                 df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
         
-        # **FIXED: Jangan hapus row dengan NaN, tapi isi dengan forward fill**
+        # RELAXED: Jangan hapus row dengan NaN, tapi isi dengan forward fill
         critical_columns = ['open', 'high', 'low', 'close']
         for col in critical_columns:
             if col in df_clean.columns:
@@ -300,7 +301,7 @@ class DataValidator:
         if 'timestamp' in df_clean.columns:
             df_clean = df_clean.sort_values('timestamp').reset_index(drop=True)
         
-        # **FIXED: Pastikan tidak ada harga nol**
+        # RELAXED: Handle zero prices dengan cara yang lebih baik
         for col in ['open', 'high', 'low', 'close']:
             if col in df_clean.columns:
                 # Replace zero prices dengan nilai sebelumnya atau berikutnya
@@ -424,10 +425,10 @@ class EnhancedDataProvider(DataProvider, ABC):
         return fallback_assets[:limit]
 
     def _generate_realistic_dummy_data(self, symbol, limit):
-        """Generate realistic dummy data based on symbol - FIXED"""
+        """Generate realistic dummy data based on symbol - IMPROVED"""
         dates = pd.date_range(end=pd.Timestamp.now(), periods=limit, freq='D')
         
-        # **FIXED: Gunakan harga yang realistis berdasarkan simbol**
+        # Gunakan harga yang realistis berdasarkan simbol
         base_price = self._estimate_realistic_price(symbol)
         
         # Generate price movement yang realistis
@@ -452,7 +453,7 @@ class EnhancedDataProvider(DataProvider, ABC):
         return result
 
     def _estimate_realistic_price(self, symbol):
-        """Estimate realistic price based on symbol - FIXED"""
+        """Estimate realistic price based on symbol - IMPROVED"""
         # Harga estimasi untuk simbol umum
         price_estimates = {
             'BTC/USDT': 50000.0,
@@ -509,7 +510,7 @@ class AlphaVantageProvider(EnhancedDataProvider):
         return base
 
     def get_ohlcv(self, symbol, timeframe='1d', limit=200):
-        """Enhanced OHLCV with caching and validation"""
+        """Enhanced OHLCV with caching and validation - RELAXED"""
         # Check cache first
         cached_data = self._get_cached_data(symbol, timeframe, limit)
         if cached_data is not None:
@@ -588,14 +589,14 @@ class AlphaVantageProvider(EnhancedDataProvider):
                     # Sort and limit
                     result_df = result_df.sort_values('timestamp').tail(limit)
                     
-                    # **FIXED: Validasi dan cleaning yang lebih baik**
+                    # RELAXED: Validasi dan cleaning yang lebih toleran
                     is_valid, issues = self.validator.validate_ohlcv_data(result_df)
                     if not is_valid:
                         logger.warning(f"Data validation issues for {symbol}: {issues}")
                         result_df = self.validator.clean_ohlcv_data(result_df)
                     
-                    # **FIXED: Pastikan hasil akhir valid**
-                    if result_df.empty or (result_df['close'] <= 0).all():
+                    # RELAXED: Pastikan hasil akhir valid dengan standar lebih rendah
+                    if result_df.empty or len(result_df) < 3:
                         raise ValueError("Data remains invalid after cleaning")
                     
                     return result_df
@@ -608,7 +609,7 @@ class AlphaVantageProvider(EnhancedDataProvider):
         result = self._safe_api_call(fetch_data)
         
         # Jika masih gagal, gunakan data dummy yang realistis
-        if result is None or result.empty or (result['close'] <= 0).all():
+        if result is None or result.empty or len(result) < 3:
             logger.warning(f"AlphaVantage failed for {symbol}, using realistic dummy data")
             result = self._generate_realistic_dummy_data(symbol, limit)
         
@@ -652,7 +653,7 @@ class AlphaVantageProvider(EnhancedDataProvider):
 
         result = self._safe_api_call(fetch_ticker)
         
-        # **FIXED: Fallback ke harga realistis jika gagal**
+        # Fallback ke harga realistis jika gagal
         if not result or result.get('last', 0) <= 0:
             estimated_price = self._estimate_realistic_price(symbol)
             logger.warning(f"AlphaVantage ticker failed for {symbol}, using estimated price: {estimated_price}")
@@ -692,7 +693,7 @@ class AlphaVantageProvider(EnhancedDataProvider):
             return fallback_assets[:limit]
 
 class EnhancedCCXTDataProvider(EnhancedDataProvider):
-    """Enhanced CCXT provider with better error handling and fallbacks - FIXED VERSION"""
+    """Enhanced CCXT provider with better error handling and fallbacks - RELAXED VERSION"""
     
     def __init__(self, exchange_id='kucoin', api_key='', secret=''):
         super().__init__()
@@ -737,7 +738,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
         return symbol
 
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
-        """Enhanced OHLCV dengan validasi harga yang lebih baik - FIXED"""
+        """Enhanced OHLCV dengan validasi harga yang lebih toleran - RELAXED"""
         # Check cache first
         cached_data = self._get_cached_data(symbol, timeframe, limit)
         if cached_data is not None:
@@ -756,23 +757,28 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 
+                # Log data real yang didapat
+                current_price = df['close'].iloc[-1] if len(df) > 0 else 0
+                logger.info(f"📊 CCXT RAW DATA: {symbol} - {len(df)} bars, current price: {current_price:.8f}")
+                
                 # Validasi data dengan toleransi lebih longgar
                 is_valid, issues = self.validator.validate_ohlcv_data(df)
                 if not is_valid:
                     logger.warning(f"CCXT data validation issues for {symbol}: {issues}")
                     df = self.validator.clean_ohlcv_data(df)
                 
-                # **FIXED: Kurangi requirement minimal data**
-                if len(df) < 10:  # Dari 50 jadi 10
-                    raise ValueError(f"Insufficient data: only {len(df)} rows")
+                # RELAXED: Kurangi requirement minimal data
+                if len(df) < 5:  # Dari 10 jadi 5
+                    logger.warning(f"Low data count for {symbol}: only {len(df)} rows")
+                    # Tidak langsung error, lanjut proses
                 
-                # **FIXED: Pastikan harga tidak nol**
+                # RELAXED: Handle zero prices dengan cara yang lebih baik
                 if (df['close'] <= 0).any():
                     logger.warning(f"Zero or negative prices found for {symbol}")
-                    # Filter out zero prices
+                    # Filter out zero prices tapi jangan reject seluruh dataset
                     df = df[df['close'] > 0]
                     if len(df) == 0:
-                        raise ValueError("All prices are zero")
+                        raise ValueError("All prices are zero after filtering")
                 
                 return df
                 
@@ -783,9 +789,10 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
         # Try CCXT first
         result = self._safe_api_call(fetch_ccxt_data)
         
-        # **FIXED: Kurangi requirement untuk cache**
-        if result is not None and len(result) >= 5:  # Dari 50 jadi 5
+        # RELAXED: Cache dengan data lebih sedikit
+        if result is not None and len(result) >= 3:  # Dari 5 jadi 3
             self._set_cached_data(symbol, timeframe, limit, result)
+            logger.info(f"✅ CCXT ACCEPTED: {symbol} - Price: {result['close'].iloc[-1]:.8f}, Bars: {len(result)}")
             return result
         
         # Fallback ke provider lain dengan prioritas
@@ -800,7 +807,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 conv_symbol = self._convert_symbol(symbol, target)
                 df = fallback.get_ohlcv(conv_symbol, timeframe, limit)
                 
-                if df is not None and len(df) >= 5 and (df['close'] > 0).any():
+                if df is not None and len(df) >= 3 and (df['close'] > 0).any():
                     logger.info(f"Using fallback {fallback.__class__.__name__} for {symbol}")
                     self._set_cached_data(symbol, timeframe, limit, df)
                     return df
@@ -809,14 +816,14 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 logger.warning(f"Fallback {fallback.__class__.__name__} failed: {str(e)}")
                 continue
         
-        # **FIXED: Data dummy yang lebih realistis**
+        # Generate realistic data sebagai last resort
         logger.warning(f"All providers failed for {symbol}, generating realistic dummy data")
         result = self._generate_realistic_dummy_data(symbol, limit)
         self._set_cached_data(symbol, timeframe, limit, result)
         return result
         
     def get_ticker(self, symbol):
-        """Get ticker data dengan fallback yang lebih baik - FIXED"""
+        """Get ticker data dengan fallback yang lebih baik - RELAXED"""
         def fetch_ticker():
             try:
                 if not self.exchange:
@@ -825,7 +832,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 ticker = self.exchange.fetch_ticker(symbol)
                 last_price = ticker.get('last')
                 
-                # **FIXED: Validasi harga lebih ketat**
+                # Validasi harga lebih toleran
                 if last_price is None or last_price <= 0:
                     raise ValueError(f"Invalid price for {symbol}: {last_price}")
                 
@@ -844,8 +851,9 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
         # Try CCXT first
         result = self._safe_api_call(fetch_ticker)
         
-        # **FIXED: Fallback sequence yang lebih robust**
+        # Fallback sequence yang lebih robust
         if result and result.get('last', 0) > 0:
+            logger.info(f"✅ CCXT TICKER: {symbol} - Price: {result['last']:.8f}")
             return result
         
         # Try fallback providers
@@ -861,7 +869,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 logger.warning(f"Fallback ticker failed: {str(e)}")
                 continue
         
-        # **FIXED: Fallback ke harga realistis**
+        # Fallback ke harga realistis
         estimated_price = self._estimate_realistic_price(symbol)
         logger.warning(f"All ticker providers failed for {symbol}, using estimated price: {estimated_price}")
         return {
@@ -921,7 +929,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
             return major_pairs[:limit]
 
 class EnhancedYFinanceDataProvider(EnhancedDataProvider):
-    """Enhanced Yahoo Finance provider with better error handling - FIXED VERSION"""
+    """Enhanced Yahoo Finance provider with better error handling - RELAXED VERSION"""
     
     def __init__(self, market_type='stock'):
         super().__init__()
@@ -936,7 +944,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         return symbol
 
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
-        """Enhanced Yahoo Finance dengan validasi harga - FIXED"""
+        """Enhanced Yahoo Finance dengan validasi harga yang toleran - RELAXED"""
         cached_data = self._get_cached_data(symbol, timeframe, limit)
         if cached_data is not None:
             return cached_data
@@ -960,7 +968,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 if df.empty:
                     raise ValueError("No data returned from Yahoo Finance")
                 
-                # **FIXED: Handle data yang sedikit**
+                # RELAXED: Handle data yang sedikit
                 if len(df) < 5:
                     logger.warning(f"YFinance returned only {len(df)} rows for {symbol}")
                     # Tidak langsung error, lanjut proses
@@ -977,7 +985,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 
                 df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
                 
-                # **FIXED: Validasi harga**
+                # RELAXED: Handle zero prices
                 if (df['close'] <= 0).any():
                     logger.warning(f"Zero or negative prices in YFinance data for {symbol}")
                     df = df[df['close'] > 0]  # Filter out invalid prices
@@ -1013,13 +1021,13 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         except Exception as e:
             logger.warning(f"AlphaVantage fallback failed: {str(e)}")
         
-        # **FIXED: Generate realistic data**
+        # Generate realistic data
         result = self._generate_realistic_dummy_data(symbol, limit)
         self._set_cached_data(symbol, timeframe, limit, result)
         return result
 
     def get_ticker(self, symbol):
-        """Get ticker data from Yahoo Finance - FIXED"""
+        """Get ticker data from Yahoo Finance - RELAXED"""
         def fetch_ticker():
             try:
                 ticker = yf.Ticker(symbol)
@@ -1033,7 +1041,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                     last_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
                     volume = info.get('volume', 0)
                 
-                # **FIXED: Validasi harga**
+                # Validasi harga
                 if last_price <= 0:
                     raise ValueError(f"Invalid price from YFinance: {last_price}")
                 
@@ -1050,7 +1058,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         
         result = self._safe_api_call(fetch_ticker)
         
-        # **FIXED: Fallback yang lebih baik**
+        # Fallback yang lebih baik
         if not result or result.get('last', 0) <= 0:
             try:
                 fallback_result = self.fallback_av.get_ticker(symbol)
