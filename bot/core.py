@@ -1072,6 +1072,12 @@ class EnhancedTradingBot:
     def calculate_custom_entry(self, symbol, entry_price):
         """Calculate custom entry dengan TP/SL berdasarkan ATR - FIXED VERSION"""
         try:
+            # **FIXED: Extract symbol from dict if needed**
+            if isinstance(symbol, dict):
+                symbol = symbol.get('symbol', '')
+                if not symbol:
+                    return {'error': 'Invalid symbol format'}
+            
             # **FIXED: Validasi entry_price**
             if entry_price <= 0:
                 logger.warning(f"Invalid entry price for {symbol}: {entry_price}, using fallback")
@@ -1445,13 +1451,19 @@ class EnhancedTradingBot:
         assets = fallback_assets.get(self.mode, [])
         return [{"symbol": asset} for asset in assets[:limit]]
 
-    # ENHANCED PUBLIC METHODS
+    # ENHANCED PUBLIC METHODS - FIXED VERSION
     
     def analyze_with_enhanced_ml(self, symbol: str) -> Dict[str, Any]:
         """Enhanced analysis dengan ML ensemble - FIXED VERSION"""
         try:
-            # **FIXED: Validasi symbol**
-            if not symbol or symbol.strip() == "":
+            # **FIXED: Extract symbol from dict if needed**
+            if isinstance(symbol, dict):
+                symbol = symbol.get('symbol', '')
+                if not symbol:
+                    return {'error': 'Invalid symbol format'}
+            
+            # **FIXED: Validasi symbol yang sudah diperbaiki**
+            if not symbol or not isinstance(symbol, str) or symbol.strip() == "":
                 return {'error': 'Invalid symbol'}
             
             # Get data
@@ -1604,7 +1616,8 @@ class EnhancedTradingBot:
             
             for asset in assets[:limit * 2]:
                 try:
-                    symbol = asset.get('symbol')
+                    # **FIXED: Extract symbol properly from asset dict**
+                    symbol = asset.get('symbol') if isinstance(asset, dict) else str(asset)
                     if not symbol:
                         continue
                     
@@ -1619,7 +1632,7 @@ class EnhancedTradingBot:
                         logger.warning(f"Failed to get ticker for {symbol}: {e}")
                         continue
                     
-                    # Analyze asset dengan enhanced ML
+                    # Analyze asset dengan enhanced ML - PASS SYMBOL AS STRING
                     analysis = self.analyze_with_enhanced_ml(symbol)
                     
                     # **FIXED: Validasi hasil analysis dengan ketat**
