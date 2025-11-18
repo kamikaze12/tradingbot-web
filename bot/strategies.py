@@ -1,3 +1,5 @@
+[file name]: strategies.py
+[file content begin]
 import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
@@ -1235,7 +1237,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def _combine_analyses(self, market_analysis: MarketAnalysis, patterns: Dict[str, PatternDetection],
                          technical_indicators: Dict[str, float], volume_analysis: Dict[str, Any],
                          trend_analysis: Dict[str, Any], current_price: float) -> Dict[str, Any]:
-        """Combine semua analyses - FIXED VERSION"""
+        """Combine semua analyses - FIXED VERSION DENGAN ENTRY BERBEDA"""
         
         # **FIXED: Pastikan current_price valid sebelum digunakan**
         if current_price <= 0 or pd.isna(current_price):
@@ -1244,13 +1246,16 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         
         # Base scores
         base_score = 0
+        action = "NEUTRAL"
         
         # Technical indicators contribution
         rsi = technical_indicators.get('rsi_14', 50)
         if rsi < self.rsi_oversold:
             base_score += 2
+            action = "LONG"
         elif rsi > self.rsi_overbought:
             base_score -= 2
+            action = "SHORT"
         elif 40 < rsi < 60:
             base_score += 1
         
@@ -1270,69 +1275,84 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             if pattern.detected:
                 pattern_score += pattern.confidence * 2
                 pattern_confirmations.append(f"{pattern_name}_{pattern.direction}")
+                if pattern.direction == "BULLISH":
+                    action = "LONG"
+                elif pattern.direction == "BEARISH":
+                    action = "SHORT"
         
         base_score += pattern_score
+        
+        # **FIXED PENTING: Hitung entry_price YANG BERBEDA dari current_price**
+        entry_price = self._calculate_optimal_entry_price(
+            current_price, action, market_analysis.support_levels, 
+            market_analysis.resistance_levels
+        )
         
         # Market regime adjustment
         regime = market_analysis.regime
         regime_multiplier = self._get_regime_multiplier(regime)
         adjusted_score = base_score * regime_multiplier
         
-        # Determine action
+        # Determine final action
         action_threshold = 2 if self.market_type == "crypto" else 1
-        action = "LONG" if adjusted_score >= action_threshold else "SHORT" if adjusted_score <= -action_threshold else "NEUTRAL"
+        if adjusted_score >= action_threshold:
+            action = "LONG"
+        elif adjusted_score <= -action_threshold:
+            action = "SHORT"
+        else:
+            action = "NEUTRAL"
         
-        # **FIXED: Gunakan current_price sebagai entry_price - INI KUNCI PERBAIKAN!**
-        entry_price = current_price
-        
-        # Calculate ATR dengan fallback
+        # Calculate ATR
         atr = technical_indicators.get('atr', current_price * 0.02)
         if atr <= 0:
             atr = current_price * 0.02
         
-        # **FIXED: Pastikan perbedaan minimal**
-        min_move = max(atr * self.atr_multiplier, current_price * 0.005)
+        # **FIXED: Pastikan entry_price BERBEDA dari current_price**
+        min_move = max(atr * self.atr_multiplier, current_price * 0.01)
         
-        # **FIXED: Hitung TP/SL berdasarkan entry_price (yang sama dengan current_price)**
+        # Untuk LONG: entry_price HARUS < current_price
         if action == "LONG":
+            if entry_price >= current_price:
+                entry_price = current_price * 0.99  # 1% di bawah current price
+            
             tp1 = entry_price + min_move
             tp2 = entry_price + min_move * 2
             tp3 = entry_price + min_move * 3
             sl = entry_price - min_move
             
+        # Untuk SHORT: entry_price HARUS > current_price  
         elif action == "SHORT":
+            if entry_price <= current_price:
+                entry_price = current_price * 1.01  # 1% di atas current price
+            
             tp1 = entry_price - min_move
             tp2 = entry_price - min_move * 2
             tp3 = entry_price - min_move * 3
             sl = entry_price + min_move
-        else:
-            tp1 = entry_price * 1.01
-            tp2 = entry_price * 1.02
-            tp3 = entry_price * 1.03
-            sl = entry_price * 0.99
+            
+        else:  # NEUTRAL
+            entry_price = current_price
+            tp1 = current_price * 1.01
+            tp2 = current_price * 1.02
+            tp3 = current_price * 1.03
+            sl = current_price * 0.99
         
-        # **FIXED: Validasi immediate untuk konsistensi**
-        if action == "LONG" and not (sl < entry_price < tp1 < tp2 < tp3):
-            logger.warning("LONG levels inconsistent, recalculating...")
-            tp1 = entry_price * 1.03
-            tp2 = entry_price * 1.06
-            tp3 = entry_price * 1.09
-            sl = entry_price * 0.97
-        elif action == "SHORT" and not (sl > entry_price > tp1 > tp2 > tp3):
-            logger.warning("SHORT levels inconsistent, recalculating...")
-            tp1 = entry_price * 0.97
-            tp2 = entry_price * 0.94
-            tp3 = entry_price * 0.91
-            sl = entry_price * 1.03
+        # **VALIDASI FINAL: Pastikan entry_price ≠ current_price**
+        if abs(entry_price - current_price) / current_price < 0.005:  # Minimal 0.5% difference
+            logger.warning(f"Entry price too close to current price for {action}, adjusting...")
+            if action == "LONG":
+                entry_price = current_price * 0.98  # 2% below
+            elif action == "SHORT":
+                entry_price = current_price * 1.02  # 2% above
         
         return {
             'action': action,
-            'entry_price': float(entry_price),  # **FIXED: PASTIKAN ini sama dengan current_price**
+            'entry_price': float(entry_price),  # INI SEKARANG BERBEDA!
             'tp1': float(tp1),
             'tp2': float(tp2),
             'tp3': float(tp3),
             'sl': float(sl),
-            'current_price': float(current_price),  # **FIXED: Simpan juga untuk reference**
+            'current_price': float(current_price),
             'score': int(adjusted_score),
             'base_score': int(base_score),
             'rsi': float(rsi),
@@ -1350,14 +1370,50 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'confidence': min(abs(adjusted_score) / 10.0, 1.0)
         }
 
+    def _calculate_optimal_entry_price(self, current_price: float, action: str, 
+                                     support_levels: List[float], resistance_levels: List[float]) -> float:
+        """Hitung entry price optimal yang BERBEDA dari current_price"""
+        try:
+            # Untuk LONG: cari entry di support level atau sedikit di bawah current_price
+            if action == "LONG" and support_levels:
+                valid_supports = [s for s in support_levels if s < current_price]
+                if valid_supports:
+                    optimal_entry = max(valid_supports)  # Support terkuat
+                    # Pastikan entry berbeda dari current_price
+                    if abs(optimal_entry - current_price) / current_price > 0.01:  # Minimal 1% difference
+                        return optimal_entry
+            
+            # Untuk SHORT: cari entry di resistance level atau sedikit di atas current_price
+            elif action == "SHORT" and resistance_levels:
+                valid_resistances = [r for r in resistance_levels if r > current_price]
+                if valid_resistances:
+                    optimal_entry = min(valid_resistances)  # Resistance terkuat
+                    if abs(optimal_entry - current_price) / current_price > 0.01:
+                        return optimal_entry
+            
+            # Fallback: berdasarkan action
+            if action == "LONG":
+                return current_price * 0.98  # 2% below current price
+            elif action == "SHORT":
+                return current_price * 1.02  # 2% above current price
+            else:
+                return current_price
+                
+        except Exception as e:
+            logger.error(f"Error calculating optimal entry: {e}")
+            # Ultimate fallback dengan difference yang jelas
+            if action == "LONG":
+                return current_price * 0.97  # 3% below
+            elif action == "SHORT":
+                return current_price * 1.03  # 3% above
+            else:
+                return current_price
+
     def _final_validation(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Final validation - EXTRA STRICT FIXED VERSION"""
         try:
-            # **FIXED: Validasi bahwa entry_price sama dengan current_price**
-            if 'entry_price' in analysis and 'current_price' in analysis:
-                if analysis['entry_price'] != analysis['current_price']:
-                    logger.warning(f"Entry price {analysis['entry_price']} different from current price {analysis['current_price']}, synchronizing")
-                    analysis['entry_price'] = analysis['current_price']
+            # **FIXED: JANGAN samakan entry_price dengan current_price!**
+            # Biarkan entry_price berbeda dari current_price
             
             # **FIXED: Validasi semua harga numerik dengan toleransi nol**
             price_fields = ['entry_price', 'tp1', 'tp2', 'tp3', 'sl', 'current_price']
@@ -1374,7 +1430,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                             base_price = self._estimate_realistic_price("UNKNOWN")
                         
                         if field == 'entry_price':
-                            analysis[field] = base_price
+                            analysis[field] = base_price * 0.99  # Tetap berbeda!
                         elif field == 'current_price':
                             analysis[field] = base_price
                         elif field.startswith('tp'):
@@ -1978,3 +2034,4 @@ if __name__ == "__main__":
     test_entry_price_fix()
     
     print("\n✅ Enhanced Strategies Testing Completed!")
+[file content end]
