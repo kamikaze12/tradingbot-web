@@ -1059,11 +1059,7 @@ class DatabaseHandler:
                 return False
             finally:
                 cursor.close()
-
-    # =========================================================
-    # ENHANCED TRADE HISTORY
-    # =========================================================
-    def delete_signal_by_symbol(self, symbol, market_type):
+      def delete_signal_by_symbol(self, symbol, market_type):
     """Delete signals by symbol"""
     with self.get_connection() as conn:
         cursor = conn.cursor()
@@ -1085,6 +1081,10 @@ class DatabaseHandler:
             return 0
         finally:
             cursor.close()
+    # =========================================================
+    # ENHANCED TRADE HISTORY
+    # =========================================================
+  
     def get_trade_history(self, market_type: str = None, limit: int = 50, 
                          days_back: int = 30) -> List[Dict]:
         """Get trade history dengan advanced filtering"""
