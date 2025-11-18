@@ -209,6 +209,75 @@ def safe_get(data, key, default=0):
         return data.get(key, default)
     return default
 
+def get_valid_price(data, symbol=None, bot=None):
+    """Enhanced function to get valid price from analysis data"""
+    if not isinstance(data, dict):
+        return 0.0
+    
+    # Priority order for price extraction
+    price_sources = ['current_price', 'entry_price', 'ideal_entry', 'close', 'last']
+    
+    for source in price_sources:
+        price = data.get(source)
+        if price and isinstance(price, (int, float)) and price > 0:
+            return float(price)
+    
+    # If no valid price found in data, try to get from ticker
+    if symbol and bot and hasattr(bot, 'data_provider'):
+        try:
+            ticker = bot.data_provider.get_ticker(symbol)
+            if ticker and 'last' in ticker and ticker['last'] > 0:
+                return float(ticker['last'])
+        except:
+            pass
+    
+    return 0.0
+
+def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
+    """Validate and fix price levels in analysis data"""
+    if not isinstance(analysis, dict):
+        return analysis
+    
+    # Get a valid current price
+    current_price = get_valid_price(analysis, symbol, bot)
+    
+    if current_price <= 0:
+        return analysis  # Cannot fix without valid price
+    
+    # Fix entry price if invalid
+    if analysis.get('entry_price', 0) <= 0:
+        analysis['entry_price'] = current_price
+    
+    if analysis.get('ideal_entry', 0) <= 0:
+        analysis['ideal_entry'] = current_price
+    
+    if analysis.get('current_price', 0) <= 0:
+        analysis['current_price'] = current_price
+    
+    # Fix TP/SL levels if they seem invalid
+    action = analysis.get('action', 'LONG')
+    
+    # Get current values or set defaults
+    tp1 = analysis.get('tp1', 0)
+    tp2 = analysis.get('tp2', 0) 
+    tp3 = analysis.get('tp3', 0)
+    sl = analysis.get('sl', 0)
+    
+    # If all levels are the same or invalid, recalculate based on action
+    if (tp1 == tp2 == tp3 == sl == analysis['entry_price']) or (tp1 <= 0 and tp2 <= 0 and tp3 <= 0 and sl <= 0):
+        if action == "LONG":
+            analysis['tp1'] = current_price * 1.03
+            analysis['tp2'] = current_price * 1.06
+            analysis['tp3'] = current_price * 1.09
+            analysis['sl'] = current_price * 0.97
+        else:  # SHORT
+            analysis['tp1'] = current_price * 0.97
+            analysis['tp2'] = current_price * 0.94
+            analysis['tp3'] = current_price * 0.91
+            analysis['sl'] = current_price * 1.03
+    
+    return analysis
+
 # ====================================
 # Main App
 # ====================================
@@ -304,7 +373,7 @@ def main_app():
     ])
 
     # ===============================
-    # Tab 1: Top Aset
+    # Tab 1: Top Aset - FIXED VERSION
     # ===============================
     with tab1:
         st.subheader("Scan Top Aset")
@@ -348,6 +417,9 @@ def main_app():
                                             analysis['score'] = 5
                                             analysis['ideal_entry'] = analysis['entry_price']
                                     
+                                    # Validate and fix price levels
+                                    analysis = validate_and_fix_price_levels(analysis, symbol, bot)
+                                    
                                     # Hitung probabilitas TP dengan TP levels yang benar
                                     tp1, tp2, tp3 = analysis['tp1'], analysis['tp2'], analysis['tp3']
                                     if analysis['action'] == "LONG":
@@ -355,8 +427,9 @@ def main_app():
                                     elif analysis['action'] == "SHORT":
                                         tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                                     
+                                    current_price = get_valid_price(analysis, symbol, bot)
                                     analysis['tp_probabilities'] = calculate_tp_probability(
-                                        analysis.get('current_price', entry_price),
+                                        current_price,
                                         tp1, tp2, tp3,
                                         analysis['sl'], analysis['action']
                                     )
@@ -373,8 +446,11 @@ def main_app():
                             # Sort berdasarkan abs(score) descending untuk dapat 10 terbaik
                             all_results.sort(key=lambda x: abs(safe_get(x, 'score', 0)), reverse=True)
                             
-                            # Hitung probabilitas TP untuk setiap hasil dengan TP yang sudah diurutkan
-                            for result in all_results[:10]:
+                            # Validate and fix price levels for each result
+                            for i, result in enumerate(all_results[:10]):
+                                symbol = safe_get(result, 'symbol')
+                                all_results[i] = validate_and_fix_price_levels(result, symbol, bot)
+                                
                                 # Urutkan TP levels sebelum hitung probability
                                 tp1, tp2, tp3 = safe_get(result, 'tp1', 0), safe_get(result, 'tp2', 0), safe_get(result, 'tp3', 0)
                                 if safe_get(result, 'action') == "LONG":
@@ -382,8 +458,9 @@ def main_app():
                                 elif safe_get(result, 'action') == "SHORT":
                                     tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                                 
+                                current_price = get_valid_price(result, symbol, bot)
                                 result['tp_probabilities'] = calculate_tp_probability(
-                                    safe_get(result, 'current_price', safe_get(result, 'ideal_entry', 0)),
+                                    current_price,
                                     tp1, tp2, tp3,
                                     safe_get(result, 'sl', 0), safe_get(result, 'action'),
                                     safe_get(result, 'volatility', 0.02)
@@ -400,6 +477,10 @@ def main_app():
                                 
                                 # ✅ PERBAIKAN: Ambil baik LONG (score >= 3) maupun SHORT (score <= -3)
                                 if analysis and safe_get(analysis, "action") in ["LONG", "SHORT"] and abs(safe_get(analysis, "score", 0)) >= 3:
+                                    # Validate and fix price levels
+                                    symbol = safe_get(analysis, 'symbol')
+                                    analysis = validate_and_fix_price_levels(analysis, symbol, bot)
+                                    
                                     # Urutkan TP levels sebelum hitung probability
                                     tp1, tp2, tp3 = safe_get(analysis, 'tp1', 0), safe_get(analysis, 'tp2', 0), safe_get(analysis, 'tp3', 0)
                                     if safe_get(analysis, 'action') == "LONG":
@@ -408,8 +489,9 @@ def main_app():
                                         tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                                     
                                     # Hitung probabilitas TP
+                                    current_price = get_valid_price(analysis, symbol, bot)
                                     analysis['tp_probabilities'] = calculate_tp_probability(
-                                        safe_get(analysis, 'current_price', safe_get(analysis, 'ideal_entry', 0)),
+                                        current_price,
                                         tp1, tp2, tp3,
                                         safe_get(analysis, 'sl', 0), safe_get(analysis, 'action'),
                                         safe_get(analysis, 'volatility', 0.02)
@@ -418,8 +500,9 @@ def main_app():
                                     
                                 elif analysis is None:
                                     try:
-                                        ticker = bot.data_provider.get_ticker(asset)
-                                        if ticker and 'last' in ticker:
+                                        symbol = asset.get('symbol') if isinstance(asset, dict) else asset
+                                        ticker = bot.data_provider.get_ticker(symbol)
+                                        if ticker and 'last' in ticker and ticker['last'] > 0:
                                             current_price = ticker['last']
                                             percentage = ticker.get('percentage', 0)
                                             volume = ticker.get('volume', 1.0)
@@ -466,7 +549,7 @@ def main_app():
                                                 tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                                             
                                             analysis = {
-                                                'symbol': asset,
+                                                'symbol': symbol,
                                                 'action': action,
                                                 'score': simple_score,
                                                 'ideal_entry': current_price,
@@ -509,7 +592,7 @@ def main_app():
                 except Exception as e:
                     st.error(f"❌ Error during scan: {e}")
 
-        # Tampilkan hasil scan
+        # Tampilkan hasil scan - FIXED PRICE DISPLAY
         if st.session_state.scanned_results:
             st.subheader("Top 10 Aset Potensial (dari 100 yang discan):")
 
@@ -523,9 +606,17 @@ def main_app():
                             st.write(f"{i}. **{safe_get(res, 'symbol')}** - 🟢 {action} (Score: {safe_get(res, 'score', 0)})")
                         else:
                             st.write(f"{i}. **{safe_get(res, 'symbol')}** - 🔴 {action} (Score: {safe_get(res, 'score', 0)})")
-                            
-                        st.write(f"Entry Range: {safe_get(res, 'entry_low', 0):.5f} - {safe_get(res, 'entry_high', 0):.5f} | "
-                                 f"SL: {safe_get(res, 'sl', 0):.5f}")
+                        
+                        # ✅ FIXED: Get valid price with priority
+                        current_price = get_valid_price(res, safe_get(res, 'symbol'), bot)
+                        entry_price = safe_get(res, 'entry_price', current_price)
+                        ideal_entry = safe_get(res, 'ideal_entry', entry_price)
+                        
+                        # Use the best available price
+                        display_price = current_price if current_price > 0 else entry_price if entry_price > 0 else ideal_entry
+                        
+                        st.write(f"💰 Current: `{current_price:.5f}` | Entry: `{entry_price:.5f}` | Ideal: `{ideal_entry:.5f}`")
+                        st.write(f"🛑 SL: {safe_get(res, 'sl', 0):.5f}")
                         
                         # Urutkan TP levels untuk display
                         tp1, tp2, tp3 = safe_get(res, 'tp1', 0), safe_get(res, 'tp2', 0), safe_get(res, 'tp3', 0)
@@ -555,23 +646,35 @@ def main_app():
                             
                     with col2:
                         if st.button(f"Pilih {i}", key=f"select_{safe_get(res, 'symbol')}"):
-                            st.session_state.selected_for_entry[safe_get(res, 'symbol')] = res
-                            st.success(f"Selected {safe_get(res, 'symbol')}!")
+                            # Validate and fix the analysis before storing
+                            symbol = safe_get(res, 'symbol')
+                            validated_analysis = validate_and_fix_price_levels(res, symbol, bot)
+                            st.session_state.selected_for_entry[symbol] = validated_analysis
+                            st.success(f"Selected {symbol}!")
                             st.rerun()
                 else:
                     st.warning("Data analisis tidak valid untuk salah satu aset.")
 
-            # Tampilkan input entry untuk setiap simbol yang dipilih
+            # Tampilkan input entry untuk setiap simbol yang dipilih - FIXED
             for symbol, analysis in list(st.session_state.selected_for_entry.items()):
                 if isinstance(analysis, dict) and 'symbol' in analysis:
                     st.markdown("---")
                     st.subheader(f"📈 Input Entry untuk {symbol}")
                     
+                    # Validate analysis data first
+                    analysis = validate_and_fix_price_levels(analysis, symbol, bot)
+                    
                     col1, col2 = st.columns([2, 1])
                     with col1:
+                        # Get valid default entry price
+                        default_entry = get_valid_price(analysis, symbol, bot)
+                        if default_entry <= 0:
+                            # Final fallback
+                            default_entry = 1.0
+                            
                         entry_price = st.number_input(
                             "Entry Price",
-                            value=safe_get(analysis, "ideal_entry", safe_get(analysis, "entry_price", 0.0)),
+                            value=float(default_entry),
                             step=0.001,
                             key=f"entry_{symbol}"
                         )
@@ -579,6 +682,7 @@ def main_app():
                     with col2:
                         if st.button(f"✅ Tambah Posisi {symbol}", key=f"add_{symbol}"):
                             try:
+                                # Use the validated analysis
                                 ideal_entry = safe_get(analysis, "ideal_entry", entry_price)
                                 
                                 # Urutkan TP levels sebelum simpan
@@ -682,7 +786,7 @@ def main_app():
                             st.write(f"📊 Pola: {', '.join(res['detected_patterns'])}")
 
     # ===============================
-    # Tab 2: Analisis Aset
+    # Tab 2: Analisis Aset - FIXED
     # ===============================
     with tab2:
         st.subheader("🔍 Analisis Aset Spesifik")
@@ -707,6 +811,10 @@ def main_app():
                         symbol = f"{symbol}.JK"
                     
                     analysis = bot.analyze_asset(symbol)
+                    
+                    # Validate and fix the analysis
+                    analysis = validate_and_fix_price_levels(analysis, symbol, bot)
+                    
                     if analysis and isinstance(analysis, dict) and 'symbol' in analysis:
                         # Urutkan TP levels sebelum hitung probability
                         tp1, tp2, tp3 = safe_get(analysis, 'tp1', 0), safe_get(analysis, 'tp2', 0), safe_get(analysis, 'tp3', 0)
@@ -716,8 +824,9 @@ def main_app():
                             tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                         
                         # Hitung probabilitas TP
+                        current_price = get_valid_price(analysis, symbol, bot)
                         analysis['tp_probabilities'] = calculate_tp_probability(
-                            safe_get(analysis, 'current_price', safe_get(analysis, 'ideal_entry', 0)),
+                            current_price,
                             tp1, tp2, tp3,
                             safe_get(analysis, 'sl', 0), safe_get(analysis, 'action'),
                             safe_get(analysis, 'volatility', 0.02)
@@ -727,8 +836,9 @@ def main_app():
                         st.rerun()
                     else:
                         try:
+                            # Fallback analysis
                             ticker = bot.data_provider.get_ticker(symbol)
-                            if ticker and 'last' in ticker:
+                            if ticker and 'last' in ticker and ticker['last'] > 0:
                                 current_price = ticker['last']
                                 
                                 # Urutkan TP levels untuk fallback
@@ -778,15 +888,24 @@ def main_app():
                 except Exception as e:
                     st.error(f"❌ Error during analysis: {e}")
 
-        # Tampilkan hasil analisis
+        # Tampilkan hasil analisis - FIXED
         if st.session_state.selected_analysis:
             analysis = st.session_state.selected_analysis
             if isinstance(analysis, dict) and 'symbol' in analysis:
+                
+                # Validate the analysis data
+                symbol = safe_get(analysis, 'symbol')
+                analysis = validate_and_fix_price_levels(analysis, symbol, bot)
+                
                 st.subheader(f"📊 Hasil Analisis untuk {safe_get(analysis, 'symbol')}")
+                
+                # Get valid prices
+                current_price = get_valid_price(analysis, symbol, bot)
+                entry_price = safe_get(analysis, 'entry_price', current_price)
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("💰 Current Price", f"{safe_get(analysis, 'current_price', 0):.5f}")
+                    st.metric("💰 Current Price", f"{current_price:.5f}")
                     st.metric("📈 Trend", safe_get(analysis, 'trend', 'NEUTRAL'))
                     st.metric("📊 RSI", f"{safe_get(analysis, 'rsi', 0):.2f}")
                     st.metric("⭐ Score", safe_get(analysis, 'score', 0))
@@ -843,30 +962,31 @@ def main_app():
                 st.write(f"🎯 TP3: {tp3:.5f}")
                 st.write(f"🛑 SL: {safe_get(analysis, 'sl', 0):.5f}")
                 
-                # Input entry price
-                entry_price = st.number_input(
+                # Input entry price dengan default yang valid
+                default_entry = entry_price if entry_price > 0 else current_price
+                entry_price_input = st.number_input(
                     "Entry Price",
-                    value=safe_get(analysis, "ideal_entry", 0.0),
+                    value=float(default_entry),
                     step=0.001,
                     key="entry_analysis"
                 )
                 
-                if st.button(f"✅ Tambah Posisi {safe_get(analysis, 'symbol', 'Aset')}", key="add_analysis"):
+                if st.button("✅ Tambah Posisi", key="add_analysis"):
                     try:
-                        ideal_entry = safe_get(analysis, "ideal_entry", entry_price)
+                        ideal_entry = safe_get(analysis, "ideal_entry", entry_price_input)
                         
                         # Gunakan TP yang sudah diurutkan
                         position_id = bot.db.save_position(
                             symbol=safe_get(analysis, 'symbol'),
                             market_type=bot.mode,
                             action=safe_get(analysis, "action", "LONG"),
-                            entry_price=entry_price,
-                            tp1=entry_price + (tp1 - ideal_entry),
-                            tp2=entry_price + (tp2 - ideal_entry),
-                            tp3=entry_price + (tp3 - ideal_entry),
-                            sl=entry_price - (ideal_entry - safe_get(analysis, "sl", 0)),
-                            entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
-                            entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
+                            entry_price=entry_price_input,
+                            tp1=entry_price_input + (tp1 - ideal_entry),
+                            tp2=entry_price_input + (tp2 - ideal_entry),
+                            tp3=entry_price_input + (tp3 - ideal_entry),
+                            sl=entry_price_input - (ideal_entry - safe_get(analysis, "sl", 0)),
+                            entry_low=entry_price_input * (1 - bot.strategy.entry_range_pct),
+                            entry_high=entry_price_input * (1 + bot.strategy.entry_range_pct),
                         )
                         if position_id:
                             st.success(f"Posisi {safe_get(analysis, 'symbol')} ditambahkan!")
@@ -880,13 +1000,13 @@ def main_app():
                 st.error("Data analisis tidak valid. Coba analisis ulang.")
 
     # ===============================
-    # Tab 3: Custom Entry
+    # Tab 3: Custom Entry - FIXED
     # ===============================
     with tab3:
         st.subheader("🎯 Custom Entry")
         
         symbol_custom = st.text_input("Masukkan simbol aset:", key="custom_symbol")
-        entry_price_custom = st.number_input("Harga Entry:", value=0.0, step=0.0001, key="custom_entry")
+        entry_price_custom = st.number_input("Harga Entry:", value=1.0, step=0.0001, key="custom_entry")
         action_custom = st.selectbox("Action:", ["LONG", "SHORT"], key="custom_action")
         
         if st.button("🧮 Hitung TP/SL", key="calculate_custom"):
