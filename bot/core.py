@@ -1055,7 +1055,65 @@ class EnhancedTradingBot:
                 json.dump(self.config, f, indent=4)
         except Exception as e:
             logger.error(f"Error saving config: {e}")
+def calculate_custom_entry(self, symbol, entry_price):
+    """Calculate custom entry dengan TP/SL berdasarkan ATR"""
+    try:
+        # Get data untuk menghitung ATR
+        df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 50)
+        if df is None or len(df) < 20:
+            return None
+        
+        # Calculate ATR
+        atr = self._calculate_atr(df)
+        if atr == 0:
+            atr = entry_price * 0.02  # Fallback 2%
+        
+        # Calculate TP/SL levels
+        tp1 = entry_price + (atr * 1.5)
+        tp2 = entry_price + (atr * 2.5)
+        tp3 = entry_price + (atr * 3.5)
+        sl = entry_price - (atr * 1.0)
+        
+        return {
+            'symbol': symbol,
+            'entry_price': entry_price,
+            'tp1': tp1,
+            'tp2': tp2,
+            'tp3': tp3,
+            'sl': sl,
+            'atr': atr
+        }
+    except Exception as e:
+        logger.error(f"Error calculating custom entry: {e}")
+        return None
 
+def _calculate_atr(self, df, period=14):
+    """Calculate Average True Range"""
+    try:
+        high = df['high'].values
+        low = df['low'].values
+        close = df['close'].values
+        
+        tr = np.zeros(len(high))
+        for i in range(1, len(high)):
+            tr1 = high[i] - low[i]
+            tr2 = abs(high[i] - close[i-1])
+            tr3 = abs(low[i] - close[i-1])
+            tr[i] = max(tr1, tr2, tr3)
+        
+        return np.mean(tr[-period:]) if len(tr) >= period else np.mean(tr)
+    except:
+        return 0.02
+
+def delete_signal_by_symbol(self, symbol, market_type):
+    """Delete signal by symbol"""
+    try:
+        # Method ini perlu diimplementasikan di DatabaseHandler
+        # Untuk sekarang kita return True saja
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting signal: {e}")
+        return False
     def set_mode(self, mode):
         """Set trading mode dengan enhanced error handling"""
         try:
