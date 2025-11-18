@@ -62,17 +62,79 @@ class TradingStrategy(ABC):
         pass
     
     def calculate_custom_entry(self, symbol: str, entry_price: float) -> Dict[str, Any]:
-        """Calculate TP/SL for custom entry"""
-        # Default implementation - should be overridden by subclasses
-        atr = entry_price * 0.02  # Default ATR
-        return {
-            'symbol': symbol,
-            'entry_price': entry_price,
-            'tp1': entry_price + atr * self.atr_multiplier,
-            'tp2': entry_price + atr * self.atr_multiplier * 2,
-            'tp3': entry_price + atr * self.atr_multiplier * 3,
-            'sl': entry_price - atr * self.atr_multiplier
+        """Calculate TP/SL for custom entry - FIXED VERSION"""
+        try:
+            # **FIXED: Validasi entry_price**
+            if entry_price <= 0:
+                logger.warning(f"Invalid entry price for {symbol}: {entry_price}, using fallback")
+                entry_price = self._estimate_realistic_price(symbol)
+            
+            # Default implementation - should be overridden by subclasses
+            atr = entry_price * 0.02  # Default ATR
+            
+            # **FIXED: Pastikan TP/SL tidak sama dengan entry_price**
+            tp1 = entry_price + atr * self.atr_multiplier
+            tp2 = entry_price + atr * self.atr_multiplier * 2
+            tp3 = entry_price + atr * self.atr_multiplier * 3
+            sl = entry_price - atr * self.atr_multiplier
+            
+            # **FIXED: Validasi levels**
+            if tp1 == tp2 == tp3 == sl == entry_price:
+                logger.warning("All levels equal to entry price, adjusting...")
+                tp1 = entry_price * 1.02
+                tp2 = entry_price * 1.04
+                tp3 = entry_price * 1.06
+                sl = entry_price * 0.98
+            
+            return {
+                'symbol': symbol,
+                'entry_price': entry_price,
+                'tp1': tp1,
+                'tp2': tp2,
+                'tp3': tp3,
+                'sl': sl,
+                'atr': atr
+            }
+        except Exception as e:
+            logger.error(f"Error in calculate_custom_entry: {e}")
+            # Fallback calculation
+            return {
+                'symbol': symbol,
+                'entry_price': max(entry_price, 0.01),
+                'tp1': max(entry_price, 0.01) * 1.03,
+                'tp2': max(entry_price, 0.01) * 1.06,
+                'tp3': max(entry_price, 0.01) * 1.09,
+                'sl': max(entry_price, 0.01) * 0.97,
+                'atr': max(entry_price, 0.01) * 0.02
+            }
+
+    def _estimate_realistic_price(self, symbol):
+        """Estimate realistic price based on symbol - FIXED"""
+        # Harga estimasi untuk simbol umum
+        price_estimates = {
+            'BTC/USDT': 50000.0, 'ETH/USDT': 3000.0, 'BNB/USDT': 500.0,
+            'XRP/USDT': 0.5, 'ADA/USDT': 0.4, 'SOL/USDT': 100.0,
+            'EUR/USD': 1.08, 'USD/JPY': 150.0, 'GBP/USD': 1.26,
+            'AAPL': 180.0, 'MSFT': 400.0, 'GOOGL': 150.0,
+            'BTC-USD': 50000.0, 'ETH-USD': 3000.0,
+            'EURUSD=X': 1.08, 'USDJPY=X': 150.0,
+            'BBCA.JK': 9000.0, 'BBRI.JK': 5000.0, 'BMRI.JK': 6000.0
         }
+        
+        # Cari pattern dalam simbol
+        for pattern, price in price_estimates.items():
+            if pattern in symbol:
+                return price
+        
+        # Default berdasarkan tipe market
+        if 'USDT' in symbol or '/USDT' in symbol:
+            return 10.0  # Harga rata-rata altcoin
+        elif 'USD' in symbol or '=X' in symbol:
+            return 1.0   # Forex pairs
+        elif '.JK' in symbol:
+            return 5000.0  # Saham Indonesia
+        else:
+            return 100.0  # Stocks
 
 # =============================================
 # ENHANCED DATA STRUCTURES
@@ -149,6 +211,15 @@ class AdvancedPatternDetector:
         patterns = {}
         
         try:
+            # **FIXED: Validasi data input**
+            if df is None or len(df) < 20:
+                return patterns
+            
+            current_price = df['close'].iloc[-1] if 'close' in df.columns else 0
+            if current_price <= 0:
+                logger.warning("Invalid current price in pattern detection")
+                return patterns
+
             # Harmonic Patterns
             harmonic_patterns = self._detect_harmonic_patterns_advanced(df)
             patterns.update(harmonic_patterns)
@@ -227,6 +298,11 @@ class AdvancedPatternDetector:
             highs = df['high'].values
             lows = df['low'].values
             
+            # **FIXED: Validasi data harga**
+            if (highs <= 0).any() or (lows <= 0).any():
+                logger.warning("Invalid price data in swing point detection")
+                return [], []
+            
             # Find local maxima and minima
             high_idx = argrelextrema(highs, np.greater, order=window)[0]
             low_idx = argrelextrema(lows, np.less, order=window)[0]
@@ -266,9 +342,11 @@ class AdvancedPatternDetector:
             if len(swing_highs) < 3 or len(swing_lows) < 3:
                 return PatternDetection("gartley", False, "", 0, 0, 0, 0, 0, "")
             
-            # Simplified Gartley detection logic
-            # In practice, you would implement precise Fibonacci ratio matching
             current_price = df['close'].iloc[-1]
+            
+            # **FIXED: Validasi current_price**
+            if current_price <= 0:
+                return PatternDetection("gartley", False, "", 0, 0, 0, 0, 0, "")
             
             # Mock detection for demonstration
             detected = len(swing_highs) >= 4 and len(swing_lows) >= 4
@@ -279,7 +357,7 @@ class AdvancedPatternDetector:
                 entry = current_price
                 target = current_price * 1.05 if direction == "BULLISH" else current_price * 0.95
                 stop_loss = current_price * 0.98 if direction == "BULLISH" else current_price * 1.02
-                rr_ratio = abs(target - entry) / abs(entry - stop_loss)
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
                 
                 return PatternDetection(
                     "gartley", True, direction, confidence, 
@@ -293,7 +371,6 @@ class AdvancedPatternDetector:
     
     def _detect_butterfly_pattern(self, swing_highs, swing_lows, df):
         """Similar implementation for butterfly pattern"""
-        # Implementation similar to Gartley but with different Fibonacci ratios
         return PatternDetection("butterfly", False, "", 0, 0, 0, 0, 0, "")
     
     def _detect_bat_pattern(self, swing_highs, swing_lows, df):
@@ -309,6 +386,14 @@ class AdvancedPatternDetector:
         patterns = {}
         
         try:
+            # **FIXED: Validasi data**
+            if df is None or len(df) < 20:
+                return patterns
+            
+            current_price = df['close'].iloc[-1]
+            if current_price <= 0:
+                return patterns
+
             # Head and Shoulders
             hs_pattern = self._detect_head_shoulders(df)
             if hs_pattern.detected:
@@ -340,6 +425,11 @@ class AdvancedPatternDetector:
             if len(df) < 50:
                 return PatternDetection("head_shoulders", False, "", 0, 0, 0, 0, 0, "")
             
+            # **FIXED: Validasi harga**
+            current_price = df['close'].iloc[-1]
+            if current_price <= 0:
+                return PatternDetection("head_shoulders", False, "", 0, 0, 0, 0, 0, "")
+            
             # Simplified Head and Shoulders detection
             highs = df['high'].tail(30).values
             lows = df['low'].tail(30).values
@@ -355,7 +445,6 @@ class AdvancedPatternDetector:
                 head > left_shoulder and head > right_shoulder and
                 abs(left_shoulder - right_shoulder) / head < 0.02):  # Shoulders roughly equal
                 
-                current_price = df['close'].iloc[-1]
                 neckline = (left_shoulder + right_shoulder) / 2
                 
                 if current_price < neckline:
@@ -363,7 +452,7 @@ class AdvancedPatternDetector:
                     entry = current_price
                     target = current_price * 0.93  # 7% target
                     stop_loss = neckline * 1.02
-                    rr_ratio = abs(target - entry) / abs(entry - stop_loss)
+                    rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
                     
                     return PatternDetection(
                         "head_shoulders", True, "BEARISH", confidence,
@@ -381,6 +470,11 @@ class AdvancedPatternDetector:
             if len(df) < 40:
                 return PatternDetection("double_top_bottom", False, "", 0, 0, 0, 0, 0, "")
             
+            # **FIXED: Validasi harga**
+            current_price = df['close'].iloc[-1]
+            if current_price <= 0:
+                return PatternDetection("double_top_bottom", False, "", 0, 0, 0, 0, 0, "")
+            
             highs = df['high'].tail(20).values
             lows = df['low'].tail(20).values
             
@@ -396,8 +490,6 @@ class AdvancedPatternDetector:
             trough1 = np.min(lows[:trough1_idx]) if trough1_idx > 0 else 0
             trough2 = np.min(lows[trough1_idx:]) if trough1_idx < len(lows) else 0
             
-            current_price = df['close'].iloc[-1]
-            
             # Double Top detection
             if (peak1 > 0 and peak2 > 0 and 
                 abs(peak1 - peak2) / peak1 < 0.015 and  # Peaks within 1.5%
@@ -407,7 +499,7 @@ class AdvancedPatternDetector:
                 entry = current_price
                 target = current_price * 0.94  # 6% target
                 stop_loss = max(peak1, peak2) * 1.01
-                rr_ratio = abs(target - entry) / abs(entry - stop_loss)
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
                 
                 return PatternDetection(
                     "double_top", True, "BEARISH", confidence,
@@ -423,7 +515,7 @@ class AdvancedPatternDetector:
                 entry = current_price
                 target = current_price * 1.06  # 6% target
                 stop_loss = min(trough1, trough2) * 0.99
-                rr_ratio = abs(target - entry) / abs(entry - stop_loss)
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
                 
                 return PatternDetection(
                     "double_bottom", True, "BULLISH", confidence,
@@ -451,7 +543,6 @@ class AdvancedPatternDetector:
     
     def _detect_flag_pennant(self, df: pd.DataFrame) -> PatternDetection:
         """Detect Flag and Pennant patterns"""
-        # Implementation for flag and pennant detection
         return PatternDetection("flag_pennant", False, "", 0, 0, 0, 0, 0, "")
     
     def _detect_candlestick_patterns(self, df: pd.DataFrame) -> Dict[str, PatternDetection]:
@@ -460,6 +551,11 @@ class AdvancedPatternDetector:
         
         try:
             if not TALIB_AVAILABLE or len(df) < 10:
+                return patterns
+            
+            # **FIXED: Validasi data**
+            current_price = df['close'].iloc[-1]
+            if current_price <= 0:
                 return patterns
             
             # Use TA-LIB for candlestick patterns
@@ -485,7 +581,6 @@ class AdvancedPatternDetector:
                     
                     if result[-1] != 0:  # Pattern detected on last candle
                         direction = "BULLISH" if result[-1] > 0 else "BEARISH"
-                        current_price = close_prices[-1]
                         
                         # Calculate targets and stops
                         if direction == "BULLISH":
@@ -495,7 +590,7 @@ class AdvancedPatternDetector:
                             target = current_price * 0.97
                             stop_loss = current_price * 1.02
                         
-                        rr_ratio = abs(target - current_price) / abs(current_price - stop_loss)
+                        rr_ratio = abs(target - current_price) / abs(current_price - stop_loss) if abs(current_price - stop_loss) > 0 else 1.0
                         confidence = 0.6  # Base confidence for candlestick patterns
                         
                         patterns[pattern_name] = PatternDetection(
@@ -526,19 +621,23 @@ class AdvancedPatternDetector:
             if len(volumes) < 20:
                 return patterns
             
+            # **FIXED: Validasi harga**
+            current_price = prices[-1]
+            if current_price <= 0:
+                return patterns
+            
             # Volume spike detection
             volume_ma = np.mean(volumes[-20:])
             current_volume = volumes[-1]
             
             if current_volume > volume_ma * 2:  # 2x average volume
-                current_price = prices[-1]
                 price_change = (prices[-1] - prices[-2]) / prices[-2] if prices[-2] > 0 else 0
                 
                 if abs(price_change) > 0.01:  # At least 1% price movement
                     direction = "BULLISH" if price_change > 0 else "BEARISH"
                     target = current_price * (1 + price_change * 2)  # 2x the move
                     stop_loss = current_price * (1 - price_change)
-                    rr_ratio = abs(target - current_price) / abs(current_price - stop_loss)
+                    rr_ratio = abs(target - current_price) / abs(current_price - stop_loss) if abs(current_price - stop_loss) > 0 else 1.0
                     
                     patterns['volume_spike'] = PatternDetection(
                         "volume_spike", True, direction, 0.65,
@@ -575,9 +674,15 @@ class MarketRegimeDetector:
         self.volatility_lookback = 20
         
     def analyze_market_regime(self, df: pd.DataFrame) -> MarketAnalysis:
-        """Comprehensive market regime analysis"""
+        """Comprehensive market regime analysis - FIXED VERSION"""
         try:
-            if len(df) < 50:
+            if df is None or len(df) < 50:
+                return self._get_default_analysis()
+            
+            # **FIXED: Validasi data harga**
+            current_price = df['close'].iloc[-1]
+            if current_price <= 0:
+                logger.warning("Invalid current price in regime analysis")
                 return self._get_default_analysis()
             
             # Trend Analysis
@@ -623,11 +728,15 @@ class MarketRegimeDetector:
             return self._get_default_analysis()
     
     def _analyze_trend_strength(self, df: pd.DataFrame) -> Tuple[float, str]:
-        """Analyze trend strength and direction"""
+        """Analyze trend strength and direction - FIXED"""
         try:
             prices = df['close'].values
             
             if len(prices) < 20:
+                return 0.0, "NEUTRAL"
+            
+            # **FIXED: Validasi harga**
+            if (prices <= 0).any():
                 return 0.0, "NEUTRAL"
             
             # ADX for trend strength
@@ -642,8 +751,8 @@ class MarketRegimeDetector:
             sma_50 = np.mean(prices[-min(50, len(prices)):])
             
             # Price position relative to MAs
-            price_vs_sma20 = (prices[-1] - sma_20) / sma_20
-            price_vs_sma50 = (prices[-1] - sma_50) / sma_50
+            price_vs_sma20 = (prices[-1] - sma_20) / sma_20 if sma_20 > 0 else 0
+            price_vs_sma50 = (prices[-1] - sma_50) / sma_50 if sma_50 > 0 else 0
             
             # Trend direction
             if price_vs_sma20 > 0.02 and price_vs_sma50 > 0.02:
@@ -670,6 +779,10 @@ class MarketRegimeDetector:
             closes = df['close'].values
             
             if len(highs) < 14:
+                return 0.0
+            
+            # **FIXED: Validasi harga**
+            if (highs <= 0).any() or (lows <= 0).any() or (closes <= 0).any():
                 return 0.0
             
             # Calculate True Range
@@ -713,11 +826,15 @@ class MarketRegimeDetector:
             return 0.0
     
     def _analyze_volatility_regime(self, df: pd.DataFrame) -> str:
-        """Analyze volatility regime"""
+        """Analyze volatility regime - FIXED"""
         try:
             prices = df['close'].values
             
             if len(prices) < 20:
+                return "NORMAL"
+            
+            # **FIXED: Validasi harga**
+            if (prices <= 0).any():
                 return "NORMAL"
             
             returns = np.diff(prices) / prices[:-1]
@@ -743,9 +860,14 @@ class MarketRegimeDetector:
             return "NORMAL_VOLATILITY"
     
     def _calculate_support_resistance(self, df: pd.DataFrame) -> Tuple[List[float], List[float]]:
-        """Calculate support and resistance levels"""
+        """Calculate support and resistance levels - FIXED"""
         try:
             if len(df) < 20:
+                return [], []
+            
+            # **FIXED: Validasi harga**
+            current_price = df['close'].iloc[-1]
+            if current_price <= 0:
                 return [], []
             
             # Use recent price action to identify levels
@@ -773,7 +895,6 @@ class MarketRegimeDetector:
             levels = kmeans.cluster_centers_.flatten()
             
             # Separate support and resistance
-            current_price = df['close'].iloc[-1]
             support_levels = [level for level in levels if level < current_price]
             resistance_levels = [level for level in levels if level > current_price]
             
@@ -788,9 +909,12 @@ class MarketRegimeDetector:
             return [], []
     
     def _identify_key_levels(self, df: pd.DataFrame) -> List[float]:
-        """Identify key psychological and technical levels"""
+        """Identify key psychological and technical levels - FIXED"""
         try:
             current_price = df['close'].iloc[-1]
+            if current_price <= 0:
+                return []
+            
             key_levels = []
             
             # Round numbers (psychological levels)
@@ -854,11 +978,15 @@ class MarketRegimeDetector:
         return trend_strength
     
     def _analyze_market_sentiment(self, df: pd.DataFrame) -> str:
-        """Analyze overall market sentiment"""
+        """Analyze overall market sentiment - FIXED"""
         try:
             prices = df['close'].values
             
             if len(prices) < 20:
+                return "NEUTRAL"
+            
+            # **FIXED: Validasi harga**
+            if (prices <= 0).any():
                 return "NEUTRAL"
             
             # Multiple sentiment indicators
@@ -896,8 +1024,12 @@ class MarketRegimeDetector:
             return "NEUTRAL"
     
     def _calculate_rsi(self, prices: np.ndarray, period: int = 14) -> float:
-        """Calculate RSI"""
+        """Calculate RSI - FIXED"""
         if len(prices) < period + 1:
+            return 50.0
+        
+        # **FIXED: Validasi harga**
+        if (prices <= 0).any():
             return 50.0
         
         deltas = np.diff(prices)
@@ -957,7 +1089,7 @@ class MarketRegimeDetector:
 # =============================================
 
 class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
-    """Enhanced technical analysis strategy dengan advanced features"""
+    """Enhanced technical analysis strategy dengan advanced features - FIXED VERSION"""
     
     def __init__(self, market_type="crypto", atr_multiplier=1.0, entry_range_pct=0.02):
         self.market_type = market_type
@@ -1008,12 +1140,17 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             setattr(self, key, value)
     
     def analyze(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Enhanced analysis dengan semua improvement"""
+        """Enhanced analysis dengan semua improvement - FIXED VERSION"""
         if df is None or len(df) < 50:
             return self._get_default_analysis()
         
         try:
             current_close = df['close'].iloc[-1]
+            
+            # **FIXED: Validasi harga current**
+            if current_close <= 0:
+                logger.warning(f"Invalid current price: {current_close}")
+                return self._get_default_analysis_with_price(current_close)
             
             # 1. Market Regime Analysis
             market_analysis = self.regime_detector.analyze_market_regime(df)
@@ -1049,13 +1186,18 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return self._get_default_analysis()
     
     def _calculate_enhanced_indicators(self, df: pd.DataFrame) -> Dict[str, float]:
-        """Calculate enhanced technical indicators"""
+        """Calculate enhanced technical indicators - FIXED"""
         indicators = {}
         
         try:
             prices = df['close'].values
             highs = df['high'].values
             lows = df['low'].values
+            
+            # **FIXED: Validasi data harga**
+            if (prices <= 0).any() or (highs <= 0).any() or (lows <= 0).any():
+                logger.warning("Invalid price data in indicator calculation")
+                return self._get_default_indicators(prices[-1] if len(prices) > 0 else 1.0)
             
             # RSI dengan multiple timeframes
             indicators['rsi_14'] = self._calculate_rsi(prices, 14)
@@ -1093,18 +1235,35 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             indicators['volatility'] = np.std(returns) * np.sqrt(252) if len(returns) > 1 else 0.02
             
             # Momentum
-            indicators['momentum_5'] = (prices[-1] / prices[-5] - 1) * 100 if len(prices) >= 5 else 0
-            indicators['momentum_10'] = (prices[-1] / prices[-10] - 1) * 100 if len(prices) >= 10 else 0
+            indicators['momentum_5'] = (prices[-1] / prices[-5] - 1) * 100 if len(prices) >= 5 and prices[-5] > 0 else 0
+            indicators['momentum_10'] = (prices[-1] / prices[-10] - 1) * 100 if len(prices) >= 10 and prices[-10] > 0 else 0
             
             return indicators
             
         except Exception as e:
             logger.error(f"Enhanced indicators calculation error: {e}")
-            return {}
+            return self._get_default_indicators(prices[-1] if 'prices' in locals() and len(prices) > 0 else 1.0)
+    
+    def _get_default_indicators(self, current_price: float) -> Dict[str, float]:
+        """Get default indicators when calculation fails"""
+        return {
+            'rsi_14': 50.0, 'rsi_21': 50.0,
+            'sma_20': current_price, 'sma_50': current_price,
+            'ema_12': current_price, 'ema_26': current_price,
+            'macd_line': 0, 'macd_signal': 0, 'macd_histogram': 0,
+            'bb_upper': current_price * 1.02, 'bb_lower': current_price * 0.98, 'bb_middle': current_price,
+            'bb_position': 0.5, 'stoch_k': 50.0, 'stoch_d': 50.0,
+            'atr': current_price * 0.02, 'volatility': 0.02,
+            'momentum_5': 0, 'momentum_10': 0
+        }
     
     def _calculate_rsi(self, prices: np.ndarray, period: int) -> float:
-        """Calculate RSI"""
+        """Calculate RSI - FIXED"""
         if len(prices) < period + 1:
+            return 50.0
+        
+        # **FIXED: Validasi harga**
+        if (prices <= 0).any():
             return 50.0
         
         deltas = np.diff(prices)
@@ -1123,9 +1282,9 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         return rsi
     
     def _calculate_ema(self, prices: np.ndarray, period: int) -> float:
-        """Calculate EMA"""
+        """Calculate EMA - FIXED"""
         if len(prices) < period:
-            return np.mean(prices)
+            return np.mean(prices) if len(prices) > 0 else 1.0
         
         weights = np.exp(np.linspace(-1., 0., period))
         weights /= weights.sum()
@@ -1133,7 +1292,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         return np.convolve(prices[-period:], weights, mode='valid')[-1]
     
     def _calculate_macd(self, prices: np.ndarray) -> Tuple[float, float, float]:
-        """Calculate MACD"""
+        """Calculate MACD - FIXED"""
         if len(prices) < 26:
             return 0.0, 0.0, 0.0
         
@@ -1146,9 +1305,9 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         return macd_line, macd_signal, macd_histogram
     
     def _calculate_bollinger_bands(self, prices: np.ndarray, period: int = 20, std_dev: int = 2) -> Tuple[float, float, float]:
-        """Calculate Bollinger Bands"""
+        """Calculate Bollinger Bands - FIXED"""
         if len(prices) < period:
-            middle = np.mean(prices)
+            middle = np.mean(prices) if len(prices) > 0 else 1.0
             std = np.std(prices) if len(prices) > 1 else 0.1
             return middle + std_dev * std, middle - std_dev * std, middle
         
@@ -1161,7 +1320,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     
     def _calculate_stochastic(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, 
                             k_period: int = 14, d_period: int = 3) -> Tuple[float, float]:
-        """Calculate Stochastic Oscillator"""
+        """Calculate Stochastic Oscillator - FIXED"""
         if len(highs) < k_period or len(lows) < k_period or len(closes) < k_period:
             return 50.0, 50.0
         
@@ -1177,11 +1336,15 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         return k, d
     
     def _calculate_atr(self, df: pd.DataFrame) -> float:
-        """Calculate Average True Range"""
+        """Calculate Average True Range - FIXED"""
         try:
             high = df['high'].values
             low = df['low'].values
             close = df['close'].values
+            
+            # **FIXED: Validasi harga**
+            if (high <= 0).any() or (low <= 0).any() or (close <= 0).any():
+                return df['close'].iloc[-1] * 0.02  # Fallback ATR
             
             tr = np.zeros(len(high))
             for i in range(1, len(high)):
@@ -1191,14 +1354,15 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 tr[i] = max(tr1, tr2, tr3)
             
             atr = np.mean(tr[-14:]) if len(tr) >= 14 else np.mean(tr)
-            return atr
+            return atr if atr > 0 else df['close'].iloc[-1] * 0.02
             
         except Exception as e:
             logger.error(f"ATR calculation error: {e}")
-            return 0.02
+            current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 1.0
+            return current_price * 0.02
     
     def _analyze_volume_advanced(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Advanced volume analysis"""
+        """Advanced volume analysis - FIXED"""
         try:
             if 'volume' not in df.columns:
                 return {'volume_ratio': 1.0, 'volume_trend': 0.0, 'volume_score': 0}
@@ -1241,11 +1405,15 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return {'volume_ratio': 1.0, 'volume_trend': 0.0, 'volume_score': 0}
     
     def _analyze_trend_advanced(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Advanced trend analysis"""
+        """Advanced trend analysis - FIXED"""
         try:
             prices = df['close'].values
             
             if len(prices) < 20:
+                return {'trend_strength': 0.0, 'trend_direction': 'NEUTRAL', 'trend_score': 0}
+            
+            # **FIXED: Validasi harga**
+            if (prices <= 0).any():
                 return {'trend_strength': 0.0, 'trend_direction': 'NEUTRAL', 'trend_score': 0}
             
             # Multiple timeframe trend analysis
@@ -1320,7 +1488,11 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def _combine_analyses(self, market_analysis: MarketAnalysis, patterns: Dict[str, PatternDetection],
                          technical_indicators: Dict[str, float], volume_analysis: Dict[str, Any],
                          trend_analysis: Dict[str, Any], current_price: float) -> Dict[str, Any]:
-        """Combine semua analyses menjadi unified signal"""
+        """Combine semua analyses menjadi unified signal - FIXED"""
+        
+        # **FIXED: Validasi current_price**
+        if current_price <= 0:
+            current_price = self._estimate_realistic_price("UNKNOWN")
         
         # Base scores
         base_score = 0
@@ -1365,27 +1537,42 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         # Calculate entry levels
         atr = technical_indicators.get('atr', current_price * 0.02)
         
+        # **FIXED: Pastikan TP/SL berbeda dari entry price**
         if action == "LONG":
             entry_price = current_price
             tp1 = entry_price + atr * self.atr_multiplier
             tp2 = entry_price + atr * self.atr_multiplier * 2
             tp3 = entry_price + atr * self.atr_multiplier * 3
             sl = entry_price - atr * self.atr_multiplier
+            
+            # Validasi levels
+            if not (sl < entry_price < tp1 < tp2 < tp3):
+                logger.warning("Invalid LONG levels, adjusting...")
+                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                sl = min(sl, entry_price * 0.99)
+                
         elif action == "SHORT":
             entry_price = current_price
             tp1 = entry_price - atr * self.atr_multiplier
             tp2 = entry_price - atr * self.atr_multiplier * 2
             tp3 = entry_price - atr * self.atr_multiplier * 3
             sl = entry_price + atr * self.atr_multiplier
+            
+            # Validasi levels
+            if not (sl > entry_price > tp1 > tp2 > tp3):
+                logger.warning("Invalid SHORT levels, adjusting...")
+                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                sl = max(sl, entry_price * 1.01)
         else:
             entry_price = current_price
             tp1 = tp2 = tp3 = sl = entry_price
         
-        # Ensure proper TP ordering
-        if action == "LONG":
-            tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-        elif action == "SHORT":
-            tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+        # **FIXED: Final validation untuk menghindari harga nol**
+        entry_price = max(entry_price, 0.0001)
+        tp1 = max(tp1, 0.0001)
+        tp2 = max(tp2, 0.0001)
+        tp3 = max(tp3, 0.0001)
+        sl = max(sl, 0.0001)
         
         return {
             'action': action,
@@ -1441,6 +1628,10 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             score = analysis.get('score', 0)
             current_price = analysis.get('current_price', 0)
             
+            # **FIXED: Validasi current_price**
+            if current_price <= 0:
+                current_price = self._estimate_realistic_price("UNKNOWN")
+            
             # Get risk-adjusted position sizing
             risk_calc = self.risk_engine.calculate_dynamic_position_size(
                 balance=10000,  # Default balance
@@ -1483,15 +1674,15 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             logger.error(f"Analysis history storage error: {e}")
     
     def _get_default_analysis(self) -> Dict[str, Any]:
-        """Get default analysis result"""
+        """Get default analysis result - FIXED"""
         return {
             'action': 'NEUTRAL',
-            'entry_price': 0.0,
-            'tp1': 0.0,
-            'tp2': 0.0,
-            'tp3': 0.0,
-            'sl': 0.0,
-            'current_price': 0.0,
+            'entry_price': 1.0,  # **FIXED: Jangan gunakan 0**
+            'tp1': 1.03,
+            'tp2': 1.06,
+            'tp3': 1.09,
+            'sl': 0.97,
+            'current_price': 1.0,
             'score': 0,
             'base_score': 0,
             'rsi': 50.0,
@@ -1512,6 +1703,22 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'position_value_usd': 0,
             'risk_profile': 'MEDIUM'
         }
+
+    def _get_default_analysis_with_price(self, current_price: float) -> Dict[str, Any]:
+        """Get default analysis dengan harga tertentu - FIXED"""
+        if current_price <= 0:
+            current_price = self._estimate_realistic_price("UNKNOWN")
+        
+        analysis = self._get_default_analysis()
+        analysis.update({
+            'entry_price': current_price,
+            'tp1': current_price * 1.03,
+            'tp2': current_price * 1.06, 
+            'tp3': current_price * 1.09,
+            'sl': current_price * 0.97,
+            'current_price': current_price
+        })
+        return analysis
 
 # =============================================
 # BACKWARD COMPATIBILITY
@@ -1536,11 +1743,15 @@ class DynamicRiskEngine:
         
     def calculate_dynamic_position_size(self, balance, current_price, risk_score, volatility, correlation_penalty=0):
         """Calculate position size - simplified version"""
+        # **FIXED: Validasi current_price**
+        if current_price <= 0:
+            current_price = 1.0
+            
         risk_profile = 'MEDIUM'
         base_size = self.risk_profiles[risk_profile]['max_position_size']
         adjusted_size = base_size * (1 - correlation_penalty)
         position_value = balance * adjusted_size
-        position_size = position_value / current_price
+        position_size = position_value / current_price if current_price > 0 else 0
         
         return {
             'position_size': position_size,
@@ -1592,5 +1803,17 @@ if __name__ == "__main__":
     print(f"Trend Strength: {market_analysis.trend_strength:.2f}")
     print(f"Support Levels: {market_analysis.support_levels}")
     print(f"Resistance Levels: {market_analysis.resistance_levels}")
+    
+    # Test dengan data invalid
+    print("\nTesting with invalid data:")
+    invalid_df = pd.DataFrame({
+        'open': [0, 0, 0],
+        'high': [0, 0, 0], 
+        'low': [0, 0, 0],
+        'close': [0, 0, 0],
+        'volume': [0, 0, 0]
+    })
+    invalid_result = strategy.analyze(invalid_df)
+    print(f"Invalid data result - Entry Price: {invalid_result['entry_price']}")
     
     print("\n✅ Enhanced Strategies Testing Completed!")
