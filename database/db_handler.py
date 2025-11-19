@@ -21,7 +21,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger.getLogger(__name__)
 
 class TradeType(Enum):
     LONG = "LONG"
@@ -80,6 +80,9 @@ class DatabaseHandler:
         # Then initialize database
         self._initialize_database()
         self.create_enhanced_tables()
+        
+        # Run migration to ensure all columns exist
+        self.migrate_positions_table()
 
     # =========================================================
     # ENHANCED CONNECTION MANAGEMENT
@@ -244,6 +247,56 @@ class DatabaseHandler:
             logger.error(f"Error closing connections: {e}")
 
     # =========================================================
+    # AUTO-MIGRATION FOR MISSING COLUMNS
+    # =========================================================
+    
+    def migrate_positions_table(self):
+        """Automatically migrate positions table if columns are missing"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # List of columns to check and add if missing
+                columns_to_add = [
+                    ('position_size', 'REAL DEFAULT 0.0'),
+                    ('trailing_stop', 'REAL'),
+                    ('trailing_distance', 'REAL DEFAULT 0'),
+                    ('partial_tp_executed', 'JSONB DEFAULT \'[]\''),
+                    ('risk_category', 'TEXT DEFAULT \'MEDIUM\''),
+                    ('position_score', 'INTEGER DEFAULT 0'),
+                    ('pnl', 'REAL DEFAULT 0'),
+                    ('pnl_percent', 'REAL DEFAULT 0'),
+                    ('closed_at', 'TIMESTAMP'),
+                    ('close_reason', 'TEXT')
+                ]
+                
+                for column_name, column_type in columns_to_add:
+                    try:
+                        # Check if column exists
+                        cursor.execute("""
+                            SELECT column_name 
+                            FROM information_schema.columns 
+                            WHERE table_name='positions' AND column_name=%s
+                        """, (column_name,))
+                        
+                        if not cursor.fetchone():
+                            logger.info(f"Adding missing column '{column_name}' to positions table")
+                            cursor.execute(f"ALTER TABLE positions ADD COLUMN {column_name} {column_type}")
+                            conn.commit()
+                            logger.info(f"✅ Successfully added column '{column_name}'")
+                            
+                    except Exception as e:
+                        logger.warning(f"Could not add column '{column_name}': {e}")
+                        conn.rollback()
+                        continue
+                
+                cursor.close()
+                logger.info("✅ Positions table migration completed")
+                
+        except Exception as e:
+            logger.error(f"Error during positions table migration: {e}")
+
+    # =========================================================
     # ENHANCED TABLE SCHEMA
     # =========================================================
     
@@ -300,7 +353,7 @@ class DatabaseHandler:
                         market_type TEXT NOT NULL,
                         action TEXT NOT NULL,
                         entry_price REAL NOT NULL,
-                        position_size REAL NOT NULL,
+                        position_size REAL DEFAULT 0.0,
                         current_price REAL,
                         entry_low REAL,
                         entry_high REAL,
@@ -1059,6 +1112,7 @@ class DatabaseHandler:
                 return False
             finally:
                 cursor.close()
+
     def delete_signal_by_symbol(self, symbol, market_type):
         """Delete signals by symbol"""
         with self.get_connection() as conn:
@@ -1081,6 +1135,7 @@ class DatabaseHandler:
                 return 0
             finally:
                 cursor.close()
+
     # =========================================================
     # ENHANCED TRADE HISTORY
     # =========================================================
