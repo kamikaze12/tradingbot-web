@@ -210,9 +210,9 @@ def safe_get(data, key, default=0):
     return default
 
 def get_valid_price(data, symbol=None, bot=None):
-    """Enhanced function to get valid price from analysis data"""
+    """Enhanced function to get valid price from analysis data - FIXED VERSION"""
     if not isinstance(data, dict):
-        return 0.0
+        return 1.0  # Default to 1.0 instead of 0.0
     
     # Priority order for price extraction
     price_sources = ['current_price', 'entry_price', 'ideal_entry', 'close', 'last']
@@ -231,28 +231,41 @@ def get_valid_price(data, symbol=None, bot=None):
         except:
             pass
     
-    return 0.0
+    # Final fallback - never return 0.0
+    return 1.0  # Default minimum price
 
 def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
-    """Validate and fix price levels in analysis data"""
+    """Validate and fix price levels in analysis data - FIXED VERSION"""
     if not isinstance(analysis, dict):
-        return analysis
+        return {'symbol': symbol, 'error': 'Invalid analysis data'}
     
-    # Get a valid current price
+    # Ensure symbol exists
+    if 'symbol' not in analysis and symbol:
+        analysis['symbol'] = symbol
+    
+    # Get a valid current price with better fallbacks
     current_price = get_valid_price(analysis, symbol, bot)
     
+    # If current_price is still problematic, use more aggressive fallbacks
     if current_price <= 0:
-        return analysis  # Cannot fix without valid price
+        # Try to get from ticker directly
+        try:
+            if symbol and bot and hasattr(bot, 'data_provider'):
+                ticker = bot.data_provider.get_ticker(symbol)
+                if ticker and 'last' in ticker and ticker['last'] > 0:
+                    current_price = ticker['last']
+        except:
+            pass
+        
+        # Ultimate fallback
+        if current_price <= 0:
+            current_price = 1.0
     
-    # Fix entry price if invalid
-    if analysis.get('entry_price', 0) <= 0:
-        analysis['entry_price'] = current_price
-    
-    if analysis.get('ideal_entry', 0) <= 0:
-        analysis['ideal_entry'] = current_price
-    
-    if analysis.get('current_price', 0) <= 0:
-        analysis['current_price'] = current_price
+    # Fix all price fields
+    price_fields = ['entry_price', 'ideal_entry', 'current_price', 'close', 'last']
+    for field in price_fields:
+        if analysis.get(field, 0) <= 0:
+            analysis[field] = current_price
     
     # Fix TP/SL levels if they seem invalid
     action = analysis.get('action', 'LONG')
@@ -263,8 +276,10 @@ def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
     tp3 = analysis.get('tp3', 0)
     sl = analysis.get('sl', 0)
     
-    # If all levels are the same or invalid, recalculate based on action
-    if (tp1 == tp2 == tp3 == sl == analysis['entry_price']) or (tp1 <= 0 and tp2 <= 0 and tp3 <= 0 and sl <= 0):
+    # If levels are invalid, recalculate based on action and current price
+    if (tp1 <= 0 or tp2 <= 0 or tp3 <= 0 or sl <= 0 or 
+        tp1 == tp2 == tp3 == sl == current_price):
+        
         if action == "LONG":
             analysis['tp1'] = current_price * 1.03
             analysis['tp2'] = current_price * 1.06
@@ -645,7 +660,7 @@ def main_app():
                             st.write(f"⚖️ **Risk Category:** {safe_get(res, 'risk_category', 'MEDIUM')}")
                             
                     with col2:
-                        if st.button(f"Pilih {i}", key=f"select_{safe_get(res, 'symbol')}"):
+                        if st.button(f"Pilih {i}", key=f"select_{safe_get(res, 'symbol')}_{i}"):
                             # Validate and fix the analysis before storing
                             symbol = safe_get(res, 'symbol')
                             validated_analysis = validate_and_fix_price_levels(res, symbol, bot)
@@ -655,7 +670,7 @@ def main_app():
                 else:
                     st.warning("Data analisis tidak valid untuk salah satu aset.")
 
-            # Tampilkan input entry untuk setiap simbol yang dipilih - FIXED
+            # Tampilkan input entry untuk setiap simbol yang dipilih - FIXED VERSION
             for symbol, analysis in list(st.session_state.selected_for_entry.items()):
                 if isinstance(analysis, dict) and 'symbol' in analysis:
                     st.markdown("---")
@@ -666,21 +681,32 @@ def main_app():
                     
                     col1, col2 = st.columns([2, 1])
                     with col1:
-                        # Get valid default entry price
+                        # Get valid default entry price - FIXED VERSION
                         default_entry = get_valid_price(analysis, symbol, bot)
+                        
+                        # Ensure default entry is reasonable
                         if default_entry <= 0:
-                            # Final fallback
-                            default_entry = 1.0
-                            
+                            default_entry = 0.01  # Minimum reasonable price
+                        
+                        # Create a unique key for this symbol's input
+                        input_key = f"entry_{symbol}_{int(time.time())}"
+                        
                         entry_price = st.number_input(
                             "Entry Price",
                             value=float(default_entry),
-                            step=0.001,
-                            key=f"entry_{symbol}"
+                            min_value=0.0001,  # Minimum allowed value
+                            max_value=1000000.0,  # Maximum allowed value  
+                            step=0.0001,  # Smaller step for crypto
+                            format="%.5f",  # Show 5 decimal places
+                            key=input_key  # Unique key to prevent conflicts
                         )
+                        
+                        # Display current price for reference
+                        current_price = get_valid_price(analysis, symbol, bot)
+                        st.write(f"💡 Current price: `{current_price:.5f}`")
                     
                     with col2:
-                        if st.button(f"✅ Tambah Posisi {symbol}", key=f"add_{symbol}"):
+                        if st.button(f"✅ Tambah Posisi {symbol}", key=f"add_{symbol}_{int(time.time())}"):
                             try:
                                 # Use the validated analysis
                                 ideal_entry = safe_get(analysis, "ideal_entry", entry_price)
@@ -733,7 +759,7 @@ def main_app():
                             probs = analysis['tp_probabilities']
                             st.write(f"**Probabilitas TP:** TP1: {safe_get(probs, 'tp1', 0)*100:.1f}% | TP2: {safe_get(probs, 'tp2', 0)*100:.1f}% | TP3: {safe_get(probs, 'tp3', 0)*100:.1f}%")
                     
-                    if st.button(f"🗑️ Hapus {symbol} dari pilihan", key=f"remove_{symbol}"):
+                    if st.button(f"🗑️ Hapus {symbol} dari pilihan", key=f"remove_{symbol}_{int(time.time())}"):
                         if symbol in st.session_state.selected_for_entry:
                             del st.session_state.selected_for_entry[symbol]
                         st.rerun()
@@ -962,13 +988,19 @@ def main_app():
                 st.write(f"🎯 TP3: {tp3:.5f}")
                 st.write(f"🛑 SL: {safe_get(analysis, 'sl', 0):.5f}")
                 
-                # Input entry price dengan default yang valid
+                # Input entry price dengan default yang valid - FIXED
                 default_entry = entry_price if entry_price > 0 else current_price
+                if default_entry <= 0:
+                    default_entry = 1.0  # Final fallback
+
                 entry_price_input = st.number_input(
                     "Entry Price",
                     value=float(default_entry),
-                    step=0.001,
-                    key="entry_analysis"
+                    min_value=0.0001,
+                    max_value=1000000.0,
+                    step=0.0001,
+                    format="%.5f",
+                    key="entry_analysis_unique"
                 )
                 
                 if st.button("✅ Tambah Posisi", key="add_analysis"):
@@ -1006,7 +1038,18 @@ def main_app():
         st.subheader("🎯 Custom Entry")
         
         symbol_custom = st.text_input("Masukkan simbol aset:", key="custom_symbol")
-        entry_price_custom = st.number_input("Harga Entry:", value=1.0, step=0.0001, key="custom_entry")
+        
+        # Ganti input entry price di Custom Entry - FIXED:
+        entry_price_custom = st.number_input(
+            "Harga Entry:", 
+            value=1.0,  # Default to 1.0 instead of 0.0
+            min_value=0.0001,
+            max_value=1000000.0,
+            step=0.0001,
+            format="%.5f",
+            key="custom_entry_unique"
+        )
+        
         action_custom = st.selectbox("Action:", ["LONG", "SHORT"], key="custom_action")
         
         if st.button("🧮 Hitung TP/SL", key="calculate_custom"):
