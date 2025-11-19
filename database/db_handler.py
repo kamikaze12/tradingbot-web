@@ -21,7 +21,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger.getLogger(__name__)
+logger = logging.getLogger(__name__)  # FIXED: Removed extra .getLogger
 
 class TradeType(Enum):
     LONG = "LONG"
