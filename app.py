@@ -294,6 +294,117 @@ def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
     return analysis
 
 # ====================================
+# Enhanced Position Saving Functions
+# ====================================
+def save_position_with_feedback(bot, symbol, analysis, entry_price, st_container):
+    """Enhanced position saving with proper feedback"""
+    try:
+        # Validate the analysis data
+        analysis = validate_and_fix_price_levels(analysis, symbol, bot)
+        
+        ideal_entry = safe_get(analysis, "ideal_entry", entry_price)
+        
+        # Urutkan TP levels sebelum simpan
+        tp1, tp2, tp3 = safe_get(analysis, "tp1", 0), safe_get(analysis, "tp2", 0), safe_get(analysis, "tp3", 0)
+        if safe_get(analysis, "action") == "LONG":
+            tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+        elif safe_get(analysis, "action") == "SHORT":
+            tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+        
+        # Adjust TP levels berdasarkan entry price yang baru
+        tp1_adj = entry_price + (tp1 - ideal_entry)
+        tp2_adj = entry_price + (tp2 - ideal_entry)
+        tp3_adj = entry_price + (tp3 - ideal_entry)
+        sl_adj = entry_price - (ideal_entry - safe_get(analysis, "sl", 0))
+        
+        # Debug information
+        debug_info = {
+            'symbol': symbol,
+            'market_type': bot.mode,
+            'action': safe_get(analysis, "action"),
+            'entry_price': entry_price,
+            'tp1': tp1_adj,
+            'tp2': tp2_adj,
+            'tp3': tp3_adj,
+            'sl': sl_adj,
+            'entry_low': entry_price * (1 - bot.strategy.entry_range_pct),
+            'entry_high': entry_price * (1 + bot.strategy.entry_range_pct)
+        }
+        
+        st_container.write(f"🔧 Debug Info: {debug_info}")
+        
+        # Try to save position
+        position_id = bot.db.save_position(
+            symbol=symbol,
+            market_type=bot.mode,
+            action=safe_get(analysis, "action"),
+            entry_price=entry_price,
+            tp1=tp1_adj,
+            tp2=tp2_adj,
+            tp3=tp3_adj,
+            sl=sl_adj,
+            entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
+            entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
+        )
+        
+        if position_id:
+            st_container.success(f"✅ Posisi {symbol} berhasil ditambahkan! (ID: {position_id})")
+            
+            # Update session state
+            st.session_state.positions_data = bot.get_active_positions()
+            st.session_state.selected_positions.append(symbol)
+            
+            # Remove from selected for entry
+            if symbol in st.session_state.selected_for_entry:
+                del st.session_state.selected_for_entry[symbol]
+                
+            return True
+        else:
+            st_container.error(f"❌ Gagal menambahkan posisi {symbol}. Database tidak mengembalikan ID.")
+            return False
+            
+    except Exception as e:
+        st_container.error(f"❌ Error adding position {symbol}: {str(e)}")
+        import traceback
+        st_container.error(f"Stack trace: {traceback.format_exc()}")
+        return False
+
+def save_custom_position_with_feedback(bot, result, action_custom, entry_price, st_container):
+    """Enhanced custom position saving with proper feedback"""
+    try:
+        # Urutkan TP levels berdasarkan action
+        tp1, tp2, tp3 = safe_get(result, 'tp1', 0), safe_get(result, 'tp2', 0), safe_get(result, 'tp3', 0)
+        if action_custom == "LONG":
+            tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+        else:  # SHORT
+            tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+            
+        position_id = bot.db.save_position(
+            symbol=safe_get(result, 'symbol'),
+            market_type=bot.mode,
+            action=action_custom,
+            entry_price=entry_price,
+            tp1=tp1,
+            tp2=tp2,
+            tp3=tp3,
+            sl=safe_get(result, 'sl', 0),
+            entry_low=entry_price * 0.99,
+            entry_high=entry_price * 1.01,
+        )
+        
+        if position_id:
+            st_container.success(f"✅ Posisi {safe_get(result, 'symbol')} berhasil ditambahkan! (ID: {position_id})")
+            st.session_state.positions_data = bot.get_active_positions()
+            return True
+        else:
+            st_container.error(f"❌ Gagal menambahkan posisi {safe_get(result, 'symbol')}. Database tidak mengembalikan ID.")
+            return False
+            
+    except Exception as e:
+        st_container.error(f"❌ Error adding custom position: {str(e)}")
+        return False
+
+# ====================================
 # Main App
 # ====================================
 def main_app():
@@ -331,7 +442,8 @@ def main_app():
         "custom_result": None,
         "backtest_results": {},
         "portfolio_allocations": {},
-        "risk_assessments": {}
+        "risk_assessments": {},
+        "save_debug": {}  # For debugging save operations
     }
     
     for key, val in defaults.items():
@@ -676,6 +788,9 @@ def main_app():
                     st.markdown("---")
                     st.subheader(f"📈 Input Entry untuk {symbol}")
                     
+                    # Create a container for this specific symbol's feedback
+                    feedback_container = st.container()
+                    
                     # Validate analysis data first
                     analysis = validate_and_fix_price_levels(analysis, symbol, bot)
                     
@@ -707,46 +822,10 @@ def main_app():
                     
                     with col2:
                         if st.button(f"✅ Tambah Posisi {symbol}", key=f"add_{symbol}_{int(time.time())}"):
-                            try:
-                                # Use the validated analysis
-                                ideal_entry = safe_get(analysis, "ideal_entry", entry_price)
-                                
-                                # Urutkan TP levels sebelum simpan
-                                tp1, tp2, tp3 = safe_get(analysis, "tp1", 0), safe_get(analysis, "tp2", 0), safe_get(analysis, "tp3", 0)
-                                if safe_get(analysis, "action") == "LONG":
-                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                                elif safe_get(analysis, "action") == "SHORT":
-                                    tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
-                                
-                                # Adjust TP levels berdasarkan entry price yang baru
-                                tp1_adj = entry_price + (tp1 - ideal_entry)
-                                tp2_adj = entry_price + (tp2 - ideal_entry)
-                                tp3_adj = entry_price + (tp3 - ideal_entry)
-                                sl_adj = entry_price - (ideal_entry - safe_get(analysis, "sl", 0))
-                                
-                                position_id = bot.db.save_position(
-                                    symbol=symbol,
-                                    market_type=bot.mode,
-                                    action=safe_get(analysis, "action"),
-                                    entry_price=entry_price,
-                                    tp1=tp1_adj,
-                                    tp2=tp2_adj,
-                                    tp3=tp3_adj,
-                                    sl=sl_adj,
-                                    entry_low=entry_price * (1 - bot.strategy.entry_range_pct),
-                                    entry_high=entry_price * (1 + bot.strategy.entry_range_pct),
-                                )
-                                if position_id:
-                                    st.success(f"Posisi {symbol} ditambahkan!")
-                                    st.session_state.positions_data = bot.get_active_positions()
-                                    st.session_state.selected_positions.append(symbol)
-                                    if symbol in st.session_state.selected_for_entry:
-                                        del st.session_state.selected_for_entry[symbol]
+                            with feedback_container:
+                                success = save_position_with_feedback(bot, symbol, analysis, entry_price, feedback_container)
+                                if success:
                                     st.rerun()
-                                else:
-                                    st.error("Gagal tambah posisi.")
-                            except Exception as e:
-                                st.error(f"❌ Error adding position: {e}")
                     
                     with st.expander("🔍 Detail Analisis"):
                         if 'momentum_quality' in analysis:
@@ -1003,31 +1082,27 @@ def main_app():
                     key="entry_analysis_unique"
                 )
                 
+                # Create feedback container for this tab
+                feedback_container = st.container()
+                
                 if st.button("✅ Tambah Posisi", key="add_analysis"):
-                    try:
-                        ideal_entry = safe_get(analysis, "ideal_entry", entry_price_input)
-                        
-                        # Gunakan TP yang sudah diurutkan
-                        position_id = bot.db.save_position(
-                            symbol=safe_get(analysis, 'symbol'),
-                            market_type=bot.mode,
-                            action=safe_get(analysis, "action", "LONG"),
-                            entry_price=entry_price_input,
-                            tp1=entry_price_input + (tp1 - ideal_entry),
-                            tp2=entry_price_input + (tp2 - ideal_entry),
-                            tp3=entry_price_input + (tp3 - ideal_entry),
-                            sl=entry_price_input - (ideal_entry - safe_get(analysis, "sl", 0)),
-                            entry_low=entry_price_input * (1 - bot.strategy.entry_range_pct),
-                            entry_high=entry_price_input * (1 + bot.strategy.entry_range_pct),
-                        )
-                        if position_id:
-                            st.success(f"Posisi {safe_get(analysis, 'symbol')} ditambahkan!")
-                            st.session_state.positions_data = bot.get_active_positions()
-                            st.rerun()
-                        else:
-                            st.error("Gagal tambah posisi.")
-                    except Exception as e:
-                        st.error(f"❌ Error adding position: {e}")
+                    with feedback_container:
+                        try:
+                            ideal_entry = safe_get(analysis, "ideal_entry", entry_price_input)
+                            
+                            # Gunakan TP yang sudah diurutkan
+                            success = save_position_with_feedback(
+                                bot, 
+                                safe_get(analysis, 'symbol'), 
+                                analysis, 
+                                entry_price_input, 
+                                feedback_container
+                            )
+                            if success:
+                                st.rerun()
+                                
+                        except Exception as e:
+                            feedback_container.error(f"❌ Error adding position: {str(e)}")
             else:
                 st.error("Data analisis tidak valid. Coba analisis ulang.")
 
@@ -1051,6 +1126,9 @@ def main_app():
         )
         
         action_custom = st.selectbox("Action:", ["LONG", "SHORT"], key="custom_action")
+        
+        # Create feedback container for custom entry
+        custom_feedback_container = st.container()
         
         if st.button("🧮 Hitung TP/SL", key="calculate_custom"):
             if symbol_custom and entry_price_custom > 0:
@@ -1133,34 +1211,16 @@ def main_app():
             
             # Tombol untuk menambahkan ke posisi
             if st.button("✅ Tambahkan ke Posisi Aktif", key="add_custom"):
-                try:
-                    # Urutkan TP levels berdasarkan action
-                    tp1, tp2, tp3 = safe_get(result, 'tp1', 0), safe_get(result, 'tp2', 0), safe_get(result, 'tp3', 0)
-                    if action_custom == "LONG":
-                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                    else:  # SHORT
-                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
-                        
-                    position_id = bot.db.save_position(
-                        symbol=safe_get(result, 'symbol'),
-                        market_type=bot.mode,
-                        action=action_custom,
-                        entry_price=safe_get(result, 'entry_price', 0),
-                        tp1=tp1,
-                        tp2=tp2,
-                        tp3=tp3,
-                        sl=safe_get(result, 'sl', 0),
-                        entry_low=safe_get(result, 'entry_price', 0) * 0.99,
-                        entry_high=safe_get(result, 'entry_price', 0) * 1.01,
+                with custom_feedback_container:
+                    success = save_custom_position_with_feedback(
+                        bot, 
+                        result, 
+                        action_custom, 
+                        safe_get(result, 'entry_price', 0), 
+                        custom_feedback_container
                     )
-                    if position_id:
-                        st.success(f"Posisi {safe_get(result, 'symbol')} ditambahkan!")
-                        st.session_state.positions_data = bot.get_active_positions()
+                    if success:
                         st.rerun()
-                    else:
-                        st.error("Gagal tambah posisi.")
-                except Exception as e:
-                    st.error(f"❌ Error adding position: {e}")
 
     # ===============================
     # Tab 4: Posisi Aktif
@@ -1171,7 +1231,10 @@ def main_app():
         if st.button("🔄 Refresh Posisi", key="refresh_positions"):
             try:
                 st.session_state.positions_data = bot.get_active_positions()
-                st.success("Posisi diperbarui!")
+                if st.session_state.positions_data:
+                    st.success(f"✅ {len(st.session_state.positions_data)} posisi aktif ditemukan!")
+                else:
+                    st.info("📭 Tidak ada posisi aktif.")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Error refreshing positions: {e}")
@@ -1293,7 +1356,10 @@ def main_app():
         if st.button("🔄 Refresh History", key="refresh_history"):
             try:
                 st.session_state.history_data = bot.get_trade_history(20)
-                st.success("History diperbarui!")
+                if st.session_state.history_data:
+                    st.success(f"✅ {len(st.session_state.history_data)} history trade ditemukan!")
+                else:
+                    st.info("📭 Tidak ada history trading.")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Error refreshing history: {e}")
