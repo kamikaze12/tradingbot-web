@@ -695,10 +695,11 @@ class AlphaVantageProvider(EnhancedDataProvider):
 class EnhancedCCXTDataProvider(EnhancedDataProvider):
     """Enhanced CCXT provider with better error handling and fallbacks - RELAXED VERSION"""
     
-    def __init__(self, exchange_id='kucoin', api_key='', secret=''):
+    def __init__(self, exchange_id='kucoin', api_key='', secret='', market_type='spot'):
         super().__init__()
         
         self.exchange_id = exchange_id
+        self.market_type = market_type  # 'spot' or 'future'
         exchange_class = getattr(ccxt, exchange_id, None)
         
         if exchange_class is None:
@@ -706,16 +707,22 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
             self.exchange = None
         else:
             try:
-                self.exchange = exchange_class({
+                config = {
                     'apiKey': api_key,
                     'secret': secret,
                     'enableRateLimit': True,
                     'timeout': 30000,
-                })
+                }
+                
+                # Add futures configuration if needed
+                if market_type == 'future':
+                    config['options'] = {'defaultType': 'future'}
+                
+                self.exchange = exchange_class(config)
                 
                 # Test connection
                 self.exchange.load_markets()
-                logger.info(f"Successfully connected to {exchange_id}")
+                logger.info(f"Successfully connected to {exchange_id} ({market_type})")
                 
             except Exception as e:
                 logger.error(f"Failed to initialize {exchange_id}: {str(e)}")
@@ -737,12 +744,23 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
             return symbol.replace('-', '/')
         return symbol
 
+    def _convert_to_futures_symbol(self, symbol):
+        """Convert spot symbol to futures symbol format"""
+        if self.market_type == 'future':
+            # For perpetual futures, add :USDT suffix
+            if not symbol.endswith(':USDT'):
+                return f"{symbol}:USDT"
+        return symbol
+
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
         """Enhanced OHLCV dengan validasi harga yang lebih toleran - RELAXED"""
+        # Convert symbol for futures if needed
+        actual_symbol = self._convert_to_futures_symbol(symbol)
+        
         # Check cache first
-        cached_data = self._get_cached_data(symbol, timeframe, limit)
+        cached_data = self._get_cached_data(actual_symbol, timeframe, limit)
         if cached_data is not None:
-            logger.info(f"Using cached data for {symbol}")
+            logger.info(f"Using cached data for {actual_symbol}")
             return cached_data
 
         def fetch_ccxt_data():
@@ -750,31 +768,31 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 raise Exception("Exchange not initialized")
             
             try:
-                ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                ohlcv = self.exchange.fetch_ohlcv(actual_symbol, timeframe, limit=limit)
                 if not ohlcv:
-                    raise ValueError(f"No OHLCV data returned for {symbol}")
+                    raise ValueError(f"No OHLCV data returned for {actual_symbol}")
                 
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 
                 # Log data real yang didapat
                 current_price = df['close'].iloc[-1] if len(df) > 0 else 0
-                logger.info(f"📊 CCXT RAW DATA: {symbol} - {len(df)} bars, current price: {current_price:.8f}")
+                logger.info(f"📊 CCXT {self.market_type.upper()} DATA: {actual_symbol} - {len(df)} bars, current price: {current_price:.8f}")
                 
                 # Validasi data dengan toleransi lebih longgar
                 is_valid, issues = self.validator.validate_ohlcv_data(df)
                 if not is_valid:
-                    logger.warning(f"CCXT data validation issues for {symbol}: {issues}")
+                    logger.warning(f"CCXT data validation issues for {actual_symbol}: {issues}")
                     df = self.validator.clean_ohlcv_data(df)
                 
                 # RELAXED: Kurangi requirement minimal data
                 if len(df) < 5:  # Dari 10 jadi 5
-                    logger.warning(f"Low data count for {symbol}: only {len(df)} rows")
+                    logger.warning(f"Low data count for {actual_symbol}: only {len(df)} rows")
                     # Tidak langsung error, lanjut proses
                 
                 # RELAXED: Handle zero prices dengan cara yang lebih baik
                 if (df['close'] <= 0).any():
-                    logger.warning(f"Zero or negative prices found for {symbol}")
+                    logger.warning(f"Zero or negative prices found for {actual_symbol}")
                     # Filter out zero prices tapi jangan reject seluruh dataset
                     df = df[df['close'] > 0]
                     if len(df) == 0:
@@ -783,7 +801,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 return df
                 
             except Exception as e:
-                logger.warning(f"CCXT failed for {symbol}: {str(e)}")
+                logger.warning(f"CCXT failed for {actual_symbol}: {str(e)}")
                 raise
 
         # Try CCXT first
@@ -791,8 +809,8 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
         
         # RELAXED: Cache dengan data lebih sedikit
         if result is not None and len(result) >= 3:  # Dari 5 jadi 3
-            self._set_cached_data(symbol, timeframe, limit, result)
-            logger.info(f"✅ CCXT ACCEPTED: {symbol} - Price: {result['close'].iloc[-1]:.8f}, Bars: {len(result)}")
+            self._set_cached_data(actual_symbol, timeframe, limit, result)
+            logger.info(f"✅ CCXT {self.market_type.upper()} ACCEPTED: {actual_symbol} - Price: {result['close'].iloc[-1]:.8f}, Bars: {len(result)}")
             return result
         
         # Fallback ke provider lain dengan prioritas
@@ -809,7 +827,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 
                 if df is not None and len(df) >= 3 and (df['close'] > 0).any():
                     logger.info(f"Using fallback {fallback.__class__.__name__} for {symbol}")
-                    self._set_cached_data(symbol, timeframe, limit, df)
+                    self._set_cached_data(actual_symbol, timeframe, limit, df)
                     return df
                     
             except Exception as e:
@@ -817,24 +835,27 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 continue
         
         # Generate realistic data sebagai last resort
-        logger.warning(f"All providers failed for {symbol}, generating realistic dummy data")
-        result = self._generate_realistic_dummy_data(symbol, limit)
-        self._set_cached_data(symbol, timeframe, limit, result)
+        logger.warning(f"All providers failed for {actual_symbol}, generating realistic dummy data")
+        result = self._generate_realistic_dummy_data(actual_symbol, limit)
+        self._set_cached_data(actual_symbol, timeframe, limit, result)
         return result
         
     def get_ticker(self, symbol):
         """Get ticker data dengan fallback yang lebih baik - RELAXED"""
+        # Convert symbol for futures if needed
+        actual_symbol = self._convert_to_futures_symbol(symbol)
+        
         def fetch_ticker():
             try:
                 if not self.exchange:
                     raise Exception("Exchange not initialized")
                     
-                ticker = self.exchange.fetch_ticker(symbol)
+                ticker = self.exchange.fetch_ticker(actual_symbol)
                 last_price = ticker.get('last')
                 
                 # Validasi harga lebih toleran
                 if last_price is None or last_price <= 0:
-                    raise ValueError(f"Invalid price for {symbol}: {last_price}")
+                    raise ValueError(f"Invalid price for {actual_symbol}: {last_price}")
                 
                 return {
                     'last': last_price,
@@ -842,7 +863,8 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                     'high': ticker.get('high'),
                     'low': ticker.get('low'),
                     'bid': ticker.get('bid'),
-                    'ask': ticker.get('ask')
+                    'ask': ticker.get('ask'),
+                    'symbol': actual_symbol
                 }
             except Exception as e:
                 logger.error(f"CCXT ticker error: {str(e)}")
@@ -853,7 +875,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
         
         # Fallback sequence yang lebih robust
         if result and result.get('last', 0) > 0:
-            logger.info(f"✅ CCXT TICKER: {symbol} - Price: {result['last']:.8f}")
+            logger.info(f"✅ CCXT {self.market_type.upper()} TICKER: {actual_symbol} - Price: {result['last']:.8f}")
             return result
         
         # Try fallback providers
@@ -871,14 +893,15 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
         
         # Fallback ke harga realistis
         estimated_price = self._estimate_realistic_price(symbol)
-        logger.warning(f"All ticker providers failed for {symbol}, using estimated price: {estimated_price}")
+        logger.warning(f"All ticker providers failed for {actual_symbol}, using estimated price: {estimated_price}")
         return {
             'last': estimated_price,
             'volume': 100000,
             'high': estimated_price * 1.02,
             'low': estimated_price * 0.98,
             'bid': estimated_price * 0.999,
-            'ask': estimated_price * 1.001
+            'ask': estimated_price * 1.001,
+            'symbol': actual_symbol
         }
 
     def get_popular_assets(self, limit=100):
@@ -890,13 +913,19 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
             
             markets = self.exchange.load_markets()
             
-            # Filter USDT pairs
-            usdt_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
+            # Filter based on market type
+            if self.market_type == 'future':
+                # Filter for futures markets
+                target_markets = [symbol for symbol in markets 
+                                if markets[symbol].get('future', False) or ':USDT' in symbol]
+            else:
+                # Filter for spot markets (USDT pairs)
+                target_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
             
             # Exclude stablecoins and problematic pairs
             excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST', 'FDUSD']
             filtered_markets = [
-                symbol for symbol in usdt_markets 
+                symbol for symbol in target_markets 
                 if not any(excluded in symbol for excluded in excluded_coins)
             ]
             
@@ -907,14 +936,14 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                     key=lambda x: tickers[x]['quoteVolume'] if x in tickers else 0, 
                     reverse=True
                 )
-                logger.info(f"Sorted {len(filtered_markets)} assets by volume")
+                logger.info(f"Sorted {len(filtered_markets)} {self.market_type} assets by volume")
             except Exception as e:
                 logger.warning(f"Could not sort by volume: {str(e)}")
                 # Fallback: use market cap ranking or alphabetical
                 filtered_markets.sort()
             
             result = filtered_markets[:limit]
-            logger.info(f"CCXT returning {len(result)} popular assets from {self.exchange_id}")
+            logger.info(f"CCXT returning {len(result)} popular {self.market_type} assets from {self.exchange_id}")
             return result
             
         except Exception as e:
@@ -927,6 +956,65 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 'ETC/USDT', 'FIL/USDT', 'THETA/USDT', 'EOS/USDT', 'XTZ/USDT'
             ]
             return major_pairs[:limit]
+
+# FUTURES-SPECIFIC PROVIDER
+class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
+    """Enhanced CCXT provider specifically for Futures trading"""
+    
+    def __init__(self, exchange_id='kucoinfutures', api_key='', secret=''):
+        super().__init__(exchange_id=exchange_id, api_key=api_key, secret=secret, market_type='future')
+        
+    def _convert_to_futures_symbol(self, symbol):
+        """Convert spot symbol to futures symbol format"""
+        # For perpetual futures, add :USDT suffix if not already present
+        if not symbol.endswith(':USDT'):
+            return f"{symbol}:USDT"
+        return symbol
+    
+    def get_funding_rate(self, symbol):
+        """Get funding rate for futures symbol"""
+        actual_symbol = self._convert_to_futures_symbol(symbol)
+        
+        def fetch_funding_rate():
+            try:
+                if not self.exchange:
+                    raise Exception("Exchange not initialized")
+                    
+                # Different exchanges have different methods for funding rate
+                if hasattr(self.exchange, 'fetch_funding_rate'):
+                    funding_rate = self.exchange.fetch_funding_rate(actual_symbol)
+                    return funding_rate
+                else:
+                    logger.warning(f"Funding rate not supported for {self.exchange_id}")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"Error fetching funding rate for {actual_symbol}: {str(e)}")
+                raise
+        
+        return self._safe_api_call(fetch_funding_rate)
+    
+    def get_open_interest(self, symbol):
+        """Get open interest for futures symbol"""
+        actual_symbol = self._convert_to_futures_symbol(symbol)
+        
+        def fetch_open_interest():
+            try:
+                if not self.exchange:
+                    raise Exception("Exchange not initialized")
+                    
+                if hasattr(self.exchange, 'fetch_open_interest'):
+                    oi = self.exchange.fetch_open_interest(actual_symbol)
+                    return oi
+                else:
+                    logger.warning(f"Open interest not supported for {self.exchange_id}")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"Error fetching open interest for {actual_symbol}: {str(e)}")
+                raise
+        
+        return self._safe_api_call(fetch_open_interest)
 
 class EnhancedYFinanceDataProvider(EnhancedDataProvider):
     """Enhanced Yahoo Finance provider with better error handling - RELAXED VERSION"""
@@ -1169,6 +1257,10 @@ class CCXTDataProvider(EnhancedCCXTDataProvider):
     """Backward compatibility wrapper"""
     pass
 
+class CCXTFuturesProvider(EnhancedCCXTFuturesProvider):
+    """Futures-specific provider"""
+    pass
+
 class YFinanceDataProvider(EnhancedYFinanceDataProvider):
     """Backward compatibility wrapper"""
     pass
@@ -1268,6 +1360,8 @@ class DataProviderFactory:
     def create_provider(provider_type, **kwargs):
         if provider_type == "ccxt":
             return EnhancedCCXTDataProvider(**kwargs)
+        elif provider_type == "ccxt_futures":
+            return EnhancedCCXTFuturesProvider(**kwargs)
         elif provider_type == "yfinance":
             return EnhancedYFinanceDataProvider(**kwargs)
         elif provider_type == "alphavantage":
@@ -1309,3 +1403,23 @@ class DataProviderMonitor:
                 scores.append(0)
         
         return np.mean(scores) if scores else 1.0
+
+# Usage Example:
+if __name__ == "__main__":
+    # Test Futures Provider
+    print("Testing Futures Data Provider...")
+    
+    # Initialize futures provider
+    futures_provider = EnhancedCCXTFuturesProvider(exchange_id='kucoinfutures')
+    
+    # Get popular futures assets
+    futures_assets = futures_provider.get_popular_assets(limit=5)
+    print("Futures Assets:", futures_assets)
+    
+    # Test OHLCV data for futures
+    for symbol in futures_assets[:2]:
+        data = futures_provider.get_ohlcv(symbol, '1h', 10)
+        print(f"Futures data for {symbol}: {len(data) if data is not None else 0} bars")
+        
+        ticker = futures_provider.get_ticker(symbol)
+        print(f"Futures ticker for {symbol}: {ticker['last'] if ticker else 'N/A'}")
