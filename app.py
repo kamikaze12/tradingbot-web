@@ -83,18 +83,22 @@ def login_section():
 
 @st.cache_resource
 def init_bot(trading_mode="spot"):
-    """Inisialisasi TradingBot dengan mode trading."""
+    """Inisialisasi TradingBot - Safe Version"""
     try:
+        from bot.core import TradingBot
+        
+        # Simple initialization tanpa mode setting
+        bot = TradingBot()
+        
+        # Simpan trading mode preference di session state
+        st.session_state.trading_mode_preference = trading_mode
+        
+        st.success("✅ TradingBot berhasil diinisialisasi")
         if trading_mode == "futures":
-            # Import futures provider
-            from bot.data_provider import EnhancedCCXTFuturesProvider
-            provider = EnhancedCCXTFuturesProvider(exchange_id='kucoinfutures')
-            return TradingBot(provider=provider)
-        else:
-            # Default spot provider
-            from bot.data_provider import EnhancedCCXTDataProvider  
-            provider = EnhancedCCXTDataProvider(exchange_id='kucoin')
-            return TradingBot(provider=provider)
+            st.info("ℹ️ Mode Futures dipilih, tetapi mungkin tidak sepenuhnya didukung")
+        
+        return bot
+        
     except Exception as e:
         st.error(f"❌ Failed to initialize TradingBot: {e}")
         return None
