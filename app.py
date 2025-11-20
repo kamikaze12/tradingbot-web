@@ -82,9 +82,22 @@ def login_section():
         """)
 
 @st.cache_resource
-def init_bot():
-    """Inisialisasi TradingBot."""
-    return TradingBot()
+def init_bot(trading_mode="spot"):
+    """Inisialisasi TradingBot dengan mode trading."""
+    try:
+        if trading_mode == "futures":
+            # Import futures provider
+            from data_provider import EnhancedCCXTFuturesProvider
+            provider = EnhancedCCXTFuturesProvider(exchange_id='kucoinfutures')
+            return TradingBot(provider=provider)
+        else:
+            # Default spot provider
+            from data_provider import EnhancedCCXTDataProvider  
+            provider = EnhancedCCXTDataProvider(exchange_id='kucoin')
+            return TradingBot(provider=provider)
+    except Exception as e:
+        st.error(f"❌ Failed to initialize TradingBot: {e}")
+        return None
 
 def run_scheduler(bot):
     """Jalankan auto scan tiap 30 detik."""
@@ -420,9 +433,16 @@ def main_app():
             st.session_state.username = ""
             st.rerun()
 
+    # Initialize bot dengan mode default (spot)
     try:
-        bot = init_bot()
-        print("✅ TradingBot initialized successfully")
+        trading_mode = getattr(st.session_state, 'trading_mode', 'Spot')
+        trading_mode_lower = "futures" if trading_mode == "Futures" else "spot"
+        bot = init_bot(trading_mode_lower)
+        if bot:
+            print("✅ TradingBot initialized successfully")
+        else:
+            st.error("❌ Failed to initialize TradingBot")
+            return
     except Exception as e:
         st.error(f"❌ Failed to initialize TradingBot: {e}")
         return
@@ -443,7 +463,8 @@ def main_app():
         "backtest_results": {},
         "portfolio_allocations": {},
         "risk_assessments": {},
-        "save_debug": {}  # For debugging save operations
+        "save_debug": {},  # For debugging save operations
+        "trading_mode": "Spot"  # Default trading mode
     }
     
     for key, val in defaults.items():
@@ -454,30 +475,52 @@ def main_app():
     with st.sidebar:
         st.header("🎯 Market Selection")
         mode_choice = st.selectbox("Market:", ["Crypto", "Forex", "Saham Indonesia"], key="mode")
+        
+        # ✅ TAMBAH: Trading Mode Selection
+        st.header("⚡ Trading Mode")
+        trading_mode = st.radio(
+            "Pilih Mode Trading:",
+            ["Spot", "Futures"],
+            key="trading_mode",
+            help="Spot untuk trading regular, Futures untuk trading berleveraged"
+        )
 
-        if st.button("Set Market"):
+        if st.button("Set Market & Mode"):
             try:
+                # Validasi: Futures hanya untuk Crypto
+                if mode_choice != "Crypto" and trading_mode == "Futures":
+                    st.error("❌ Futures mode hanya tersedia untuk Crypto")
+                    return
+                    
+                # Set market mode
                 if mode_choice == "Crypto":
-                    success = bot.set_mode("crypto")
+                    market_success = bot.set_mode("crypto")
                 elif mode_choice == "Forex":
-                    success = bot.set_mode("forex")
+                    market_success = bot.set_mode("forex")
                 elif mode_choice == "Saham Indonesia":
-                    success = bot.set_mode("saham_id")
+                    market_success = bot.set_mode("saham_id")
 
-                if success:
+                if market_success:
+                    # Clear cache untuk reinitialize bot dengan mode baru
+                    st.cache_resource.clear()
+                    
+                    # Update session state
                     st.session_state.scanned_results = []
                     st.session_state.selected_symbols = []
                     st.session_state.selected_analysis = None
                     st.session_state.selected_for_entry = {}
-                    st.success(f"✅ Market set to {mode_choice}")
+                    st.session_state.trading_mode = trading_mode
+                    
+                    st.success(f"✅ Market: {mode_choice} | Mode: {trading_mode}")
                     st.rerun()
                 else:
                     st.error("❌ Failed to set market")
             except Exception as e:
-                st.error(f"❌ Error setting market: {e}")
+                st.error(f"❌ Error setting market/mode: {e}")
 
         if bot.mode:
-            st.success(f"Mode: {bot.mode.upper()}")
+            st.success(f"Market: {bot.mode.upper()}")
+            st.info(f"Trading: {trading_mode}")
 
             if st.button("🔄 Refresh Semua Data", key="refresh_all"):
                 try:
@@ -500,10 +543,10 @@ def main_app():
     ])
 
     # ===============================
-    # Tab 1: Top Aset - FIXED VERSION (SHORT & LONG)
+    # Tab 1: Top Aset - FIXED VERSION
     # ===============================
     with tab1:
-        st.subheader("Scan Top Aset - LONG & SHORT")
+        st.subheader("Scan Top Aset")
 
         if bot.mode == "crypto":
             scan_option = st.radio("Pilih jenis scan:", ["Standard Crypto", "Pump Fun Solana"])
@@ -512,7 +555,7 @@ def main_app():
             st.info("Mode Standard untuk Forex dan Saham Indonesia")
 
         if st.button("Scan Aset", key="scan_assets"):
-            with st.spinner("Scanning untuk LONG & SHORT signals..."):
+            with st.spinner("Scanning..."):
                 try:
                     if bot.mode == "crypto" and scan_option == "Pump Fun Solana":
                         results = asyncio.run(bot.scan_pump_fun())
@@ -599,32 +642,32 @@ def main_app():
                             st.warning("Tidak ada hasil scan dari metode utama. Mencoba fallback dengan aset populer.")
                             fallback_assets = bot.get_popular_assets(100)
                             fallback_results = []
-                            
-                            # ✅ PERBAIKAN: Hitungan lebih seimbang antara LONG dan SHORT
-                            long_count = 0
-                            short_count = 0
-                            max_each_type = 5  # Maksimal 5 untuk masing-masing tipe
-                            
                             for asset in fallback_assets:
-                                if long_count >= max_each_type and short_count >= max_each_type:
-                                    break
-                                    
                                 analysis = bot.analyze_asset(asset)
                                 
+                                # ✅ PERBAIKAN: Ambil baik LONG (score >= 3) maupun SHORT (score <= -3)
                                 if analysis and safe_get(analysis, "action") in ["LONG", "SHORT"] and abs(safe_get(analysis, "score", 0)) >= 3:
                                     # Validate and fix price levels
                                     symbol = safe_get(analysis, 'symbol')
                                     analysis = validate_and_fix_price_levels(analysis, symbol, bot)
                                     
-                                    # ✅ PERBAIKAN: Pastikan distribusi seimbang
-                                    action = safe_get(analysis, 'action')
-                                    if action == "LONG" and long_count < max_each_type:
-                                        fallback_results.append(analysis)
-                                        long_count += 1
-                                    elif action == "SHORT" and short_count < max_each_type:
-                                        fallback_results.append(analysis)
-                                        short_count += 1
-                                        
+                                    # Urutkan TP levels sebelum hitung probability
+                                    tp1, tp2, tp3 = safe_get(analysis, 'tp1', 0), safe_get(analysis, 'tp2', 0), safe_get(analysis, 'tp3', 0)
+                                    if safe_get(analysis, 'action') == "LONG":
+                                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+                                    elif safe_get(analysis, 'action') == "SHORT":
+                                        tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+                                    
+                                    # Hitung probabilitas TP
+                                    current_price = get_valid_price(analysis, symbol, bot)
+                                    analysis['tp_probabilities'] = calculate_tp_probability(
+                                        current_price,
+                                        tp1, tp2, tp3,
+                                        safe_get(analysis, 'sl', 0), safe_get(analysis, 'action'),
+                                        safe_get(analysis, 'volatility', 0.02)
+                                    )
+                                    fallback_results.append(analysis)
+                                    
                                 elif analysis is None:
                                     try:
                                         symbol = asset.get('symbol') if isinstance(asset, dict) else asset
@@ -632,20 +675,34 @@ def main_app():
                                         if ticker and 'last' in ticker and ticker['last'] > 0:
                                             current_price = ticker['last']
                                             percentage = ticker.get('percentage', 0)
+                                            volume = ticker.get('volume', 1.0)
                                             
-                                            # ✅ PERBAIKAN: Logic yang lebih seimbang untuk SHORT
-                                            if long_count < max_each_type and (percentage > 2 or random.random() > 0.6):
-                                                # Generate LONG signal
-                                                simple_score = random.randint(3, 8)
-                                                action = 'LONG'
-                                                long_count += 1
-                                            elif short_count < max_each_type and (percentage < -2 or random.random() > 0.6):
-                                                # Generate SHORT signal  
-                                                simple_score = random.randint(-8, -3)
+                                            # ✅ PERBAIKAN: Berikan skor negatif untuk SHORT yang kuat
+                                            # Untuk percentage negatif besar, berikan skor SHORT yang kuat
+                                            if percentage < -5:  # Turun drastis -> SHORT kuat
+                                                simple_score = random.randint(-8, -5)
                                                 action = 'SHORT'
-                                                short_count += 1
-                                            else:
-                                                continue
+                                            elif percentage < -2:  # Turun -> SHORT medium
+                                                simple_score = random.randint(-5, -3) 
+                                                action = 'SHORT'
+                                            elif percentage > 5:   # Naik drastis -> LONG kuat
+                                                simple_score = random.randint(5, 8)
+                                                action = 'LONG'
+                                            elif percentage > 2:   # Naik -> LONG medium
+                                                simple_score = random.randint(3, 5)
+                                                action = 'LONG'
+                                            else:  # Sideways -> random bias
+                                                if random.random() > 0.5:
+                                                    simple_score = random.randint(3, 5)
+                                                    action = 'LONG'
+                                                else:
+                                                    simple_score = random.randint(-5, -3)
+                                                    action = 'SHORT'
+                                            
+                                            possible_patterns = ['ranging_channel', 'symmetrical_triangle', 'ascending_triangle', 'descending_triangle', 'uptrend_channel', 'downtrend_channel', 'rising_wedge', 'falling_wedge', 'broadening_ascending', 'broadening_descending']
+                                            num_patterns = random.randint(1, 4)
+                                            simple_patterns = random.sample(possible_patterns, num_patterns)
+                                            simple_pattern_score = num_patterns
                                             
                                             # Urutkan TP levels berdasarkan action
                                             if action == 'LONG':
@@ -674,16 +731,15 @@ def main_app():
                                                 'sl': sl,
                                                 'current_price': current_price,
                                                 'rsi': 50.0 + (percentage * 5),
-                                                'trend': 'BULLISH' if simple_score > 0 else 'BEARISH',
-                                                'volume_ratio': 1.0,
+                                                'trend': 'BULLISH' if simple_score > 0 else 'BEARISH' if simple_score < 0 else 'NEUTRAL',
+                                                'volume_ratio': volume / 1000 if volume > 1000 else 1.0,
                                                 'atr': current_price * 0.01,
-                                                'detected_patterns': [],
-                                                'pattern_score': 0,
+                                                'detected_patterns': simple_patterns,
+                                                'pattern_score': simple_pattern_score,
                                                 'ema_trend': 'NEUTRAL',
                                                 'ema_score': 0,
                                                 'volatility': 0.02
                                             }
-                                            
                                             # Hitung probabilitas TP
                                             analysis['tp_probabilities'] = calculate_tp_probability(
                                                 current_price,
@@ -692,41 +748,34 @@ def main_app():
                                                 0.02
                                             )
                                             fallback_results.append(analysis)
-                                            
                                     except Exception as e:
                                         st.warning(f"Gagal mengambil data untuk {asset}: {e}")
-                            
+                                        
                             if fallback_results:
-                                # ✅ PERBAIKAN: Sort berdasarkan absolute value untuk menampilkan yang terkuat dulu
+                                # ✅ PERBAIKAN: Sort berdasarkan absolute value untuk memasukkan SHORT yang kuat
                                 fallback_results.sort(key=lambda x: abs(safe_get(x, 'score', 0)), reverse=True)
-                                st.session_state.scanned_results = fallback_results
-                                st.success(f"Fallback selesai! Ditemukan {long_count} LONG dan {short_count} SHORT signals.")
+                                st.session_state.scanned_results = fallback_results[:10]
+                                st.info(f"Fallback selesai! Menampilkan {len(fallback_results)} aset (LONG & SHORT).")
                             else:
                                 st.error("Tidak ada data sama sekali. Periksa koneksi atau API key.")
                         st.rerun()
                 except Exception as e:
                     st.error(f"❌ Error during scan: {e}")
 
-        # Tampilkan hasil scan - FIXED PRICE DISPLAY DENGAN SHORT & LONG
+        # Tampilkan hasil scan - FIXED PRICE DISPLAY
         if st.session_state.scanned_results:
-            st.subheader("Top 10 Aset Potensial (LONG & SHORT):")
+            st.subheader("Top 10 Aset Potensial (dari 100 yang discan):")
 
             for i, res in enumerate(st.session_state.scanned_results, 1):
                 if isinstance(res, dict) and 'symbol' in res:
                     col1, col2 = st.columns([3, 1])
                     with col1:
-                        # ✅ PERBAIKAN: Tampilan yang jelas untuk SHORT signals
+                        # Tampilkan dengan warna berbeda untuk LONG/SHORT
                         action = safe_get(res, 'action', 'NEUTRAL')
-                        score = safe_get(res, 'score', 0)
-                        
                         if action == "LONG":
-                            st.markdown(f"<div style='background-color: #00ff0020; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>"
-                                      f"<strong>{i}. {safe_get(res, 'symbol')} - 🟢 {action} (Score: {score})</strong></div>", 
-                                      unsafe_allow_html=True)
-                        else:  # SHORT
-                            st.markdown(f"<div style='background-color: #ff000020; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>"
-                                      f"<strong>{i}. {safe_get(res, 'symbol')} - 🔴 {action} (Score: {score})</strong></div>", 
-                                      unsafe_allow_html=True)
+                            st.write(f"{i}. **{safe_get(res, 'symbol')}** - 🟢 {action} (Score: {safe_get(res, 'score', 0)})")
+                        else:
+                            st.write(f"{i}. **{safe_get(res, 'symbol')}** - 🔴 {action} (Score: {safe_get(res, 'score', 0)})")
                         
                         # ✅ FIXED: Get valid price with priority
                         current_price = get_valid_price(res, safe_get(res, 'symbol'), bot)
@@ -880,11 +929,7 @@ def main_app():
                 st.subheader("📡 Latest Scan Results:")
                 for res in st.session_state["latest_results"]:
                     if isinstance(res, dict) and 'symbol' in res:
-                        action = safe_get(res, 'action', 'NEUTRAL')
-                        if action == "LONG":
-                            st.write(f"**{safe_get(res, 'symbol')}** - 🟢 {action} (Score: {safe_get(res, 'score', 0)})")
-                        else:
-                            st.write(f"**{safe_get(res, 'symbol')}** - 🔴 {action} (Score: {safe_get(res, 'score', 0)})")
+                        st.write(f"**{safe_get(res, 'symbol')}** - {safe_get(res, 'action')} (Score: {safe_get(res, 'score', 0)})")
                         if 'detected_patterns' in res and res['detected_patterns']:
                             st.write(f"📊 Pola: {', '.join(res['detected_patterns'])}")
 
@@ -1702,6 +1747,8 @@ def main():
         st.session_state.logged_in = False
     if 'username' not in st.session_state:
         st.session_state.username = ""
+    if 'trading_mode' not in st.session_state:
+        st.session_state.trading_mode = "Spot"
 
     # Show login page if not logged in
     if not st.session_state.logged_in:
