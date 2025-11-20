@@ -87,12 +87,12 @@ def init_bot(trading_mode="spot"):
     try:
         if trading_mode == "futures":
             # Import futures provider
-            from data_provider import EnhancedCCXTFuturesProvider
+            from bot.data_provider import EnhancedCCXTFuturesProvider
             provider = EnhancedCCXTFuturesProvider(exchange_id='kucoinfutures')
             return TradingBot(provider=provider)
         else:
             # Default spot provider
-            from data_provider import EnhancedCCXTDataProvider  
+            from bot.data_provider import EnhancedCCXTDataProvider  
             provider = EnhancedCCXTDataProvider(exchange_id='kucoin')
             return TradingBot(provider=provider)
     except Exception as e:
