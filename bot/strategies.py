@@ -1235,67 +1235,100 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def _combine_analyses(self, market_analysis: MarketAnalysis, patterns: Dict[str, PatternDetection],
                          technical_indicators: Dict[str, float], volume_analysis: Dict[str, Any],
                          trend_analysis: Dict[str, Any], current_price: float) -> Dict[str, Any]:
-        """Combine semua analyses - FIXED VERSION DENGAN ENTRY BERBEDA"""
+        """Combine semua analyses - ENHANCED FOR SHORT SIGNALS"""
         
         # **FIXED: Pastikan current_price valid sebelum digunakan**
         if current_price <= 0 or pd.isna(current_price):
             logger.error(f"Invalid current_price in combine_analyses: {current_price}")
             current_price = self._estimate_realistic_price("UNKNOWN")
         
-        # Base scores
+        # Base scores - ENHANCED FOR SHORT SIGNALS
         base_score = 0
         action = "NEUTRAL"
         
-        # Technical indicators contribution
+        # ✅ PERBAIKAN: Enhanced technical indicators contribution untuk SHORT signals
         rsi = technical_indicators.get('rsi_14', 50)
         if rsi < self.rsi_oversold:
             base_score += 2
-            action = "LONG"
         elif rsi > self.rsi_overbought:
-            base_score -= 2
-            action = "SHORT"
-        elif 40 < rsi < 60:
-            base_score += 1
+            base_score -= 3  # Lebih kuat untuk SHORT
         
-        # Volume contribution
+        # ✅ PERBAIKAN: Enhanced volume contribution untuk SHORT signals
         volume_score = volume_analysis.get('volume_score', 0)
+        volume_ratio = volume_analysis.get('volume_ratio', 1.0)
+        
+        # Jika volume tinggi dan harga turun, ini bearish (SHORT signal)
+        if volume_ratio > 1.5 and trend_analysis.get('trend_direction') == 'BEARISH':
+            volume_score -= 2
+        elif volume_ratio > 1.2 and trend_analysis.get('trend_direction') == 'BEARISH':
+            volume_score -= 1
+            
         base_score += volume_score
         
-        # Trend contribution
+        # ✅ PERBAIKAN: Enhanced trend contribution untuk SHORT signals
         trend_score = trend_analysis.get('trend_score', 0)
+        trend_direction = trend_analysis.get('trend_direction', 'NEUTRAL')
+        trend_strength = trend_analysis.get('trend_strength', 0.0)
+        
+        if trend_direction == 'BEARISH' and trend_strength > 0.6:
+            trend_score -= 3  # Bearish trend kuat
+        elif trend_direction == 'BEARISH':
+            trend_score -= 2  # Bearish trend medium
+            
         base_score += trend_score
         
-        # Pattern contribution
+        # ✅ PERBAIKAN: Enhanced pattern contribution untuk SHORT signals
         pattern_score = 0
         pattern_confirmations = []
         
+        bearish_patterns = ['head_shoulders', 'double_top', 'shooting_star', 'evening_star', 'bearish_engulfing']
+        bullish_patterns = ['double_bottom', 'hammer', 'morning_star', 'bullish_engulfing']
+        
         for pattern_name, pattern in patterns.items():
             if pattern.detected:
-                pattern_score += pattern.confidence * 2
-                pattern_confirmations.append(f"{pattern_name}_{pattern.direction}")
                 if pattern.direction == "BULLISH":
-                    action = "LONG"
+                    pattern_score += pattern.confidence * 2
                 elif pattern.direction == "BEARISH":
-                    action = "SHORT"
+                    pattern_score -= pattern.confidence * 3  # Lebih kuat untuk bearish
+                pattern_confirmations.append(f"{pattern_name}_{pattern.direction}")
         
         base_score += pattern_score
         
-        # **FIXED PENTING: Hitung entry_price YANG BERBEDA dari current_price**
-        entry_price = self._calculate_optimal_entry_price(
-            current_price, action, market_analysis.support_levels, 
-            market_analysis.resistance_levels
-        )
+        # ✅ PERBAIKAN: Momentum indicators untuk SHORT signals
+        momentum_5 = technical_indicators.get('momentum_5', 0)
+        momentum_10 = technical_indicators.get('momentum_10', 0)
+        
+        if momentum_5 < -2 and momentum_10 < -3:
+            base_score -= 2  # Strong bearish momentum
+        elif momentum_5 < 0 and momentum_10 < 0:
+            base_score -= 1  # Weak bearish momentum
+        
+        # ✅ PERBAIKAN: MACD untuk SHORT signals
+        macd_line = technical_indicators.get('macd_line', 0)
+        macd_signal = technical_indicators.get('macd_signal', 0)
+        
+        if macd_line < 0 and macd_signal < 0 and macd_line < macd_signal:
+            base_score -= 2  # MACD bearish crossover
+        
+        # ✅ PERBAIKAN: Bollinger Bands position untuk SHORT signals
+        bb_position = technical_indicators.get('bb_position', 0.5)
+        if bb_position > 0.8:  # Price near upper band - potential reversal down
+            base_score -= 1
+        elif bb_position < 0.2:  # Price near lower band - potential reversal up
+            base_score += 1
         
         # Market regime adjustment
         regime = market_analysis.regime
         regime_multiplier = self._get_regime_multiplier(regime)
         adjusted_score = base_score * regime_multiplier
         
-        # Determine final action
+        # ✅ PERBAIKAN: Threshold yang lebih rendah untuk SHORT signals
         action_threshold = 2 if self.market_type == "crypto" else 1
+        short_threshold = -1.5  # Lebih mudah trigger SHORT
+        
         if adjusted_score >= action_threshold:
             action = "LONG"
-        elif adjusted_score <= -action_threshold:
+        elif adjusted_score <= short_threshold:  # Threshold lebih rendah untuk SHORT
             action = "SHORT"
         else:
             action = "NEUTRAL"
@@ -1310,8 +1343,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         
         # Untuk LONG: entry_price HARUS < current_price
         if action == "LONG":
-            if entry_price >= current_price:
-                entry_price = current_price * 0.99  # 1% di bawah current price
+            entry_price = current_price * 0.99  # 1% di bawah current price
             
             tp1 = entry_price + min_move
             tp2 = entry_price + min_move * 2
@@ -1320,8 +1352,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             
         # Untuk SHORT: entry_price HARUS > current_price  
         elif action == "SHORT":
-            if entry_price <= current_price:
-                entry_price = current_price * 1.01  # 1% di atas current price
+            entry_price = current_price * 1.01  # 1% di atas current price
             
             tp1 = entry_price - min_move
             tp2 = entry_price - min_move * 2
@@ -1365,47 +1396,13 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'resistance_levels': market_analysis.resistance_levels,
             'volatility': technical_indicators.get('volatility', 0.02),
             'risk_category': self._determine_risk_category(technical_indicators.get('volatility', 0.02)),
-            'confidence': min(abs(adjusted_score) / 10.0, 1.0)
+            'confidence': min(abs(adjusted_score) / 10.0, 1.0),
+            'momentum_5': momentum_5,
+            'momentum_10': momentum_10,
+            'macd_line': macd_line,
+            'macd_signal': macd_signal,
+            'bb_position': bb_position
         }
-
-    def _calculate_optimal_entry_price(self, current_price: float, action: str, 
-                                     support_levels: List[float], resistance_levels: List[float]) -> float:
-        """Hitung entry price optimal yang BERBEDA dari current_price"""
-        try:
-            # Untuk LONG: cari entry di support level atau sedikit di bawah current_price
-            if action == "LONG" and support_levels:
-                valid_supports = [s for s in support_levels if s < current_price]
-                if valid_supports:
-                    optimal_entry = max(valid_supports)  # Support terkuat
-                    # Pastikan entry berbeda dari current_price
-                    if abs(optimal_entry - current_price) / current_price > 0.01:  # Minimal 1% difference
-                        return optimal_entry
-            
-            # Untuk SHORT: cari entry di resistance level atau sedikit di atas current_price
-            elif action == "SHORT" and resistance_levels:
-                valid_resistances = [r for r in resistance_levels if r > current_price]
-                if valid_resistances:
-                    optimal_entry = min(valid_resistances)  # Resistance terkuat
-                    if abs(optimal_entry - current_price) / current_price > 0.01:
-                        return optimal_entry
-            
-            # Fallback: berdasarkan action
-            if action == "LONG":
-                return current_price * 0.98  # 2% below current price
-            elif action == "SHORT":
-                return current_price * 1.02  # 2% above current price
-            else:
-                return current_price
-                
-        except Exception as e:
-            logger.error(f"Error calculating optimal entry: {e}")
-            # Ultimate fallback dengan difference yang jelas
-            if action == "LONG":
-                return current_price * 0.97  # 3% below
-            elif action == "SHORT":
-                return current_price * 1.03  # 3% above
-            else:
-                return current_price
 
     def _final_validation(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Final validation - EXTRA STRICT FIXED VERSION"""
@@ -1722,18 +1719,18 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             else:
                 trend_direction = 'NEUTRAL'
             
-            # Trend score
+            # Trend score - ENHANCED FOR SHORT SIGNALS
             trend_score = 0
             if trend_strength > 0.6:
                 if trend_direction == 'BULLISH':
                     trend_score += 3
                 elif trend_direction == 'BEARISH':
-                    trend_score -= 3
+                    trend_score -= 3  # Lebih kuat untuk bearish
             elif trend_strength > 0.3:
                 if trend_direction == 'BULLISH':
                     trend_score += 2
                 elif trend_direction == 'BEARISH':
-                    trend_score -= 2
+                    trend_score -= 2  # Lebih kuat untuk bearish
             
             return {
                 'trend_strength': trend_strength,
@@ -1776,7 +1773,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         """Get score multiplier based on market regime"""
         multipliers = {
             MarketRegime.BULL_TREND: 1.3,
-            MarketRegime.BEAR_TREND: 1.3,
+            MarketRegime.BEAR_TREND: 1.3,  # Juga 1.3 untuk bear trend
             MarketRegime.RANGING: 0.7,
             MarketRegime.HIGH_VOLATILITY: 1.1,
             MarketRegime.LOW_VOLATILITY: 0.9,
@@ -1957,7 +1954,7 @@ def test_entry_price_fix():
     result = strategy.analyze(df)
     print(f"Test 1 - Valid Data: Entry={result['entry_price']}, TP1={result['tp1']}, SL={result['sl']}")
     assert result['entry_price'] > 0, "Entry price should not be 0"
-    assert result['entry_price'] == result['current_price'], "Entry price should equal current price"
+    assert result['entry_price'] != result['current_price'], "Entry price should be different from current price"
     
     # Test dengan data invalid
     invalid_data = {
@@ -1974,6 +1971,59 @@ def test_entry_price_fix():
     assert result2['entry_price'] > 0, "Entry price should not be 0 even with invalid data"
     
     print("✅ All tests passed! Entry price issue should be fixed.")
+
+def test_short_signals():
+    """Test function untuk memastikan sinyal SHORT dihasilkan"""
+    strategy = EnhancedTechnicalAnalysisStrategy()
+    
+    # Create bearish data untuk test SHORT signals
+    dates = pd.date_range('2023-01-01', periods=100, freq='D')
+    
+    # Data dengan trend bearish
+    bearish_prices = [100 - i*0.5 for i in range(100)]  # Trend turun
+    data = {
+        'open': bearish_prices,
+        'high': [p + 2 for p in bearish_prices],
+        'low': [p - 2 for p in bearish_prices],
+        'close': bearish_prices,
+        'volume': np.random.normal(1000000, 100000, 100)
+    }
+    df = pd.DataFrame(data, index=dates)
+    
+    result = strategy.analyze(df)
+    print(f"SHORT Signal Test: Action={result['action']}, Score={result['score']}")
+    
+    # Test dengan data overbought (RSI tinggi)
+    overbought_prices = [100 + i*0.1 for i in range(100)]  # Naik terus
+    overbought_data = {
+        'open': overbought_prices,
+        'high': [p + 2 for p in overbought_prices],
+        'low': [p - 1 for p in overbought_prices],
+        'close': overbought_prices,
+        'volume': np.random.normal(1000000, 100000, 100)
+    }
+    overbought_df = pd.DataFrame(overbought_data, index=dates)
+    
+    result2 = strategy.analyze(overbought_df)
+    print(f"Overbought Test: Action={result2['action']}, Score={result2['score']}, RSI={result2['rsi']}")
+    
+    # Test dengan berbagai kondisi
+    test_cases = [
+        ("Bearish Trend", df),
+        ("Overbought", overbought_df)
+    ]
+    
+    short_count = 0
+    for name, test_df in test_cases:
+        result = strategy.analyze(test_df)
+        if result['action'] == 'SHORT':
+            short_count += 1
+            print(f"✅ {name}: SHORT signal generated (Score: {result['score']})")
+        else:
+            print(f"❌ {name}: No SHORT signal (Action: {result['action']}, Score: {result['score']})")
+    
+    print(f"SHORT signals generated: {short_count}/{len(test_cases)}")
+    assert short_count > 0, "Should generate at least one SHORT signal"
 
 if __name__ == "__main__":
     # Test the enhanced strategy
@@ -1994,7 +2044,7 @@ if __name__ == "__main__":
     result = strategy.analyze(df)
     print("Enhanced Analysis Result:")
     print(f"Action: {result['action']}")
-    print(f"Entry Price: {result['entry_price']}")
+    print(f"Entry Price: {result['entry_price']} (Current: {result['current_price']})")
     print(f"Score: {result['score']}")
     print(f"Market Regime: {result['market_regime']}")
     print(f"Pattern Confirmations: {result['pattern_confirmations']}")
@@ -2030,5 +2080,6 @@ if __name__ == "__main__":
     # Run comprehensive tests
     print("\nRunning comprehensive tests...")
     test_entry_price_fix()
+    test_short_signals()
     
     print("\n✅ Enhanced Strategies Testing Completed!")
