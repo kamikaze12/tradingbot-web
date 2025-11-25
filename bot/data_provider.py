@@ -467,6 +467,10 @@ class EnhancedDataProvider(DataProvider, ABC):
             'AAPL': 180.0,
             'MSFT': 400.0,
             'GOOGL': 150.0,
+            'AMZN': 170.0,
+            'TSLA': 200.0,
+            'META': 500.0,
+            'NVDA': 900.0,
             'BTC-USD': 50000.0,
             'ETH-USD': 3000.0,
             'EURUSD=X': 1.08,
@@ -1169,7 +1173,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         return result
 
     def get_popular_assets(self, limit=100):
-        """Get popular assets based on market type"""
+        """Get popular assets based on market type - UPDATED FOR US STOCKS"""
         try:
             if self.market_type == "crypto":
                 return self._get_popular_crypto(limit)
@@ -1177,8 +1181,8 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 return self._get_popular_forex(limit)
             elif self.market_type == "saham_id":
                 return self._get_popular_indonesian_stocks(limit)
-            elif self.market_type == "stocks":
-                return self._get_popular_international_stocks(limit)
+            elif self.market_type == "stocks" or self.market_type == "us_stocks":
+                return self._get_popular_us_stocks(limit)
             else:
                 logger.warning(f"Unknown market type: {self.market_type}")
                 return []
@@ -1227,25 +1231,32 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         logger.info(f"YFinance returning {len(result)} popular Indonesian stocks")
         return result
 
-    def _get_popular_international_stocks(self, limit):
-        """Get popular international stocks"""
-        stocks = [
-            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 
-            'BRK-B', 'JNJ', 'JPM', 'V', 'PG', 'UNH', 'HD', 'DIS',
-            'PYPL', 'NFLX', 'ADBE', 'CRM', 'CSCO', 'PEP', 'ABT', 
-            'TMO', 'AVGO', 'COST', 'LLY', 'WMT', 'XOM', 'CVX', 'BAC'
+    def _get_popular_us_stocks(self, limit):
+        """Get popular US stocks - NEW METHOD"""
+        us_stocks = [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX',
+            'BRK-B', 'JNJ', 'JPM', 'V', 'PG', 'UNH', 'HD', 'DIS', 'PYPL',
+            'ADBE', 'CRM', 'CSCO', 'PEP', 'ABT', 'TMO', 'AVGO', 'COST',
+            'LLY', 'WMT', 'XOM', 'CVX', 'BAC', 'MA', 'INTC', 'CMCSA',
+            'PFE', 'ABBV', 'T', 'DHR', 'MDT', 'NKE', 'UPS', 'RTX',
+            'TXN', 'HON', 'PM', 'LOW', 'IBM', 'AMD', 'SPY', 'QQQ', 'VOO'
         ]
-        result = stocks[:limit]
-        logger.info(f"YFinance returning {len(result)} popular international stocks")
+        result = us_stocks[:limit]
+        logger.info(f"YFinance returning {len(result)} popular US stocks")
         return result
 
+    def _get_popular_international_stocks(self, limit):
+        """Get popular international stocks - KEPT FOR BACKWARD COMPATIBILITY"""
+        return self._get_popular_us_stocks(limit)
+
     def _get_fallback_assets(self, limit):
-        """Fallback assets when primary method fails"""
+        """Fallback assets when primary method fails - UPDATED FOR US STOCKS"""
         fallback_assets = {
             "crypto": ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD'],
             "forex": ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X'],
             "saham_id": ['BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK'],
-            "stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']
+            "stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA'],
+            "us_stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX']
         }
         
         assets = fallback_assets.get(self.market_type, [])
