@@ -187,7 +187,7 @@ def main_app():
         # Gunakan key yang unique untuk setiap session
         market_choice = st.selectbox(
             "Select Market:",
-            ["Crypto", "Forex", "Saham Indonesia"],
+            ["Crypto", "Forex", "Saham Indonesia", "US Stocks"],
             key="market_select"
         )
         
@@ -197,6 +197,10 @@ def main_app():
             ["Spot", "Futures"],
             key="mode_select"
         )
+
+        # Show warning for markets that don't support short trading
+        if market_choice in ["Forex", "Saham Indonesia", "US Stocks"]:
+            st.warning("⚠️ **SHORT TRADING NOT AVAILABLE** - Only LONG signals will be generated")
 
         # Set Market Button - FIXED APPROACH
         if st.button("🎯 Set Market", key="set_market_btn"):
@@ -212,6 +216,8 @@ def main_app():
                         success = bot.set_mode("forex")
                     elif market_choice == "Saham Indonesia":
                         success = bot.set_mode("saham_id")
+                    elif market_choice == "US Stocks":
+                        success = bot.set_mode("us_stocks")
                     
                     if success:
                         st.session_state.current_market = market_choice
@@ -244,10 +250,14 @@ def main_app():
         st.warning("⚠️ Please select a market first!")
         st.info("""
         **Instructions:**
-        1. Select Market (Crypto/Forex/Saham Indonesia)  
+        1. Select Market (Crypto/Forex/Saham Indonesia/US Stocks)  
         2. Select Trading Mode (Spot/Futures)
         3. Click **Set Market** button
         4. Start scanning assets
+        
+        **Note:** 
+        - Futures trading only available for Crypto
+        - Short trading only available for Crypto
         """)
         return
 
