@@ -1482,6 +1482,9 @@ class EnhancedTradingBot:
             if not technical_analysis:
                 return {'error': 'Technical analysis failed'}
             
+            # **CRITICAL FIX: Apply market constraints untuk mencegah SHORT di Forex & Saham Indonesia**
+            technical_analysis = self._apply_market_constraints(technical_analysis)
+            
             # **FIXED: Validasi hasil technical analysis**
             if technical_analysis.get('entry_price', 0) <= 0:
                 logger.warning(f"Invalid entry price from technical analysis for {symbol}")
@@ -1512,7 +1515,34 @@ class EnhancedTradingBot:
         except Exception as e:
             logger.error(f"Enhanced ML analysis error for {symbol}: {e}")
             return {'error': str(e)}
-    
+
+    def _apply_market_constraints(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """CRITICAL FIX: Block short signals for markets that don't allow shorting"""
+        if not isinstance(analysis, dict):
+            return analysis
+            
+        action = analysis.get('action', 'NEUTRAL')
+        
+        # BLOCK SHORT FOR FOREX & SAHAM INDONESIA
+        if action == 'SHORT' and self.mode in ['forex', 'saham_id']:
+            logger.warning(f"🚫 SHORT SIGNAL BLOCKED for {self.mode} - Changing to NEUTRAL")
+            
+            # Reset to NEUTRAL
+            analysis['action'] = 'NEUTRAL'
+            analysis['score'] = 0
+            analysis['original_action'] = 'SHORT'  # Keep for debugging
+            analysis['constraint_reason'] = f"Short trading not allowed for {self.mode}"
+            
+            # Reset levels to safe values
+            current_price = analysis.get('current_price', 1.0)
+            analysis['entry_price'] = current_price
+            analysis['tp1'] = current_price
+            analysis['tp2'] = current_price  
+            analysis['tp3'] = current_price
+            analysis['sl'] = current_price
+        
+        return analysis
+
     def get_optimized_portfolio_allocation(self, signals: List[Dict], total_capital: float) -> List[Dict]:
         """Get optimized portfolio allocation"""
         try:
@@ -1635,6 +1665,9 @@ class EnhancedTradingBot:
                     # Analyze asset dengan enhanced ML - PASS SYMBOL AS STRING
                     analysis = self.analyze_with_enhanced_ml(symbol)
                     
+                    # **CRITICAL FIX: Apply market constraints untuk mencegah SHORT di Forex & Saham Indonesia**
+                    analysis = self._apply_market_constraints(analysis)
+                    
                     # **FIXED: Validasi hasil analysis dengan ketat**
                     if (analysis and 'error' not in analysis and 
                         analysis.get('entry_price', 0) > 0 and 
@@ -1692,6 +1725,8 @@ class EnhancedTradingBot:
                             'rsi': 50.0,
                             'volume_ratio': 1.0
                         }
+                        # Apply market constraints ke fallback juga
+                        fallback_analysis = self._apply_market_constraints(fallback_analysis)
                         signals.append(fallback_analysis)
                     
                     # Rate limiting
@@ -1758,6 +1793,47 @@ TradingBot = EnhancedTradingBot
 # TESTING FUNCTIONALITY
 # =============================================
 
+def test_market_constraints():
+    """Test semua perbaikan market constraints"""
+    print("🧪 Testing Market Constraints...")
+    
+    # Test bot dengan different modes
+    bot_crypto = EnhancedTradingBot()
+    bot_forex = EnhancedTradingBot()
+    bot_saham = EnhancedTradingBot()
+    
+    # Set modes
+    bot_crypto.set_mode("crypto")
+    bot_forex.set_mode("forex")
+    bot_saham.set_mode("saham_id")
+    
+    # Test data
+    test_analysis_short = {'action': 'SHORT', 'score': -5, 'current_price': 100}
+    test_analysis_long = {'action': 'LONG', 'score': 5, 'current_price': 100}
+    
+    # Test Crypto (boleh SHORT)
+    crypto_result = bot_crypto._apply_market_constraints(test_analysis_short.copy())
+    print(f"Crypto SHORT: {crypto_result['action']} (should be SHORT)")
+    
+    # Test Forex (tidak boleh SHORT)  
+    forex_result = bot_forex._apply_market_constraints(test_analysis_short.copy())
+    print(f"Forex SHORT: {forex_result['action']} (should be NEUTRAL)")
+    
+    # Test Saham Indonesia (tidak boleh SHORT)
+    saham_result = bot_saham._apply_market_constraints(test_analysis_short.copy())
+    print(f"Saham ID SHORT: {saham_result['action']} (should be NEUTRAL)")
+    
+    # Test LONG signals (harus tetap LONG di semua market)
+    long_crypto = bot_crypto._apply_market_constraints(test_analysis_long.copy())
+    long_forex = bot_forex._apply_market_constraints(test_analysis_long.copy())
+    long_saham = bot_saham._apply_market_constraints(test_analysis_long.copy())
+    
+    print(f"Crypto LONG: {long_crypto['action']} (should be LONG)")
+    print(f"Forex LONG: {long_forex['action']} (should be LONG)")
+    print(f"Saham ID LONG: {long_saham['action']} (should be LONG)")
+    
+    print("✅ Market constraints test completed!")
+
 def test_fixed_functionality():
     """Test semua perbaikan"""
     print("🧪 Testing fixed functionality...")
@@ -1800,6 +1876,9 @@ def test_fixed_functionality():
     # Test price validation
     test_price = bot._estimate_realistic_price("BTC/USDT")
     print(f"✅ Price estimation test: {test_price}")
+    
+    # Test market constraints
+    test_market_constraints()
     
     print("🎉 All tests completed!")
 
