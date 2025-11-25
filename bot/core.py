@@ -1169,10 +1169,10 @@ class EnhancedTradingBot:
             'BTC/USDT': 50000.0, 'ETH/USDT': 3000.0, 'BNB/USDT': 500.0,
             'XRP/USDT': 0.5, 'ADA/USDT': 0.4, 'SOL/USDT': 100.0,
             'EUR/USD': 1.08, 'USD/JPY': 150.0, 'GBP/USD': 1.26,
-            'AAPL': 180.0, 'MSFT': 400.0, 'GOOGL': 150.0,
+            'AAPL': 180.0, 'MSFT': 400.0, 'GOOGL': 150.0, 'AMZN': 170.0, 'TSLA': 200.0,
             'BTC-USD': 50000.0, 'ETH-USD': 3000.0,
             'EURUSD=X': 1.08, 'USDJPY=X': 150.0,
-            'BBCA.JK': 9000.0, 'BBRI.JK': 5000.0, 'BMRI.JK': 6000.0
+            'BBCA.JK': 9000.0, 'BBRI.JK': 5000.0, 'BMRI.JK': 6000.0, 'TLKM.JK': 3000.0, 'ASII.JK': 5000.0
         }
         
         # Cari pattern dalam simbol
@@ -1201,7 +1201,7 @@ class EnhancedTradingBot:
             return False
 
     def set_mode(self, mode):
-        """Set trading mode dengan enhanced error handling"""
+        """Set trading mode dengan enhanced error handling - UPDATED FOR US STOCKS"""
         try:
             self.mode = mode.lower()
             
@@ -1224,9 +1224,9 @@ class EnhancedTradingBot:
                 self.data_provider = YFinanceDataProvider(market_type="saham_id")
                 self.strategy = TechnicalAnalysisStrategy(market_type="saham_id")
                 
-            elif self.mode == "stocks":
-                self.data_provider = YFinanceDataProvider(market_type="stocks")
-                self.strategy = TechnicalAnalysisStrategy(market_type="stocks")
+            elif self.mode == "us_stocks":
+                self.data_provider = YFinanceDataProvider(market_type="us_stocks")
+                self.strategy = TechnicalAnalysisStrategy(market_type="us_stocks")
                 
             else:
                 logger.error(f"Invalid mode: {mode}")
@@ -1440,11 +1440,11 @@ class EnhancedTradingBot:
             return self._get_fallback_assets(limit)
     
     def _get_fallback_assets(self, limit):
-        """Provide fallback assets when data provider fails"""
+        """Provide fallback assets when data provider fails - UPDATED FOR US STOCKS"""
         fallback_assets = {
             "crypto": ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT"],
             "forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X"],
-            "stocks": ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"],
+            "us_stocks": ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NVDA", "NFLX"],
             "saham_id": ["BBCA.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "ASII.JK"]
         }
         
@@ -1482,7 +1482,7 @@ class EnhancedTradingBot:
             if not technical_analysis:
                 return {'error': 'Technical analysis failed'}
             
-            # **CRITICAL FIX: Apply market constraints untuk mencegah SHORT di Forex & Saham Indonesia**
+            # **CRITICAL FIX: Apply market constraints untuk mencegah SHORT di Forex, Saham Indonesia & US Stocks**
             technical_analysis = self._apply_market_constraints(technical_analysis)
             
             # **FIXED: Validasi hasil technical analysis**
@@ -1517,14 +1517,14 @@ class EnhancedTradingBot:
             return {'error': str(e)}
 
     def _apply_market_constraints(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """CRITICAL FIX: Block short signals for markets that don't allow shorting"""
+        """CRITICAL FIX: Block short signals for markets that don't allow shorting - UPDATED FOR US STOCKS"""
         if not isinstance(analysis, dict):
             return analysis
             
         action = analysis.get('action', 'NEUTRAL')
         
-        # BLOCK SHORT FOR FOREX & SAHAM INDONESIA
-        if action == 'SHORT' and self.mode in ['forex', 'saham_id']:
+        # BLOCK SHORT FOR FOREX, SAHAM INDONESIA & US STOCKS
+        if action == 'SHORT' and self.mode in ['forex', 'saham_id', 'us_stocks']:
             logger.warning(f"🚫 SHORT SIGNAL BLOCKED for {self.mode} - Changing to NEUTRAL")
             
             # Reset to NEUTRAL
@@ -1665,7 +1665,7 @@ class EnhancedTradingBot:
                     # Analyze asset dengan enhanced ML - PASS SYMBOL AS STRING
                     analysis = self.analyze_with_enhanced_ml(symbol)
                     
-                    # **CRITICAL FIX: Apply market constraints untuk mencegah SHORT di Forex & Saham Indonesia**
+                    # **CRITICAL FIX: Apply market constraints untuk mencegah SHORT di Forex, Saham Indonesia & US Stocks**
                     analysis = self._apply_market_constraints(analysis)
                     
                     # **FIXED: Validasi hasil analysis dengan ketat**
@@ -1794,18 +1794,20 @@ TradingBot = EnhancedTradingBot
 # =============================================
 
 def test_market_constraints():
-    """Test semua perbaikan market constraints"""
+    """Test semua perbaikan market constraints - UPDATED FOR US STOCKS"""
     print("🧪 Testing Market Constraints...")
     
     # Test bot dengan different modes
     bot_crypto = EnhancedTradingBot()
     bot_forex = EnhancedTradingBot()
     bot_saham = EnhancedTradingBot()
+    bot_us_stocks = EnhancedTradingBot()
     
     # Set modes
     bot_crypto.set_mode("crypto")
     bot_forex.set_mode("forex")
     bot_saham.set_mode("saham_id")
+    bot_us_stocks.set_mode("us_stocks")
     
     # Test data
     test_analysis_short = {'action': 'SHORT', 'score': -5, 'current_price': 100}
@@ -1823,14 +1825,20 @@ def test_market_constraints():
     saham_result = bot_saham._apply_market_constraints(test_analysis_short.copy())
     print(f"Saham ID SHORT: {saham_result['action']} (should be NEUTRAL)")
     
+    # Test US Stocks (tidak boleh SHORT)
+    us_stocks_result = bot_us_stocks._apply_market_constraints(test_analysis_short.copy())
+    print(f"US Stocks SHORT: {us_stocks_result['action']} (should be NEUTRAL)")
+    
     # Test LONG signals (harus tetap LONG di semua market)
     long_crypto = bot_crypto._apply_market_constraints(test_analysis_long.copy())
     long_forex = bot_forex._apply_market_constraints(test_analysis_long.copy())
     long_saham = bot_saham._apply_market_constraints(test_analysis_long.copy())
+    long_us_stocks = bot_us_stocks._apply_market_constraints(test_analysis_long.copy())
     
     print(f"Crypto LONG: {long_crypto['action']} (should be LONG)")
     print(f"Forex LONG: {long_forex['action']} (should be LONG)")
     print(f"Saham ID LONG: {long_saham['action']} (should be LONG)")
+    print(f"US Stocks LONG: {long_us_stocks['action']} (should be LONG)")
     
     print("✅ Market constraints test completed!")
 
@@ -1843,30 +1851,30 @@ def test_fixed_functionality():
     
     # Test popular assets
     bot = EnhancedTradingBot()
-    bot.set_mode("crypto")
+    bot.set_mode("us_stocks")
     assets = bot.get_popular_assets(3)
     print(f"✅ Popular assets test: {len(assets)} assets found")
     
     # Test position operations
     position_id = db.save_position(
-        symbol="TEST/USDT",
-        market_type="crypto",
+        symbol="AAPL",
+        market_type="us_stocks",
         action="LONG", 
-        entry_price=100,
-        tp1=110,
-        tp2=120,
-        tp3=130,
-        sl=90
+        entry_price=180,
+        tp1=200,
+        tp2=220,
+        tp3=240,
+        sl=160
     )
     print(f"✅ Position save test: ID {position_id}")
     
     if position_id:
         # Test partial TP
-        success = db.execute_partial_take_profit(position_id, 105, 0.3)
+        success = db.execute_partial_take_profit(position_id, 190, 0.3)
         print(f"✅ Partial TP test: {success}")
         
         # Test close position
-        success = db.close_position(position_id, 108, "test")
+        success = db.close_position(position_id, 195, "test")
         print(f"✅ Close position test: {success}")
     
     # Test scanning
@@ -1874,7 +1882,7 @@ def test_fixed_functionality():
     print(f"✅ Scan test: {len(signals)} signals found")
     
     # Test price validation
-    test_price = bot._estimate_realistic_price("BTC/USDT")
+    test_price = bot._estimate_realistic_price("AAPL")
     print(f"✅ Price estimation test: {test_price}")
     
     # Test market constraints
@@ -1903,7 +1911,7 @@ if __name__ == "__main__":
     
     # Test popular assets method
     print("📈 Testing Popular Assets...")
-    bot.set_mode("crypto")
+    bot.set_mode("us_stocks")
     assets = bot.get_popular_assets(5)
     print(f"Found {len(assets)} assets: {[asset.get('symbol', 'N/A') for asset in assets]}")
     
