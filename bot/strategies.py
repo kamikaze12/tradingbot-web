@@ -1,5 +1,3 @@
-[file name]: strategies.py
-[file content begin]
 import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
