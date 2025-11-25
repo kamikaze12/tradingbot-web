@@ -1177,6 +1177,9 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 volume_analysis, trend_analysis, current_price
             )
             
+            # **CRITICAL FIX: BLOCK SHORT SIGNALS FOR FOREX & SAHAM INDONESIA**
+            combined_analysis = self._apply_market_constraints(combined_analysis)
+            
             # **FIXED: Final validation yang sangat ketat**
             risk_adjusted_signal = self._apply_risk_adjustment(combined_analysis, df)
             final_signal = self._final_validation(risk_adjusted_signal)
@@ -1191,6 +1194,30 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         except Exception as e:
             logger.error(f"Enhanced analysis error: {e}")
             return self._get_default_analysis()
+
+    def _apply_market_constraints(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """CRITICAL FIX: Block short signals for markets that don't allow shorting"""
+        action = analysis.get('action', 'NEUTRAL')
+        
+        # BLOCK SHORT FOR FOREX & SAHAM INDONESIA
+        if action == 'SHORT' and self.market_type in ['forex', 'saham_id']:
+            logger.warning(f"🚫 SHORT SIGNAL BLOCKED for {self.market_type} - Changing to NEUTRAL")
+            
+            # Reset to NEUTRAL
+            analysis['action'] = 'NEUTRAL'
+            analysis['score'] = 0
+            analysis['original_action'] = 'SHORT'  # Keep for debugging
+            analysis['constraint_reason'] = f"Short trading not allowed for {self.market_type}"
+            
+            # Reset levels to safe values
+            current_price = analysis.get('current_price', 1.0)
+            analysis['entry_price'] = current_price
+            analysis['tp1'] = current_price
+            analysis['tp2'] = current_price  
+            analysis['tp3'] = current_price
+            analysis['sl'] = current_price
+        
+        return analysis
 
     def _get_valid_current_price(self, df: pd.DataFrame) -> float:
         """Get valid current price dengan multiple fallback strategies - FIXED"""
@@ -1936,6 +1963,31 @@ class DynamicRiskEngine:
 # STRATEGY TESTING
 # =============================================
 
+def test_market_constraints():
+    """Test function untuk memastikan market constraints bekerja"""
+    print("🧪 Testing Market Constraints...")
+    
+    # Test Crypto (boleh SHORT)
+    crypto_strategy = EnhancedTechnicalAnalysisStrategy(market_type="crypto")
+    crypto_result = crypto_strategy._apply_market_constraints({'action': 'SHORT', 'score': -5})
+    print(f"Crypto SHORT: {crypto_result['action']} (should be SHORT)")
+    
+    # Test Forex (tidak boleh SHORT)  
+    forex_strategy = EnhancedTechnicalAnalysisStrategy(market_type="forex")
+    forex_result = forex_strategy._apply_market_constraints({'action': 'SHORT', 'score': -5})
+    print(f"Forex SHORT: {forex_result['action']} (should be NEUTRAL)")
+    
+    # Test Saham Indonesia (tidak boleh SHORT)
+    saham_strategy = EnhancedTechnicalAnalysisStrategy(market_type="saham_id")
+    saham_result = saham_strategy._apply_market_constraints({'action': 'SHORT', 'score': -5})
+    print(f"Saham ID SHORT: {saham_result['action']} (should be NEUTRAL)")
+    
+    # Test LONG signals (harus tetap LONG)
+    long_result = crypto_strategy._apply_market_constraints({'action': 'LONG', 'score': 5})
+    print(f"LONG signal: {long_result['action']} (should be LONG)")
+    
+    print("✅ Market constraints test completed!")
+
 def test_entry_price_fix():
     """Test function untuk memastikan entry price tidak pernah 0"""
     strategy = EnhancedTechnicalAnalysisStrategy()
@@ -2079,6 +2131,7 @@ if __name__ == "__main__":
     
     # Run comprehensive tests
     print("\nRunning comprehensive tests...")
+    test_market_constraints()
     test_entry_price_fix()
     test_short_signals()
     
