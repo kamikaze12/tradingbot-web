@@ -36,18 +36,18 @@ logger = logging.getLogger(__name__)
 
 # Import modul yang diperlukan dengan error handling yang lebih baik
 try:
-    from .strategies import TechnicalAnalysisStrategy
-    from .data_provider import (
+    from bot.strategies import TechnicalAnalysisStrategy
+    from bot.data_provider import (
         CCXTDataProvider,
         YFinanceDataProvider,
         DataProviderMonitor
     )
-    from .notifier import SoundNotifier
+    from bot.notifier import SoundNotifier
     from database.db_handler import DatabaseHandler
     
     # Handle optional imports
     try:
-        from .data_provider import SolanaPumpFunProvider, DataProviderFactory
+        from bot.data_provider import SolanaPumpFunProvider, DataProviderFactory
     except ImportError:
         class SolanaPumpFunProvider: 
             def __init__(self, *args, **kwargs): pass
