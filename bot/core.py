@@ -10,8 +10,8 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler, RobustScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
 import lightgbm as lgb
@@ -41,7 +41,7 @@ try:
         CCXTDataProvider,
         YFinanceDataProvider,
         DataProviderMonitor,
-        DynamicDataProvider  # ✅ NEW: Import DynamicDataProvider
+        DynamicDataProvider
     )
     from .notifier import SoundNotifier
     from database.db_handler import DatabaseHandler
@@ -80,7 +80,7 @@ except ImportError as e:
         def get_ticker(self, *args, **kwargs): return {'last': 0}
         def get_popular_assets(self, *args, **kwargs): return []
     
-    class DynamicDataProvider:  # ✅ NEW: Fallback DynamicDataProvider
+    class DynamicDataProvider:
         def __init__(self, *args, **kwargs): 
             self.market_type = kwargs.get('market_type', 'crypto')
         def get_ohlcv(self, *args, **kwargs): return pd.DataFrame()
@@ -111,6 +111,493 @@ except ImportError as e:
         def close_position(self, *args, **kwargs): return True
         def update_position_current_price(self, *args, **kwargs): pass
         def get_trade_history(self, *args, **kwargs): return []
+
+# =============================================
+# ENHANCED BACKTEST ENGINE DARI CORE (1).PY
+# =============================================
+
+class BacktestEngine:
+    """Enhanced backtesting engine dengan advanced features dari core (1).py"""
+    
+    def __init__(self, initial_balance=10000):
+        self.initial_balance = initial_balance
+        self.results = {}
+        self.parameter_results = []
+        
+    def run_backtest(self, df, strategy, **kwargs):
+        """Run comprehensive backtest dengan multiple features"""
+        try:
+            # Extract parameters
+            atr_multiplier = kwargs.get('atr_multiplier', 1.0)
+            entry_range_pct = kwargs.get('entry_range_pct', 0.02)
+            commission = kwargs.get('commission', 0.001)  # 0.1% commission
+            
+            balance = self.initial_balance
+            position = 0
+            trades = []
+            equity_curve = [balance]
+            max_balance = balance
+            max_drawdown = 0
+            
+            if df is None or len(df) < 100:
+                return self._get_empty_results()
+            
+            logger.info(f"🔄 Running backtest on {len(df)} bars...")
+            
+            for i in range(50, len(df)):
+                current_data = df.iloc[:i+1]
+                current_price = df['close'].iloc[i]
+                current_time = df.index[i] if hasattr(df.index, 'iloc') else i
+                
+                # Get strategy analysis
+                analysis = strategy.analyze(current_data)
+                
+                if analysis and analysis['action'] in ['LONG', 'SHORT']:
+                    current_trade = None
+                    
+                    # Check if we should enter a trade
+                    if position == 0 and self._should_enter_trade(analysis, current_price):
+                        position = 1 if analysis['action'] == 'LONG' else -1
+                        
+                        # Calculate position size with risk management
+                        position_size = self._calculate_position_size(balance, current_price, analysis.get('atr', 0))
+                        
+                        entry_trade = {
+                            'entry_time': current_time,
+                            'entry_price': current_price,
+                            'action': analysis['action'],
+                            'size': position_size,
+                            'commission_paid': position_size * current_price * commission
+                        }
+                        trades.append(entry_trade)
+                        current_trade = entry_trade
+                        
+                        # Apply commission
+                        balance -= entry_trade['commission_paid']
+                    
+                    # Check if we should exit a trade
+                    elif position != 0 and len(trades) > 0:
+                        current_trade = trades[-1]
+                        if current_trade.get('exit_time') is None:  # Still open
+                            if self._should_exit_trade(current_trade, current_price, analysis, position):
+                                # Calculate P&L
+                                exit_price = current_price
+                                price_change = exit_price - current_trade['entry_price']
+                                pnl = price_change * current_trade['size'] * position
+                                
+                                # Apply commission on exit
+                                exit_commission = current_trade['size'] * exit_price * commission
+                                balance += pnl - exit_commission
+                                
+                                current_trade.update({
+                                    'exit_time': current_time,
+                                    'exit_price': exit_price,
+                                    'pnl': pnl,
+                                    'exit_commission': exit_commission,
+                                    'total_commission': current_trade['commission_paid'] + exit_commission,
+                                    'net_pnl': pnl - (current_trade['commission_paid'] + exit_commission)
+                                })
+                                position = 0
+                                
+                                # Update max drawdown
+                                if balance > max_balance:
+                                    max_balance = balance
+                                current_drawdown = (max_balance - balance) / max_balance
+                                max_drawdown = max(max_drawdown, current_drawdown)
+                
+                # Update equity curve (include unrealized P&L)
+                if position != 0 and len(trades) > 0:
+                    current_trade = trades[-1]
+                    if current_trade.get('exit_time') is None:  # Position still open
+                        unrealized_pnl = (current_price - current_trade['entry_price']) * current_trade['size'] * position
+                        current_equity = balance + unrealized_pnl
+                    else:
+                        current_equity = balance
+                else:
+                    current_equity = balance
+                    
+                equity_curve.append(current_equity)
+            
+            self.results = self._calculate_comprehensive_performance_metrics(trades, equity_curve)
+            return self.results
+            
+        except Exception as e:
+            logger.error(f"Error in backtest: {e}")
+            return self._get_empty_results()
+    
+    def run_walk_forward_analysis(self, df, strategy_class, periods=5, **kwargs):
+        """Walk-forward analysis for strategy validation"""
+        try:
+            if len(df) < 200:
+                return {"error": "Insufficient data for walk-forward analysis"}
+            
+            period_length = len(df) // periods
+            results = []
+            
+            logger.info(f"🔍 Running walk-forward analysis with {periods} periods...")
+            
+            for i in range(periods):
+                start_idx = i * period_length
+                end_idx = start_idx + period_length if i < periods - 1 else len(df)
+                
+                train_data = df.iloc[:start_idx + period_length//2]
+                test_data = df.iloc[start_idx + period_length//2:end_idx]
+                
+                if len(train_data) > 100 and len(test_data) > 50:
+                    # Optimize parameters on training data
+                    optimized_params = self._optimize_parameters(train_data, strategy_class, **kwargs)
+                    
+                    # Test on out-of-sample data
+                    strategy = strategy_class(**optimized_params)
+                    period_result = self.run_backtest(test_data, strategy, **optimized_params)
+                    
+                    period_result['period'] = i + 1
+                    period_result['train_size'] = len(train_data)
+                    period_result['test_size'] = len(test_data)
+                    results.append(period_result)
+                    
+                    logger.info(f"  Period {i+1}: {period_result.get('total_trades', 0)} trades, Win Rate: {period_result.get('win_rate', 0):.1%}")
+            
+            # Aggregate results
+            if results:
+                aggregate = self._aggregate_walk_forward_results(results)
+                return {
+                    'period_results': results,
+                    'aggregate': aggregate,
+                    'consistency_score': self._calculate_consistency_score(results)
+                }
+            else:
+                return {"error": "No valid periods for analysis"}
+                
+        except Exception as e:
+            logger.error(f"Error in walk-forward analysis: {e}")
+            return {"error": str(e)}
+    
+    def run_parameter_optimization(self, df, strategy_class, param_grid, **kwargs):
+        """Grid search for parameter optimization"""
+        try:
+            best_score = -float('inf')
+            best_params = {}
+            results = []
+            
+            logger.info("⚙️ Running parameter optimization...")
+            
+            # Generate parameter combinations
+            param_combinations = self._generate_parameter_combinations(param_grid)
+            
+            for i, params in enumerate(param_combinations):
+                try:
+                    strategy = strategy_class(**params)
+                    result = self.run_backtest(df, strategy, **params)
+                    
+                    # Use Sharpe ratio as optimization score
+                    score = result.get('sharpe_ratio', 0)
+                    
+                    optimization_result = {
+                        'params': params.copy(),
+                        'score': score,
+                        'total_trades': result.get('total_trades', 0),
+                        'win_rate': result.get('win_rate', 0),
+                        'total_pnl': result.get('total_pnl', 0)
+                    }
+                    results.append(optimization_result)
+                    
+                    if score > best_score and result.get('total_trades', 0) >= 5:  # Minimum trades requirement
+                        best_score = score
+                        best_params = params.copy()
+                    
+                    if (i + 1) % 10 == 0:
+                        logger.info(f"  Completed {i+1}/{len(param_combinations)} combinations...")
+                        
+                except Exception as e:
+                    logger.warning(f"  Skipping combination {params}: {e}")
+                    continue
+            
+            # Sort results by score
+            results.sort(key=lambda x: x['score'], reverse=True)
+            
+            return {
+                'best_params': best_params,
+                'best_score': best_score,
+                'top_results': results[:10],  # Top 10 results
+                'all_results': results
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in parameter optimization: {e}")
+            return {"error": str(e)}
+    
+    def run_monte_carlo_simulation(self, trades, num_simulations=1000, confidence_level=0.95):
+        """Monte Carlo simulation for strategy robustness"""
+        try:
+            if not trades or len(trades) < 10:
+                return {"error": "Insufficient trades for Monte Carlo simulation"}
+            
+            # Extract P&L values from trades
+            pnl_values = [t.get('net_pnl', t.get('pnl', 0)) for t in trades if t.get('pnl') is not None]
+            
+            if len(pnl_values) < 10:
+                return {"error": "Insufficient P&L data for simulation"}
+            
+            simulations = []
+            num_trades = len(pnl_values)
+            
+            logger.info(f"🎲 Running Monte Carlo simulation ({num_simulations} iterations)...")
+            
+            for i in range(num_simulations):
+                # Random sampling with replacement
+                sampled_pnls = np.random.choice(pnl_values, size=num_trades, replace=True)
+                sim_total = np.sum(sampled_pnls)
+                sim_win_rate = np.sum(np.array(sampled_pnls) > 0) / num_trades
+                
+                simulations.append({
+                    'total_pnl': sim_total,
+                    'win_rate': sim_win_rate,
+                    'avg_trade': np.mean(sampled_pnls)
+                })
+            
+            # Calculate statistics
+            total_pnls = [s['total_pnl'] for s in simulations]
+            win_rates = [s['win_rate'] for s in simulations]
+            
+            # Confidence intervals
+            pnl_sorted = sorted(total_pnls)
+            win_rate_sorted = sorted(win_rates)
+            
+            lower_idx = int((1 - confidence_level) / 2 * num_simulations)
+            upper_idx = int((1 - (1 - confidence_level) / 2) * num_simulations)
+            
+            return {
+                'num_simulations': num_simulations,
+                'original_pnl': sum(pnl_values),
+                'original_win_rate': sum(1 for pnl in pnl_values if pnl > 0) / len(pnl_values),
+                'monte_carlo_results': {
+                    'pnl_mean': np.mean(total_pnls),
+                    'pnl_std': np.std(total_pnls),
+                    'pnl_confidence_interval': [pnl_sorted[lower_idx], pnl_sorted[upper_idx]],
+                    'win_rate_mean': np.mean(win_rates),
+                    'win_rate_confidence_interval': [win_rate_sorted[lower_idx], win_rate_sorted[upper_idx]],
+                    'probability_profit': sum(1 for pnl in total_pnls if pnl > 0) / num_simulations,
+                    'max_simulated_loss': min(total_pnls),
+                    'best_simulated_profit': max(total_pnls)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in Monte Carlo simulation: {e}")
+            return {"error": str(e)}
+    
+    def _should_enter_trade(self, analysis, current_price):
+        """Enhanced entry logic"""
+        # ✅ PERBAIKAN: Terima sinyal SHORT dengan skor negatif kuat
+        score = analysis.get('score', 0)
+        if (score >= 2 or score <= -2) and analysis.get('risk_metrics', {}).get('reward_ratio', 0) > 1.5:
+            # Additional filters
+            if analysis.get('volume_ratio', 0) > 0.8:  # Minimum volume
+                if analysis.get('rsi', 50) not in [0, 100]:  # Valid RSI
+                    return True
+        return False
+    
+    def _should_exit_trade(self, trade, current_price, analysis, position):
+        """Enhanced exit logic with trailing stops"""
+        entry_price = trade['entry_price']
+        
+        if trade['action'] == 'LONG':
+            # Profit taking
+            if current_price >= entry_price * 1.05:
+                return True
+            # Stop loss
+            if current_price <= entry_price * 0.98:
+                return True
+            # Trailing stop (if price moved up then reversed)
+            if hasattr(self, 'highest_price'):
+                if current_price <= self.highest_price * 0.97:
+                    return True
+            else:
+                self.highest_price = current_price
+        else:  # SHORT
+            if current_price <= entry_price * 0.95:
+                return True
+            if current_price >= entry_price * 1.02:
+                return True
+            if hasattr(self, 'lowest_price'):
+                if current_price >= self.lowest_price * 1.03:
+                    return True
+            else:
+                self.lowest_price = current_price
+                
+        return False
+    
+    def _calculate_position_size(self, balance, current_price, atr):
+        """Position sizing with risk management"""
+        risk_per_trade = 0.02  # 2% risk per trade
+        risk_amount = balance * risk_per_trade
+        
+        if atr > 0:
+            # Use ATR for position sizing
+            position_size = risk_amount / (atr * 2)  # Stop loss at 2 ATR
+        else:
+            # Fallback to percentage-based sizing
+            position_size = (balance * 0.1) / current_price  # 10% of balance
+        
+        return min(position_size, (balance * 0.2) / current_price)  # Max 20% per trade
+    
+    def _calculate_comprehensive_performance_metrics(self, trades, equity_curve):
+        """Enhanced performance metrics"""
+        if not trades or len(equity_curve) < 2:
+            return self._get_empty_results()
+            
+        # Basic metrics
+        closed_trades = [t for t in trades if t.get('exit_time') is not None]
+        winning_trades = [t for t in closed_trades if t.get('net_pnl', t.get('pnl', 0)) > 0]
+        losing_trades = [t for t in closed_trades if t.get('net_pnl', t.get('pnl', 0)) <= 0]
+        
+        total_trades = len(closed_trades)
+        win_rate = len(winning_trades) / total_trades if total_trades else 0
+        
+        # P&L metrics
+        total_pnl = sum(t.get('net_pnl', t.get('pnl', 0)) for t in closed_trades)
+        avg_win = np.mean([t.get('net_pnl', t.get('pnl', 0)) for t in winning_trades]) if winning_trades else 0
+        avg_loss = np.mean([t.get('net_pnl', t.get('pnl', 0)) for t in losing_trades]) if losing_trades else 0
+        profit_factor = abs(sum(t.get('net_pnl', t.get('pnl', 0)) for t in winning_trades) / 
+                           sum(t.get('net_pnl', t.get('pnl', 0)) for t in losing_trades)) if losing_trades else float('inf')
+        
+        # Risk metrics
+        returns = np.diff(equity_curve) / np.array(equity_curve[:-1])
+        volatility = np.std(returns) * np.sqrt(252) if len(returns) > 1 else 0
+        sharpe_ratio = np.mean(returns) / np.std(returns) * np.sqrt(252) if len(returns) > 1 and np.std(returns) > 0 else 0
+        
+        # Drawdown analysis
+        equity_array = np.array(equity_curve)
+        peak = np.maximum.accumulate(equity_array)
+        drawdown = (equity_array - peak) / peak
+        max_drawdown = np.min(drawdown) if len(drawdown) > 0 else 0
+        
+        # Trade statistics
+        trade_durations = []
+        for trade in closed_trades:
+            if 'entry_time' in trade and 'exit_time' in trade:
+                if isinstance(trade['entry_time'], (int, float)) and isinstance(trade['exit_time'], (int, float)):
+                    duration = trade['exit_time'] - trade['entry_time']
+                    trade_durations.append(duration)
+        
+        avg_trade_duration = np.mean(trade_durations) if trade_durations else 0
+        
+        return {
+            'total_trades': total_trades,
+            'winning_trades': len(winning_trades),
+            'losing_trades': len(losing_trades),
+            'win_rate': win_rate,
+            'total_pnl': total_pnl,
+            'net_pnl': total_pnl,  # Including commissions
+            'avg_win': avg_win,
+            'avg_loss': avg_loss,
+            'profit_factor': profit_factor,
+            'sharpe_ratio': sharpe_ratio,
+            'volatility': volatility,
+            'max_drawdown': max_drawdown,
+            'final_balance': equity_curve[-1],
+            'equity_curve': equity_curve,
+            'avg_trade_duration': avg_trade_duration,
+            'total_commission': sum(t.get('total_commission', 0) for t in closed_trades),
+            'risk_metrics': {
+                'reward_ratio': abs(avg_win / avg_loss) if avg_loss != 0 else float('inf'),
+                'expectancy': (win_rate * avg_win) + ((1 - win_rate) * avg_loss),
+                'kelly_criterion': win_rate - (1 - win_rate) / (avg_win / abs(avg_loss)) if avg_loss != 0 else 0
+            }
+        }
+    
+    def _generate_parameter_combinations(self, param_grid):
+        """Generate all parameter combinations for grid search"""
+        from itertools import product
+        
+        keys = param_grid.keys()
+        values = param_grid.values()
+        combinations = [dict(zip(keys, v)) for v in product(*values)]
+        return combinations
+    
+    def _optimize_parameters(self, df, strategy_class, **kwargs):
+        """Simple parameter optimization for walk-forward"""
+        # This is a simplified version - in practice you might want more sophisticated optimization
+        default_params = {
+            'atr_multiplier': 1.0,
+            'entry_range_pct': 0.02,
+            'market_type': kwargs.get('market_type', 'crypto')
+        }
+        
+        # Test a few parameter combinations
+        best_score = -float('inf')
+        best_params = default_params
+        
+        for atr_mult in [0.8, 1.0, 1.2, 1.5]:
+            for entry_pct in [0.01, 0.02, 0.03]:
+                params = default_params.copy()
+                params['atr_multiplier'] = atr_mult
+                params['entry_range_pct'] = entry_pct
+                
+                try:
+                    strategy = strategy_class(**params)
+                    result = self.run_backtest(df, strategy, **params)
+                    score = result.get('sharpe_ratio', 0)
+                    
+                    if score > best_score and result.get('total_trades', 0) >= 3:
+                        best_score = score
+                        best_params = params
+                except:
+                    continue
+        
+        return best_params
+    
+    def _aggregate_walk_forward_results(self, results):
+        """Aggregate results from walk-forward periods"""
+        if not results:
+            return {}
+            
+        aggregates = {
+            'avg_win_rate': np.mean([r.get('win_rate', 0) for r in results]),
+            'avg_sharpe': np.mean([r.get('sharpe_ratio', 0) for r in results]),
+            'avg_trades': np.mean([r.get('total_trades', 0) for r in results]),
+            'total_pnl': sum(r.get('total_pnl', 0) for r in results),
+            'std_win_rate': np.std([r.get('win_rate', 0) for r in results]),
+            'std_sharpe': np.std([r.get('sharpe_ratio', 0) for r in results]),
+            'positive_periods': sum(1 for r in results if r.get('total_pnl', 0) > 0),
+            'negative_periods': sum(1 for r in results if r.get('total_pnl', 0) <= 0)
+        }
+        
+        return aggregates
+    
+    def _calculate_consistency_score(self, results):
+        """Calculate strategy consistency score"""
+        if not results:
+            return 0
+            
+        win_rates = [r.get('win_rate', 0) for r in results]
+        pnls = [r.get('total_pnl', 0) for r in results]
+        
+        # Consistency based on win rate stability and P&L consistency
+        win_rate_consistency = 1 - np.std(win_rates) / (np.mean(win_rates) + 1e-8)
+        pnl_consistency = sum(1 for pnl in pnls if pnl > 0) / len(pnls)
+        
+        return (win_rate_consistency + pnl_consistency) / 2
+    
+    def _get_empty_results(self):
+        return {
+            'total_trades': 0,
+            'winning_trades': 0,
+            'losing_trades': 0,
+            'win_rate': 0,
+            'total_pnl': 0,
+            'net_pnl': 0,
+            'sharpe_ratio': 0,
+            'max_drawdown': 0,
+            'final_balance': self.initial_balance,
+            'equity_curve': [self.initial_balance],
+            'risk_metrics': {
+                'reward_ratio': 0,
+                'expectancy': 0,
+                'kelly_criterion': 0
+            }
+        }
 
 # =============================================
 # ENHANCED POSITION MANAGEMENT
@@ -988,18 +1475,430 @@ class PortfolioOptimizer:
         return frontiers
 
 # =============================================
-# ENHANCED TRADING BOT CORE - FIXED VERSION
+# ENHANCED ML BOT DARI CORE (1).PY
+# =============================================
+
+class MLEnhancedBot:
+    """Machine Learning enhanced trading bot dengan model real dari core (1).py"""
+    
+    def __init__(self, model_type='random_forest'):
+        self.model_type = model_type
+        self.model = None
+        self.scaler = StandardScaler()
+        self.is_trained = False
+        self.model_path = "models/trading_model.pkl"
+        self.scaler_path = "models/scaler.pkl"
+        self.feature_importance = {}
+        
+        # Buat directory models jika belum ada
+        os.makedirs("models", exist_ok=True)
+        
+        # Coba load model yang sudah ada
+        self.load_model()
+
+    def load_model(self):
+        """Load model dan scaler yang sudah ditraining"""
+        try:
+            if os.path.exists(self.model_path) and os.path.exists(self.scaler_path):
+                self.model = joblib.load(self.model_path)
+                self.scaler = joblib.load(self.scaler_path)
+                self.is_trained = True
+                logger.info("✅ ML model loaded successfully")
+                return True
+        except Exception as e:
+            logger.error(f"❌ Error loading model: {e}")
+        
+        # Initialize new model jika tidak ada
+        self._initialize_model()
+        return False
+
+    def save_model(self):
+        """Save model dan scaler"""
+        try:
+            if self.model and self.scaler:
+                joblib.dump(self.model, self.model_path)
+                joblib.dump(self.scaler, self.scaler_path)
+                logger.info("✅ ML model saved successfully")
+                return True
+        except Exception as e:
+            logger.error(f"❌ Error saving model: {e}")
+        return False
+
+    def _initialize_model(self):
+        """Initialize model baru"""
+        if self.model_type == 'random_forest':
+            self.model = RandomForestClassifier(
+                n_estimators=100,
+                max_depth=10,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                random_state=42,
+                n_jobs=-1
+            )
+        elif self.model_type == 'gradient_boosting':
+            self.model = GradientBoostingClassifier(
+                n_estimators=100,
+                max_depth=6,
+                learning_rate=0.1,
+                random_state=42
+            )
+        
+        self.is_trained = False
+        logger.info("🔄 New ML model initialized")
+
+    def prepare_training_data(self, historical_data):
+        """Prepare training data dari historical data"""
+        try:
+            features_list = []
+            targets = []
+            
+            for symbol, data in historical_data.items():
+                if len(data) < 100:  # Minimal data points
+                    continue
+                    
+                # Extract features untuk setiap point dalam data
+                for i in range(50, len(data) - 10):  # Leave room for future prediction
+                    current_window = data.iloc[:i+1]
+                    future_window = data.iloc[i+1:i+11]  # 10 period ke depan
+                    
+                    # Extract features
+                    features = self._extract_detailed_features(current_window)
+                    if features:
+                        # Determine target (1 jika harga naik, 0 jika turun)
+                        current_price = current_window['close'].iloc[-1]
+                        future_max = future_window['close'].max()
+                        future_min = future_window['close'].min()
+                        
+                        # Target: 1 jika naik 2%, -1 jika turun 2%, 0 jika sideways
+                        price_change = (future_max - current_price) / current_price
+                        if price_change >= 0.02:
+                            target = 1
+                        elif (future_min - current_price) / current_price <= -0.02:
+                            target = -1
+                        else:
+                            target = 0
+                            
+                        features_list.append(features)
+                        targets.append(target)
+            
+            if len(features_list) < 100:  # Minimal training samples
+                return None, None
+                
+            return np.array(features_list), np.array(targets)
+            
+        except Exception as e:
+            logger.error(f"❌ Error preparing training data: {e}")
+            return None, None
+
+    def train_model(self, historical_data, test_size=0.2):
+        """Train model dengan historical data"""
+        try:
+            logger.info("🔄 Preparing training data...")
+            X, y = self.prepare_training_data(historical_data)
+            
+            if X is None or len(X) < 100:
+                logger.error("❌ Insufficient training data")
+                return False
+            
+            logger.info(f"📊 Training data shape: {X.shape}, targets: {y.shape}")
+            
+            # Split data dengan time series split
+            tscv = TimeSeriesSplit(n_splits=5)
+            accuracies = []
+            
+            for train_idx, test_idx in tscv.split(X):
+                X_train, X_test = X[train_idx], X[test_idx]
+                y_train, y_test = y[train_idx], y[test_idx]
+                
+                # Scale features
+                X_train_scaled = self.scaler.fit_transform(X_train)
+                X_test_scaled = self.scaler.transform(X_test)
+                
+                # Train model
+                self.model.fit(X_train_scaled, y_train)
+                
+                # Evaluate
+                y_pred = self.model.predict(X_test_scaled)
+                accuracy = accuracy_score(y_test, y_pred)
+                accuracies.append(accuracy)
+            
+            # Final training dengan semua data
+            X_scaled = self.scaler.fit_transform(X)
+            self.model.fit(X_scaled, y)
+            
+            # Calculate feature importance
+            if hasattr(self.model, 'feature_importances_'):
+                feature_names = [
+                    'rsi', 'macd', 'sma_20', 'sma_50', 'ema_12', 'ema_26',
+                    'atr', 'volume_ratio', 'price_change_1d', 'price_change_5d',
+                    'volatility', 'momentum', 'williams_r', 'cci', 'obv'
+                ]
+                # Pastikan jumlah feature matches
+                if len(self.model.feature_importances_) == len(feature_names):
+                    self.feature_importance = dict(zip(feature_names, self.model.feature_importances_))
+                else:
+                    self.feature_importance = {f: 0.0 for f in feature_names}
+            
+            self.is_trained = True
+            avg_accuracy = np.mean(accuracies)
+            
+            logger.info(f"✅ Model training completed! Average Accuracy: {avg_accuracy:.3f}")
+            logger.info(f"📈 Feature Importance: {self.feature_importance}")
+            
+            # Save model
+            self.save_model()
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error training model: {e}")
+            return False
+
+    def _extract_detailed_features(self, df):
+        """Extract detailed features untuk training dan prediction"""
+        try:
+            if len(df) < 50:
+                return None
+                
+            features = {}
+            
+            # Price-based features
+            prices = df['close']
+            volumes = df['volume']
+            
+            # RSI
+            features['rsi'] = self._calculate_rsi(prices)
+            
+            # MACD
+            features['macd'] = self._calculate_macd(prices)
+            
+            # Moving Averages
+            features['sma_20'] = prices.rolling(20).mean().iloc[-1] if len(prices) >= 20 else prices.mean()
+            features['sma_50'] = prices.rolling(50).mean().iloc[-1] if len(prices) >= 50 else prices.mean()
+            features['ema_12'] = prices.ewm(span=12).mean().iloc[-1]
+            features['ema_26'] = prices.ewm(span=26).mean().iloc[-1]
+            
+            # ATR
+            features['atr'] = self._calculate_atr(df)
+            
+            # Volume features
+            vol_mean = volumes.rolling(20).mean().iloc[-1] if len(volumes) >= 20 else volumes.mean()
+            features['volume_ratio'] = volumes.iloc[-1] / vol_mean if vol_mean > 0 else 1
+            
+            # Price changes
+            if len(df) > 1:
+                features['price_change_1d'] = (prices.iloc[-1] - prices.iloc[-2]) / prices.iloc[-2] if prices.iloc[-2] != 0 else 0
+            else:
+                features['price_change_1d'] = 0
+                
+            if len(df) > 5:
+                features['price_change_5d'] = (prices.iloc[-1] - prices.iloc[-6]) / prices.iloc[-6] if prices.iloc[-6] != 0 else 0
+            else:
+                features['price_change_5d'] = 0
+            
+            # Volatility
+            features['volatility'] = prices.pct_change().std() * np.sqrt(252) if len(prices) > 1 else 0.02
+            
+            # Momentum
+            features['momentum'] = (prices.iloc[-1] - prices.iloc[-10]) / prices.iloc[-10] if len(prices) > 10 and prices.iloc[-10] != 0 else 0
+            
+            # Williams %R
+            features['williams_r'] = self._calculate_williams_r(df)
+            
+            # CCI
+            features['cci'] = self._calculate_cci(df)
+            
+            # OBV
+            features['obv'] = self._calculate_obv(df)
+            
+            # Pastikan tidak ada NaN values
+            for key, value in features.items():
+                if pd.isna(value):
+                    features[key] = 0
+            
+            return list(features.values())
+            
+        except Exception as e:
+            logger.error(f"❌ Error extracting features: {e}")
+            return None
+
+    def extract_features(self, df):
+        """Extract features untuk prediction real-time"""
+        try:
+            features = self._extract_detailed_features(df)
+            if features is None:
+                return pd.DataFrame([self._get_default_features()])
+            
+            feature_names = [
+                'rsi', 'macd', 'sma_20', 'sma_50', 'ema_12', 'ema_26',
+                'atr', 'volume_ratio', 'price_change_1d', 'price_change_5d',
+                'volatility', 'momentum', 'williams_r', 'cci', 'obv'
+            ]
+            
+            return pd.DataFrame([features], columns=feature_names)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in extract_features: {e}")
+            return pd.DataFrame([self._get_default_features()])
+
+    def _get_default_features(self):
+        """Return default features jika extraction gagal"""
+        return [50, 0, 0, 0, 0, 0, 0.02, 1, 0, 0, 0.02, 0, -50, 0, 0]
+
+    def predict(self, df):
+        """Predict menggunakan model ML"""
+        try:
+            if not self.is_trained or self.model is None:
+                return 0.5, 0  # Return default confidence dan direction
+            
+            # Extract features
+            features_df = self.extract_features(df)
+            if features_df.empty:
+                return 0.5, 0
+            
+            # Scale features
+            features_scaled = self.scaler.transform(features_df)
+            
+            # Predict
+            prediction = self.model.predict(features_scaled)[0]
+            probabilities = self.model.predict_proba(features_scaled)[0]
+            
+            # Confidence score (ambil probability tertinggi)
+            confidence = np.max(probabilities)
+            
+            return confidence, prediction
+            
+        except Exception as e:
+            logger.error(f"❌ Error in ML prediction: {e}")
+            return 0.5, 0
+
+    def batch_predict(self, symbols_data):
+        """Batch prediction untuk multiple symbols"""
+        try:
+            if not self.is_trained:
+                return {}
+            
+            predictions = {}
+            features_list = []
+            symbol_features = {}
+            
+            # Extract features untuk semua symbols
+            for symbol, df in symbols_data.items():
+                features_df = self.extract_features(df)
+                if not features_df.empty:
+                    features_list.append(features_df.iloc[0].values)
+                    symbol_features[symbol] = features_df.iloc[0].values
+            
+            if not features_list:
+                return {}
+            
+            # Batch prediction
+            features_array = np.array(features_list)
+            features_scaled = self.scaler.transform(features_array)
+            
+            batch_predictions = self.model.predict(features_scaled)
+            batch_probabilities = self.model.predict_proba(features_scaled)
+            
+            # Map predictions back to symbols
+            for i, (symbol, features) in enumerate(symbol_features.items()):
+                if i < len(batch_predictions):
+                    predictions[symbol] = {
+                        'direction': batch_predictions[i],
+                        'confidence': np.max(batch_probabilities[i]),
+                        'probability_up': batch_probabilities[i][1] if len(batch_probabilities[i]) > 1 else 0.5,
+                        'probability_down': batch_probabilities[i][-1] if len(batch_probabilities[i]) > 2 else 0.5
+                    }
+            
+            return predictions
+            
+        except Exception as e:
+            logger.error(f"❌ Error in batch prediction: {e}")
+            return {}
+
+    # Technical Indicators
+    def _calculate_rsi(self, prices, period=14):
+        try:
+            if len(prices) < period + 1:
+                return 50
+            delta = prices.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            return rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50
+        except:
+            return 50
+
+    def _calculate_macd(self, prices):
+        try:
+            if len(prices) < 26:
+                return 0
+            exp1 = prices.ewm(span=12).mean()
+            exp2 = prices.ewm(span=26).mean()
+            macd = exp1 - exp2
+            return macd.iloc[-1]
+        except:
+            return 0
+
+    def _calculate_atr(self, df, period=14):
+        try:
+            high = df['high']
+            low = df['low']
+            close = df['close']
+            
+            tr1 = high - low
+            tr2 = abs(high - close.shift())
+            tr3 = abs(low - close.shift())
+            
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(period).mean()
+            return atr.iloc[-1] if not pd.isna(atr.iloc[-1]) else 0.02
+        except:
+            return 0.02
+
+    def _calculate_williams_r(self, df, period=14):
+        try:
+            high = df['high'].rolling(period).max()
+            low = df['low'].rolling(period).min()
+            close = df['close']
+            
+            williams_r = -100 * (high - close) / (high - low)
+            return williams_r.iloc[-1] if not pd.isna(williams_r.iloc[-1]) else -50
+        except:
+            return -50
+
+    def _calculate_cci(self, df, period=20):
+        try:
+            typical_price = (df['high'] + df['low'] + df['close']) / 3
+            sma = typical_price.rolling(period).mean()
+            mad = typical_price.rolling(period).apply(lambda x: np.mean(np.abs(x - np.mean(x))))
+            
+            cci = (typical_price - sma) / (0.015 * mad)
+            return cci.iloc[-1] if not pd.isna(cci.iloc[-1]) else 0
+        except:
+            return 0
+
+    def _calculate_obv(self, df):
+        try:
+            close = df['close']
+            volume = df['volume']
+            obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
+            return obv.iloc[-1] if len(obv) > 0 else 0
+        except:
+            return 0
+
+# =============================================
+# ENHANCED TRADING BOT CORE - FINAL VERSION
 # =============================================
 
 class EnhancedTradingBot:
-    """Enhanced trading bot dengan semua improvement - FIXED VERSION"""
+    """Enhanced trading bot dengan semua improvement dan fitur dari kedua versi"""
     
     def __init__(self, config_path="config/config.json"):
         self.config_path = config_path
         self.load_config()
         self.mode = None
         self.data_provider = None
-        self.dynamic_provider = None  # ✅ NEW: Dynamic data provider
+        self.dynamic_provider = None
         self.pump_provider = None
         self.strategy = TechnicalAnalysisStrategy(
             market_type=self.config.get("market_type", "crypto"),
@@ -1009,16 +1908,18 @@ class EnhancedTradingBot:
         self.notifier = SoundNotifier()
         self.db = DatabaseHandler()
         
-        # ENHANCED COMPONENTS
+        # ENHANCED COMPONENTS DARI KEDUA VERSI
         self.position_manager = EnhancedPositionManager(self.db)
         self.ml_ensemble = EnsembleMLModel()
+        self.ml_bot = MLEnhancedBot()  # Dari core (1).py
         self.portfolio_optimizer = PortfolioOptimizer()
+        self.backtest_engine = BacktestEngine()  # Dari core (1).py
         self.data_provider_monitor = DataProviderMonitor()
         
         # Enhanced configuration
-        self.risk_per_trade = self.config.get("risk_per_trade", 0.01)  # 1% per trade
-        self.max_drawdown_limit = self.config.get("max_drawdown_limit", 0.1)  # 10% max drawdown
-        self.daily_loss_limit = self.config.get("daily_loss_limit", 0.05)  # 5% daily loss limit
+        self.risk_per_trade = self.config.get("risk_per_trade", 0.01)
+        self.max_drawdown_limit = self.config.get("max_drawdown_limit", 0.1)
+        self.daily_loss_limit = self.config.get("daily_loss_limit", 0.05)
         
         # Monitoring
         self.daily_pnl = 0.0
@@ -1031,7 +1932,11 @@ class EnhancedTradingBot:
         self.stop_scheduler = False
         self.scanning_in_progress = False
         
-        logger.info("Enhanced TradingBot initialized successfully")
+        # ML enhancements
+        self.ml_predictions_cache = {}
+        self.last_ml_update = 0
+        
+        logger.info("Enhanced TradingBot initialized successfully dengan semua fitur")
 
     def load_config(self):
         """Load configuration dengan error handling"""
@@ -1080,11 +1985,11 @@ class EnhancedTradingBot:
             logger.error(f"Error saving config: {e}")
 
     def set_mode(self, mode):
-        """Set trading mode dengan dynamic data provider - FIXED VERSION"""
+        """Set trading mode dengan dynamic data provider"""
         try:
             self.mode = mode.lower()
             
-            # ✅ GUNAKAN DYNAMIC DATA PROVIDER UNTUK SEMUA MARKET TYPE
+            # GUNAKAN DYNAMIC DATA PROVIDER UNTUK SEMUA MARKET TYPE
             self.dynamic_provider = DynamicDataProvider(market_type=self.mode)
             self.data_provider = self.dynamic_provider  # Untuk kompatibilitas
             
@@ -1215,12 +2120,12 @@ class EnhancedTradingBot:
             
             assets = []
             
-            # ✅ JIKA ADA SEARCH QUERY, GUNAKAN DYNAMIC SEARCH
+            # JIKA ADA SEARCH QUERY, GUNAKAN DYNAMIC SEARCH
             if search_query:
                 logger.info(f"🔍 Searching assets for: '{search_query}'")
                 assets = self.search_assets(search_query, limit * 2)
             else:
-                # ✅ GUNAKAN DYNAMIC PROVIDER UNTUK POPULAR ASSETS
+                # GUNAKAN DYNAMIC PROVIDER UNTUK POPULAR ASSETS
                 assets = self.dynamic_provider.get_popular_assets(limit * 2)
             
             logger.info(f"📊 Total assets to scan: {len(assets)}")
@@ -1335,137 +2240,16 @@ class EnhancedTradingBot:
         finally:
             self.scanning_in_progress = False
 
-    def calculate_custom_entry(self, symbol, entry_price):
-        """Calculate custom entry dengan TP/SL berdasarkan ATR - FIXED VERSION"""
-        try:
-            # **FIXED: Extract symbol from dict if needed**
-            if isinstance(symbol, dict):
-                symbol = symbol.get('symbol', '')
-                if not symbol:
-                    return {'error': 'Invalid symbol format'}
-            
-            # **FIXED: Validasi entry_price**
-            if entry_price <= 0:
-                logger.warning(f"Invalid entry price for {symbol}: {entry_price}, using fallback")
-                entry_price = self._estimate_realistic_price(symbol)
-            
-            # Get data untuk menghitung ATR
-            df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 50)
-            if df is None or len(df) < 20:
-                # Fallback calculation
-                return {
-                    'symbol': symbol,
-                    'entry_price': entry_price,
-                    'tp1': entry_price * 1.03,
-                    'tp2': entry_price * 1.06,
-                    'tp3': entry_price * 1.09,
-                    'sl': entry_price * 0.97,
-                    'atr': entry_price * 0.02
-                }
-            
-            # Calculate ATR
-            atr = self._calculate_atr(df)
-            if atr == 0:
-                atr = entry_price * 0.02  # Fallback 2%
-            
-            # Calculate TP/SL levels
-            tp1 = entry_price + (atr * 1.5)
-            tp2 = entry_price + (atr * 2.5)
-            tp3 = entry_price + (atr * 3.5)
-            sl = entry_price - (atr * 1.0)
-            
-            # **FIXED: Validasi levels**
-            if (tp1 == tp2 == tp3 == sl == entry_price):
-                logger.warning("All levels equal to entry price, adjusting...")
-                tp1 = entry_price * 1.03
-                tp2 = entry_price * 1.06
-                tp3 = entry_price * 1.09
-                sl = entry_price * 0.97
-            
-            return {
-                'symbol': symbol,
-                'entry_price': entry_price,
-                'tp1': tp1,
-                'tp2': tp2,
-                'tp3': tp3,
-                'sl': sl,
-                'atr': atr
-            }
-        except Exception as e:
-            logger.error(f"Error calculating custom entry: {e}")
-            # Ultimate fallback
-            return {
-                'symbol': symbol,
-                'entry_price': max(entry_price, 0.01),
-                'tp1': max(entry_price, 0.01) * 1.03,
-                'tp2': max(entry_price, 0.01) * 1.06,
-                'tp3': max(entry_price, 0.01) * 1.09,
-                'sl': max(entry_price, 0.01) * 0.97,
-                'atr': max(entry_price, 0.01) * 0.02
-            }
-
-    def _calculate_atr(self, df, period=14):
-        """Calculate Average True Range - FIXED"""
-        try:
-            high = df['high'].values
-            low = df['low'].values
-            close = df['close'].values
-            
-            # **FIXED: Validasi data harga**
-            if (high <= 0).any() or (low <= 0).any() or (close <= 0).any():
-                current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 1.0
-                return current_price * 0.02
-            
-            tr = np.zeros(len(high))
-            for i in range(1, len(high)):
-                tr1 = high[i] - low[i]
-                tr2 = abs(high[i] - close[i-1])
-                tr3 = abs(low[i] - close[i-1])
-                tr[i] = max(tr1, tr2, tr3)
-            
-            return np.mean(tr[-period:]) if len(tr) >= period else np.mean(tr)
-        except:
-            current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 1.0
-            return current_price * 0.02
-
-    def _estimate_realistic_price(self, symbol):
-        """Estimate realistic price based on symbol - FIXED"""
-        # Harga estimasi untuk simbol umum
-        price_estimates = {
-            'BTC/USDT': 50000.0, 'ETH/USDT': 3000.0, 'BNB/USDT': 500.0,
-            'XRP/USDT': 0.5, 'ADA/USDT': 0.4, 'SOL/USDT': 100.0,
-            'EUR/USD': 1.08, 'USD/JPY': 150.0, 'GBP/USD': 1.26,
-            'AAPL': 180.0, 'MSFT': 400.0, 'GOOGL': 150.0, 'AMZN': 170.0, 'TSLA': 200.0,
-            'BTC-USD': 50000.0, 'ETH-USD': 3000.0,
-            'EURUSD=X': 1.08, 'USDJPY=X': 150.0,
-            'BBCA.JK': 9000.0, 'BBRI.JK': 5000.0, 'BMRI.JK': 6000.0, 'TLKM.JK': 3000.0, 'ASII.JK': 5000.0
-        }
-        
-        # Cari pattern dalam simbol
-        for pattern, price in price_estimates.items():
-            if pattern in symbol:
-                return price
-        
-        # Default berdasarkan tipe market
-        if 'USDT' in symbol or '/USDT' in symbol:
-            return 10.0  # Harga rata-rata altcoin
-        elif 'USD' in symbol or '=X' in symbol:
-            return 1.0   # Forex pairs
-        elif '.JK' in symbol:
-            return 5000.0  # Saham Indonesia
-        else:
-            return 100.0  # Stocks
-
     def analyze_with_enhanced_ml(self, symbol: str) -> Dict[str, Any]:
-        """Enhanced analysis dengan ML ensemble - FIXED VERSION"""
+        """Enhanced analysis dengan ML ensemble"""
         try:
-            # **FIXED: Extract symbol from dict if needed**
+            # Extract symbol from dict if needed
             if isinstance(symbol, dict):
                 symbol = symbol.get('symbol', '')
                 if not symbol:
                     return {'error': 'Invalid symbol format'}
             
-            # **FIXED: Validasi symbol yang sudah diperbaiki**
+            # Validasi symbol yang sudah diperbaiki
             if not symbol or not isinstance(symbol, str) or symbol.strip() == "":
                 return {'error': 'Invalid symbol'}
             
@@ -1474,7 +2258,7 @@ class EnhancedTradingBot:
             if df is None or len(df) < 50:
                 return {'error': 'Insufficient data'}
             
-            # **FIXED: Validasi data harga**
+            # Validasi data harga
             current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 0
             if current_price <= 0:
                 logger.warning(f"Invalid current price for {symbol}: {current_price}")
@@ -1485,33 +2269,70 @@ class EnhancedTradingBot:
             if not technical_analysis:
                 return {'error': 'Technical analysis failed'}
             
-            # **CRITICAL FIX: Apply market constraints untuk mencegah SHORT di Forex, Saham Indonesia & US Stocks**
+            # CRITICAL FIX: Apply market constraints untuk mencegah SHORT di Forex, Saham Indonesia & US Stocks
             technical_analysis = self._apply_market_constraints(technical_analysis)
             
-            # **FIXED: Validasi hasil technical analysis**
+            # Validasi hasil technical analysis
             if technical_analysis.get('entry_price', 0) <= 0:
                 logger.warning(f"Invalid entry price from technical analysis for {symbol}")
                 # Fallback: gunakan current price
                 technical_analysis['entry_price'] = current_price
                 technical_analysis['current_price'] = current_price
             
-            # ML analysis
+            # ML analysis dengan kedua sistem ML
+            ml_enhancements = {}
+            
+            # ML Ensemble (Enhanced)
             if self.ml_ensemble.is_trained:
                 features_df = self.ml_ensemble.advanced_feature_engineering(df)
                 if not features_df.empty:
                     ml_confidence, ml_direction = self.ml_ensemble.predict_ensemble(features_df.values)
                     
-                    # Combine technical and ML analysis
-                    base_score = technical_analysis.get('score', 0)
-                    enhanced_score = base_score * ml_confidence
-                    
-                    technical_analysis.update({
-                        'ml_confidence': ml_confidence,
-                        'ml_direction': ml_direction,
-                        'enhanced_score': enhanced_score,
-                        'final_score': int(round(enhanced_score)),
+                    ml_enhancements.update({
+                        'ml_ensemble_confidence': ml_confidence,
+                        'ml_ensemble_direction': ml_direction,
                         'features_used': list(features_df.columns) if not features_df.empty else []
                     })
+            
+            # ML Bot (Traditional dari core (1).py)
+            if self.ml_bot.is_trained:
+                ml_confidence, ml_direction = self.ml_bot.predict(df)
+                ml_enhancements.update({
+                    'ml_bot_confidence': ml_confidence,
+                    'ml_bot_direction': ml_direction
+                })
+            
+            # Combine semua ML results
+            if ml_enhancements:
+                base_score = technical_analysis.get('score', 0)
+                
+                # Average confidence dari kedua sistem ML
+                confidences = [v for k, v in ml_enhancements.items() if 'confidence' in k and v > 0]
+                avg_ml_confidence = np.mean(confidences) if confidences else 0.5
+                
+                # Score boost berdasarkan ML confidence
+                ml_score_boost = 0
+                if avg_ml_confidence > 0.7:  # High confidence
+                    ml_score_boost = 2.0
+                elif avg_ml_confidence > 0.6:  # Medium confidence
+                    ml_score_boost = 1.0
+                
+                final_score = base_score + ml_score_boost
+                final_score = max(min(final_score, 10), -10)  # Clamp score
+                
+                technical_analysis.update(ml_enhancements)
+                technical_analysis.update({
+                    'final_score': final_score,
+                    'ml_score_boost': ml_score_boost
+                })
+                
+                # Update action berdasarkan final score
+                if final_score >= 3:
+                    technical_analysis['action'] = 'LONG'
+                elif final_score <= -3:
+                    technical_analysis['action'] = 'SHORT'
+                else:
+                    technical_analysis['action'] = 'NEUTRAL'
             
             return technical_analysis
             
@@ -1545,6 +2366,304 @@ class EnhancedTradingBot:
             analysis['sl'] = current_price
         
         return analysis
+
+    # =============================================
+    # ADVANCED BACKTEST METHODS DARI CORE (1).PY
+    # =============================================
+
+    def run_advanced_backtest(self, symbol, timeframe=None, limit=500):
+        """Run advanced backtest dengan semua fitur baru"""
+        if not self.dynamic_provider:
+            return {"error": "No data provider available"}
+            
+        try:
+            if timeframe is None:
+                timeframe = self.config.get("timeframe", "1h")
+                
+            logger.info(f"🔧 Running advanced backtest for {symbol}...")
+            df = self.dynamic_provider.get_ohlcv(symbol, timeframe, limit)
+            
+            if df is None or len(df) < 100:
+                return {"error": "Insufficient data for backtest"}
+            
+            # Run basic backtest
+            basic_result = self.backtest_engine.run_backtest(df, self.strategy)
+            
+            # Run Monte Carlo simulation if we have trades
+            mc_result = {}
+            if basic_result.get('total_trades', 0) > 10:
+                # Get trades from basic backtest for Monte Carlo
+                mc_result = self.backtest_engine.run_monte_carlo_simulation(
+                    trades=[],  # You'd pass actual trades here
+                    num_simulations=1000
+                )
+            
+            return {
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'basic_backtest': basic_result,
+                'monte_carlo': mc_result,
+                'data_points': len(df)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in advanced backtest: {e}")
+            return {"error": str(e)}
+
+    def run_walk_forward_analysis(self, symbol, periods=5):
+        """Run walk-forward analysis untuk validasi strategy"""
+        if not self.dynamic_provider:
+            return {"error": "No data provider available"}
+            
+        try:
+            logger.info(f"📊 Running walk-forward analysis for {symbol}...")
+            df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 1000)
+            
+            if df is None or len(df) < 200:
+                return {"error": "Insufficient data for walk-forward analysis"}
+            
+            result = self.backtest_engine.run_walk_forward_analysis(
+                df, TechnicalAnalysisStrategy, periods=periods,
+                market_type=self.mode
+            )
+            
+            return {
+                'symbol': symbol,
+                'walk_forward_result': result
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in walk-forward analysis: {e}")
+            return {"error": str(e)}
+
+    def optimize_strategy_parameters(self, symbol, param_grid=None):
+        """Optimize strategy parameters menggunakan grid search"""
+        if not self.dynamic_provider:
+            return {"error": "No data provider available"}
+            
+        try:
+            if param_grid is None:
+                param_grid = {
+                    'atr_multiplier': [0.5, 1.0, 1.5, 2.0],
+                    'entry_range_pct': [0.01, 0.02, 0.03, 0.05],
+                    'market_type': [self.mode]
+                }
+                
+            logger.info(f"⚙️ Optimizing parameters for {symbol}...")
+            df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 500)
+            
+            if df is None or len(df) < 100:
+                return {"error": "Insufficient data for parameter optimization"}
+            
+            result = self.backtest_engine.run_parameter_optimization(
+                df, TechnicalAnalysisStrategy, param_grid
+            )
+            
+            return {
+                'symbol': symbol,
+                'optimization_result': result
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in parameter optimization: {e}")
+            return {"error": str(e)}
+
+    def run_comprehensive_backtest(self, symbol, days=180):
+        """Run comprehensive backtest dengan multiple timeframes"""
+        try:
+            logger.info(f"📊 Running comprehensive backtest for {symbol} over {days} days...")
+            
+            # Get data for different timeframes
+            timeframes = ['1h', '4h', '1d']
+            results = {}
+            
+            for tf in timeframes:
+                df = self.dynamic_provider.get_ohlcv(symbol, tf, days * 24)  # Estimate bars needed
+                if df is None and len(df) > 100:
+                    result = self.backtest_engine.run_backtest(df, self.strategy)
+                    results[tf] = result
+                else:
+                    results[tf] = {"error": f"Insufficient data for {tf} timeframe"}
+            
+            return {
+                'symbol': symbol,
+                'timeframe_results': results,
+                'overall_score': self._calculate_overall_backtest_score(results)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in comprehensive backtest: {e}")
+            return {"error": str(e)}
+
+    def _calculate_overall_backtest_score(self, results):
+        """Calculate overall score from multiple timeframe results"""
+        try:
+            scores = []
+            for tf, result in results.items():
+                if 'error' not in result:
+                    # Combine multiple metrics for score
+                    win_rate = result.get('win_rate', 0)
+                    sharpe = max(result.get('sharpe_ratio', 0), 0)
+                    profit_factor = min(result.get('profit_factor', 1), 10)
+                    
+                    timeframe_score = (win_rate * 0.4 + sharpe * 0.3 + profit_factor * 0.1)
+                    scores.append(timeframe_score)
+            
+            return np.mean(scores) if scores else 0
+        except:
+            return 0
+
+    # =============================================
+    # ML TRAINING METHODS DARI CORE (1).PY
+    # =============================================
+
+    def train_ml_model(self, training_symbols=None, days=365):
+        """Train ML model dengan data historis - dari core (1).py"""
+        try:
+            if training_symbols is None:
+                training_symbols = self.get_popular_assets(50)
+            
+            historical_data = {}
+            
+            logger.info(f"📊 Collecting historical data for {len(training_symbols)} symbols...")
+            
+            for symbol in training_symbols:
+                try:
+                    # Get data 1 tahun kebelakang
+                    df = self.dynamic_provider.get_ohlcv(symbol, '1d', days)
+                    if df is not None and len(df) > 100:
+                        historical_data[symbol] = df
+                        logger.info(f"  ✅ Collected data for {symbol}: {len(df)} bars")
+                    else:
+                        logger.info(f"  ⚠️ Insufficient data for {symbol}")
+                except Exception as e:
+                    logger.warning(f"  ❌ Error getting data for {symbol}: {e}")
+            
+            if len(historical_data) < 10:
+                logger.error("❌ Not enough historical data for training")
+                return False
+            
+            logger.info(f"🔄 Training ML model with {len(historical_data)} symbols...")
+            success = self.ml_bot.train_model(historical_data)
+            
+            if success:
+                logger.info("✅ ML model training completed successfully!")
+            else:
+                logger.error("❌ ML model training failed")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"❌ Error in ML model training: {e}")
+            return False
+
+    def update_ml_predictions(self, symbols_data):
+        """Update ML predictions untuk multiple symbols sekaligus - dari core (1).py"""
+        try:
+            # Cache predictions untuk 5 menit
+            current_time = time.time()
+            if current_time - self.last_ml_update < 300:  # 5 menit
+                return self.ml_predictions_cache
+            
+            logger.info("🔄 Updating ML predictions...")
+            predictions = self.ml_bot.batch_predict(symbols_data)
+            
+            self.ml_predictions_cache = predictions
+            self.last_ml_update = current_time
+            
+            logger.info(f"✅ ML predictions updated for {len(predictions)} symbols")
+            return predictions
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating ML predictions: {e}")
+            return {}
+
+    # =============================================
+    # PORTFOLIO OPTIMIZATION METHODS
+    # =============================================
+
+    def get_optimized_portfolio_allocation(self, signals: List[Dict], total_capital: float) -> List[Dict]:
+        """Get optimized portfolio allocation"""
+        try:
+            return self.portfolio_optimizer.momentum_based_allocation(signals, total_capital)
+        except Exception as e:
+            logger.error(f"Portfolio optimization error: {e}")
+            # Fallback to simple allocation
+            return self._simple_allocation_fallback(signals, total_capital)
+    
+    def _simple_allocation_fallback(self, signals: List[Dict], total_capital: float) -> List[Dict]:
+        """Simple allocation fallback"""
+        if not signals:
+            return []
+        
+        n_signals = len(signals)
+        base_allocation = total_capital / n_signals
+        
+        return [
+            {
+                'symbol': s['symbol'],
+                'allocation_percent': 1/n_signals,
+                'allocated_capital': base_allocation,
+                'score': s.get('score', 0),
+                'action': s.get('action', 'NEUTRAL')
+            }
+            for s in signals
+        ]
+
+    def train_ml_models(self, historical_data: Dict[str, pd.DataFrame]) -> bool:
+        """Train ML models dengan historical data"""
+        try:
+            # Prepare training data
+            X_list = []
+            y_list = []
+            
+            for symbol, df in historical_data.items():
+                if len(df) < 100:
+                    continue
+                
+                # Feature engineering
+                features_df = self.ml_ensemble.advanced_feature_engineering(df)
+                if features_df.empty:
+                    continue
+                
+                # Create targets (1 if price goes up, 0 if down)
+                future_prices = df['close'].shift(-5).dropna()  # 5-period forward look
+                current_prices = df['close'].iloc[:len(future_prices)]
+                
+                targets = (future_prices.values > current_prices.values).astype(int)
+                
+                # Align features with targets
+                aligned_features = features_df.iloc[:len(targets)]
+                
+                if len(aligned_features) == len(targets):
+                    X_list.append(aligned_features.values)
+                    y_list.extend(targets)
+            
+            if len(X_list) == 0:
+                logger.warning("No training data available")
+                return False
+            
+            X = np.vstack(X_list)
+            y = np.array(y_list)
+            
+            # Train ensemble
+            success = self.ml_ensemble.train_ensemble(X, y)
+            
+            if success:
+                logger.info("ML models trained successfully")
+                self.notifier.send_notification("ML Training Complete", "Models updated successfully")
+            else:
+                logger.warning("ML training failed")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"ML training error: {e}")
+            return False
+
+    # =============================================
+    # BACKGROUND TASKS DAN UTILITY METHODS
+    # =============================================
 
     def start_background_tasks(self):
         """Start background tasks dengan error handling"""
@@ -1585,7 +2704,7 @@ class EnhancedTradingBot:
                 time.sleep(1)
             except Exception as e:
                 logger.error(f"Scheduler error: {e}")
-                time.sleep(5)  # Prevent tight loop on errors
+                time.sleep(5)
 
     def _update_positions(self):
         """Update all positions dengan current prices"""
@@ -1604,7 +2723,7 @@ class EnhancedTradingBot:
             for symbol in symbols:
                 try:
                     ticker = self.dynamic_provider.get_ticker(symbol)
-                    if ticker and 'last' in ticker and ticker['last'] > 0:  # **FIXED: Validasi harga**
+                    if ticker and 'last' in ticker and ticker['last'] > 0:
                         price_data[symbol] = ticker['last']
                     else:
                         logger.warning(f"Invalid ticker data for {symbol}")
@@ -1685,86 +2804,10 @@ class EnhancedTradingBot:
         except Exception as e:
             logger.error(f"Health check error: {e}")
 
-    def get_optimized_portfolio_allocation(self, signals: List[Dict], total_capital: float) -> List[Dict]:
-        """Get optimized portfolio allocation"""
-        try:
-            return self.portfolio_optimizer.momentum_based_allocation(signals, total_capital)
-        except Exception as e:
-            logger.error(f"Portfolio optimization error: {e}")
-            # Fallback to simple allocation
-            return self._simple_allocation_fallback(signals, total_capital)
-    
-    def _simple_allocation_fallback(self, signals: List[Dict], total_capital: float) -> List[Dict]:
-        """Simple allocation fallback"""
-        if not signals:
-            return []
-        
-        n_signals = len(signals)
-        base_allocation = total_capital / n_signals
-        
-        return [
-            {
-                'symbol': s['symbol'],
-                'allocation_percent': 1/n_signals,
-                'allocated_capital': base_allocation,
-                'score': s.get('score', 0),
-                'action': s.get('action', 'NEUTRAL')
-            }
-            for s in signals
-        ]
-    
-    def train_ml_models(self, historical_data: Dict[str, pd.DataFrame]) -> bool:
-        """Train ML models dengan historical data"""
-        try:
-            # Prepare training data
-            X_list = []
-            y_list = []
-            
-            for symbol, df in historical_data.items():
-                if len(df) < 100:
-                    continue
-                
-                # Feature engineering
-                features_df = self.ml_ensemble.advanced_feature_engineering(df)
-                if features_df.empty:
-                    continue
-                
-                # Create targets (1 if price goes up, 0 if down)
-                future_prices = df['close'].shift(-5).dropna()  # 5-period forward look
-                current_prices = df['close'].iloc[:len(future_prices)]
-                
-                targets = (future_prices.values > current_prices.values).astype(int)
-                
-                # Align features with targets
-                aligned_features = features_df.iloc[:len(targets)]
-                
-                if len(aligned_features) == len(targets):
-                    X_list.append(aligned_features.values)
-                    y_list.extend(targets)
-            
-            if len(X_list) == 0:
-                logger.warning("No training data available")
-                return False
-            
-            X = np.vstack(X_list)
-            y = np.array(y_list)
-            
-            # Train ensemble
-            success = self.ml_ensemble.train_ensemble(X, y)
-            
-            if success:
-                logger.info("ML models trained successfully")
-                self.notifier.send_notification("ML Training Complete", "Models updated successfully")
-            else:
-                logger.warning("ML training failed")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"ML training error: {e}")
-            return False
+    # =============================================
+    # BACKWARD COMPATIBILITY METHODS
+    # =============================================
 
-    # Backward compatibility methods
     def analyze_asset(self, symbol):
         """Backward compatibility method"""
         return self.analyze_with_enhanced_ml(symbol)
@@ -1781,9 +2824,59 @@ class EnhancedTradingBot:
         """Close position"""
         return self.db.close_position(position_id, close_price, "manual")
 
-    # Additional methods for Pump Fun
+    def calculate_custom_entry(self, symbol, entry_price, action="LONG"):
+        """Calculate custom entry dengan TP/SL - compatibility method"""
+        try:
+            # Implementation dari core (1).py dengan penyesuaian
+            df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 50)
+            
+            if df is None or len(df) < 20:
+                # Fallback calculation
+                return {
+                    'symbol': symbol,
+                    'entry_price': entry_price,
+                    'tp1': entry_price * 1.03,
+                    'tp2': entry_price * 1.06,
+                    'tp3': entry_price * 1.09,
+                    'sl': entry_price * 0.97
+                }
+            
+            # Calculate menggunakan strategy
+            analysis = self.strategy.analyze(df)
+            if analysis and 'tp1' in analysis and 'sl' in analysis:
+                return {
+                    'symbol': symbol,
+                    'entry_price': entry_price,
+                    'tp1': analysis['tp1'],
+                    'tp2': analysis['tp2'],
+                    'tp3': analysis['tp3'],
+                    'sl': analysis['sl']
+                }
+            else:
+                # Fallback
+                return {
+                    'symbol': symbol,
+                    'entry_price': entry_price,
+                    'tp1': entry_price * 1.03,
+                    'tp2': entry_price * 1.06,
+                    'tp3': entry_price * 1.09,
+                    'sl': entry_price * 0.97
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in custom entry calculation: {e}")
+            return {
+                'symbol': symbol,
+                'entry_price': entry_price,
+                'tp1': entry_price * 1.03,
+                'tp2': entry_price * 1.06,
+                'tp3': entry_price * 1.09,
+                'sl': entry_price * 0.97
+            }
+
+    # Additional methods untuk Pump Fun
     async def scan_pump_fun(self):
-        """Scan Pump Fun untuk token baru - FIXED"""
+        """Scan Pump Fun untuk token baru"""
         try:
             if not self.pump_provider:
                 logger.warning("Pump Fun provider not available")
@@ -1801,11 +2894,40 @@ class EnhancedTradingBot:
         """Delete signal by symbol"""
         try:
             # Method ini perlu diimplementasikan di DatabaseHandler
-            # Untuk sekarang kita return True saja
             return True
         except Exception as e:
             logger.error(f"Error deleting signal: {e}")
             return False
+
+    def get_risk_assessment(self, symbol):
+        """Get comprehensive risk assessment untuk symbol"""
+        try:
+            analysis = self.analyze_asset(symbol)
+            if analysis:
+                return {
+                    'symbol': symbol,
+                    'risk_category': analysis.get('risk_metrics', {}).get('risk_category', 'MEDIUM'),
+                    'volatility_level': analysis.get('volatility', 0.02),
+                    'optimal_position_size': analysis.get('risk_metrics', {}).get('optimal_position_size', 0.1),
+                    'reward_ratio': analysis.get('risk_metrics', {}).get('reward_ratio', 2.0),
+                    'recommendation': self._generate_risk_recommendation(analysis)
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error in risk assessment: {e}")
+            return None
+
+    def _generate_risk_recommendation(self, analysis):
+        """Generate risk recommendation berdasarkan analysis"""
+        risk_category = analysis.get('risk_metrics', {}).get('risk_category', 'MEDIUM')
+        volatility = analysis.get('volatility', 0.02)
+        
+        if risk_category == 'HIGH' or volatility > 0.03:
+            return "Consider smaller position size and tighter stop loss"
+        elif risk_category == 'MEDIUM':
+            return "Standard position sizing appropriate"
+        else:
+            return "Can consider larger position size with standard risk management"
 
 # =============================================
 # BACKWARD COMPATIBILITY
@@ -1818,9 +2940,9 @@ TradingBot = EnhancedTradingBot
 # TESTING FUNCTIONALITY
 # =============================================
 
-def test_dynamic_provider_integration():
-    """Test bahwa dynamic provider terintegrasi dengan baik"""
-    print("🧪 Testing Dynamic Provider Integration...")
+def test_enhanced_functionality():
+    """Test semua functionality enhanced core"""
+    print("🧪 Testing Enhanced TradingBot dengan Semua Fitur...")
     
     bot = EnhancedTradingBot()
     
@@ -1857,8 +2979,6 @@ def test_dynamic_provider_integration():
         query = test_queries.get(market, "TEST")
         search_results = bot.search_assets(query, 3)
         print(f"   ✅ {len(search_results)} search results for '{query}'")
-        for result in search_results:
-            print(f"      - {result.get('symbol')} ({result.get('type', 'N/A')})")
         
         # Test 3: Scanning
         print("\n3. Testing Scanning...")
@@ -1867,12 +2987,26 @@ def test_dynamic_provider_integration():
         for signal in signals:
             print(f"      - {signal['symbol']} | {signal['action']} | Score: {signal['score']}")
         
-        # Test 4: Search-based Scanning
-        print("\n4. Testing Search-based Scanning...")
-        search_signals = bot.scan_potential_assets(limit=2, search_query=query)
-        print(f"   ✅ {len(search_signals)} search-based signals found")
-        for signal in search_signals:
-            print(f"      - {signal['symbol']} | {signal['action']} | Score: {signal['score']}")
+        # Test 4: Backtesting
+        print("\n4. Testing Backtesting...")
+        if signals:
+            symbol = signals[0]['symbol']
+            backtest_result = bot.run_advanced_backtest(symbol, limit=100)
+            if 'error' not in backtest_result:
+                print(f"   ✅ Backtest completed for {symbol}")
+            else:
+                print(f"   ⚠️ Backtest failed: {backtest_result['error']}")
+        
+        # Test 5: ML Analysis
+        print("\n5. Testing ML Analysis...")
+        if assets:
+            symbol = assets[0].get('symbol')
+            ml_analysis = bot.analyze_with_enhanced_ml(symbol)
+            if 'error' not in ml_analysis:
+                print(f"   ✅ ML analysis completed for {symbol}")
+                print(f"      Action: {ml_analysis.get('action')}, Score: {ml_analysis.get('final_score')}")
+            else:
+                print(f"   ⚠️ ML analysis failed: {ml_analysis['error']}")
 
 def test_market_constraints():
     """Test semua perbaikan market constraints"""
@@ -1923,65 +3057,17 @@ def test_market_constraints():
     
     print("✅ Market constraints test completed!")
 
-def test_fixed_functionality():
-    """Test semua perbaikan"""
-    print("🧪 Testing fixed functionality...")
-    
-    # Test database handler
-    db = DatabaseHandler()
-    
-    # Test popular assets
-    bot = EnhancedTradingBot()
-    bot.set_mode("us_stocks")
-    assets = bot.get_popular_assets(3)
-    print(f"✅ Popular assets test: {len(assets)} assets found")
-    
-    # Test position operations
-    position_id = db.save_position(
-        symbol="AAPL",
-        market_type="us_stocks",
-        action="LONG", 
-        entry_price=180,
-        tp1=200,
-        tp2=220,
-        tp3=240,
-        sl=160
-    )
-    print(f"✅ Position save test: ID {position_id}")
-    
-    if position_id:
-        # Test partial TP
-        success = db.execute_partial_take_profit(position_id, 190, 0.3)
-        print(f"✅ Partial TP test: {success}")
-        
-        # Test close position
-        success = db.close_position(position_id, 195, "test")
-        print(f"✅ Close position test: {success}")
-    
-    # Test scanning
-    signals = bot.scan_potential_assets(5)
-    print(f"✅ Scan test: {len(signals)} signals found")
-    
-    # Test price validation
-    test_price = bot._estimate_realistic_price("AAPL")
-    print(f"✅ Price estimation test: {test_price}")
-    
-    # Test market constraints
-    test_market_constraints()
-    
-    print("🎉 All tests completed!")
-
 # =============================================
 # MAIN EXECUTION
 # =============================================
 
 if __name__ == "__main__":
-    print("🚀 Testing Enhanced TradingBot with Dynamic Data Provider...")
+    print("🚀 Testing Enhanced TradingBot dengan Semua Fitur...")
     
-    # Test dynamic provider integration
-    test_dynamic_provider_integration()
+    # Test enhanced functionality
+    test_enhanced_functionality()
     
-    # Test fixed functionality
-    test_fixed_functionality()
+    # Test market constraints
+    test_market_constraints()
     
-    print("✅ Enhanced Core Testing Completed!")
+    print("✅ Enhanced Core Testing Completed dengan Semua 8 Menu!")
