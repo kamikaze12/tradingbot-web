@@ -21,7 +21,7 @@ except ImportError:
 
 # Import TradingBot
 try:
-    from .core import TradingBot
+    from bot.core import TradingBot
     print("✅ Successfully imported TradingBot from bot.core")
 except ImportError as e:
     st.error(f"❌ Import Error: {e}")
