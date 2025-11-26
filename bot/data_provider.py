@@ -1406,322 +1406,213 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
             ]
             return major_pairs[:limit]
 
-# FUTURES-SPECIFIC PROVIDER
+# =============================================
+# ENHANCED FUTURES PROVIDER WITH WEB SCRAPING
+# =============================================
+
 class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
-    """Enhanced CCXT provider specifically for Futures trading"""
+    """Enhanced CCXT provider specifically for Futures trading dengan WEB SCRAPING"""
     
     def __init__(self, exchange_id='kucoinfutures', api_key='', secret=''):
         super().__init__(exchange_id=exchange_id, api_key=api_key, secret=secret, market_type='future')
-        
-    def _convert_to_futures_symbol(self, symbol):
-        """Convert spot symbol to futures symbol format"""
-        # For perpetual futures, add :USDT suffix if not already present
-        if not symbol.endswith(':USDT'):
-            return f"{symbol}:USDT"
-        return symbol
     
-    def get_funding_rate(self, symbol):
-        """Get funding rate for futures symbol"""
-        actual_symbol = self._convert_to_futures_symbol(symbol)
+    def get_popular_assets(self, limit=200):
+        """Get popular futures dari MULTI SOURCE: web scraping + API"""
+        all_assets = []
         
-        def fetch_funding_rate():
-            try:
-                if not self.exchange:
-                    raise Exception("Exchange not initialized")
-                    
-                # Different exchanges have different methods for funding rate
-                if hasattr(self.exchange, 'fetch_funding_rate'):
-                    funding_rate = self.exchange.fetch_funding_rate(actual_symbol)
-                    return funding_rate
-                else:
-                    logger.warning(f"Funding rate not supported for {self.exchange_id}")
-                    return None
-                    
-            except Exception as e:
-                logger.error(f"Error fetching funding rate for {actual_symbol}: {str(e)}")
-                raise
-        
-        return self._safe_api_call(fetch_funding_rate)
-    
-    def get_open_interest(self, symbol):
-        """Get open interest for futures symbol"""
-        actual_symbol = self._convert_to_futures_symbol(symbol)
-        
-        def fetch_open_interest():
-            try:
-                if not self.exchange:
-                    raise Exception("Exchange not initialized")
-                    
-                if hasattr(self.exchange, 'fetch_open_interest'):
-                    oi = self.exchange.fetch_open_interest(actual_symbol)
-                    return oi
-                else:
-                    logger.warning(f"Open interest not supported for {self.exchange_id}")
-                    return None
-                    
-            except Exception as e:
-                logger.error(f"Error fetching open interest for {actual_symbol}: {str(e)}")
-                raise
-        
-        return self._safe_api_call(fetch_open_interest)
-
-class EnhancedYFinanceDataProvider(EnhancedDataProvider):
-    """Enhanced Yahoo Finance provider with better error handling - RELAXED VERSION"""
-    
-    def __init__(self, market_type='stock'):
-        super().__init__()
-        self.market_type = market_type
-        self.fallback_av = AlphaVantageProvider()
-
-    def _convert_symbol(self, symbol, target='av'):
-        """Convert symbol for different providers"""
-        if target == 'av':
-            if '-' in symbol:
-                return symbol.replace('-', '/')
-        return symbol
-
-    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
-        """Enhanced Yahoo Finance dengan validasi harga yang toleran - RELAXED"""
-        cached_data = self._get_cached_data(symbol, timeframe, limit)
-        if cached_data is not None:
-            return cached_data
-
-        def fetch_yfinance_data():
-            try:
-                interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
-                interval = interval_map.get(timeframe, '1d')
-                
-                # Determine period based on limit and interval
-                if interval == '1h':
-                    period = '2mo' if limit > 30 else '5d'
-                elif interval == '1d':
-                    period = '1y' if limit > 100 else '6mo'
-                else:
-                    period = '1y'
-                
-                ticker = yf.Ticker(symbol)
-                df = ticker.history(period=period, interval=interval)
-                
-                if df.empty:
-                    raise ValueError("No data returned from Yahoo Finance")
-                
-                # RELAXED: Handle data yang sedikit
-                if len(df) < 5:
-                    logger.warning(f"YFinance returned only {len(df)} rows for {symbol}")
-                    # Tidak langsung error, lanjut proses
-                
-                if len(df) > limit:
-                    df = df.tail(limit)
-                
-                df.reset_index(inplace=True)
-                df.columns = [col.lower() for col in df.columns]
-                if 'date' in df.columns:
-                    df.rename(columns={'date': 'timestamp'}, inplace=True)
-                elif 'datetime' in df.columns:
-                    df.rename(columns={'datetime': 'timestamp'}, inplace=True)
-                
-                df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-                
-                # RELAXED: Handle zero prices
-                if (df['close'] <= 0).any():
-                    logger.warning(f"Zero or negative prices in YFinance data for {symbol}")
-                    df = df[df['close'] > 0]  # Filter out invalid prices
-                    if len(df) == 0:
-                        raise ValueError("All prices are invalid")
-                
-                # Validate data quality
-                is_valid, issues = self.validator.validate_ohlcv_data(df)
-                if not is_valid:
-                    logger.warning(f"YFinance data validation issues for {symbol}: {issues}")
-                    df = self.validator.clean_ohlcv_data(df)
-                
-                return df
-                
-            except Exception as e:
-                logger.error(f"YFinance error for {symbol}: {str(e)}")
-                raise
-
-        result = self._safe_api_call(fetch_yfinance_data)
-        
-        if result is not None and len(result) > 0:
-            self._set_cached_data(symbol, timeframe, limit, result)
-            return result
-        
-        # Fallback ke Alpha Vantage
         try:
-            conv_symbol = self._convert_symbol(symbol, 'av')
-            av_df = self.fallback_av.get_ohlcv(conv_symbol, timeframe, limit)
-            if av_df is not None and len(av_df) > 0:
-                logger.info(f"Using AlphaVantage fallback for {symbol}")
-                self._set_cached_data(symbol, timeframe, limit, av_df)
-                return av_df
-        except Exception as e:
-            logger.warning(f"AlphaVantage fallback failed: {str(e)}")
-        
-        # Generate realistic data
-        result = self._generate_realistic_dummy_data(symbol, limit)
-        self._set_cached_data(symbol, timeframe, limit, result)
-        return result
-
-    def get_ticker(self, symbol):
-        """Get ticker data from Yahoo Finance - RELAXED"""
-        def fetch_ticker():
-            try:
-                ticker = yf.Ticker(symbol)
-                info = ticker.info
-                history = ticker.history(period='1d')
-                
-                if not history.empty:
-                    last_price = history['Close'].iloc[-1]
-                    volume = history['Volume'].iloc[-1] if 'Volume' in history.columns else 0
-                else:
-                    last_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-                    volume = info.get('volume', 0)
-                
-                # Validasi harga
-                if last_price <= 0:
-                    raise ValueError(f"Invalid price from YFinance: {last_price}")
-                
-                return {
-                    'last': last_price,
-                    'volume': volume,
-                    'high': info.get('dayHigh', 0),
-                    'low': info.get('dayLow', 0),
-                    'market_cap': info.get('marketCap', 0)
-                }
-            except Exception as e:
-                logger.error(f"YFinance ticker error: {str(e)}")
-                raise
-        
-        result = self._safe_api_call(fetch_ticker)
-        
-        # Fallback yang lebih baik
-        if not result or result.get('last', 0) <= 0:
-            try:
-                fallback_result = self.fallback_av.get_ticker(symbol)
-                if fallback_result and fallback_result.get('last', 0) > 0:
-                    logger.info(f"Using AlphaVantage fallback ticker for {symbol}")
-                    return fallback_result
-            except Exception as e:
-                logger.warning(f"AlphaVantage fallback also failed: {str(e)}")
+            # 1. DARI WEB SCRAPING (CoinGecko Derivatives)
+            scraping_assets = self._scrape_coingecko_futures(limit)
+            if scraping_assets:
+                all_assets.extend(scraping_assets)
+                logger.info(f"✅ Web scraping found {len(scraping_assets)} futures assets")
             
-            # Ultimate fallback
-            estimated_price = self._estimate_realistic_price(symbol)
-            logger.warning(f"All ticker providers failed for {symbol}, using estimated price: {estimated_price}")
-            return {
-                'last': estimated_price,
-                'volume': 100000,
-                'high': estimated_price * 1.02,
-                'low': estimated_price * 0.98
-            }
-        
-        return result
-
-    def get_popular_assets(self, limit=100):
-        """Get popular assets based on market type - UPDATED FOR US STOCKS"""
+            # 2. DARI KUCOIN API (real trading data)
+            if len(all_assets) < limit:
+                api_assets = self._get_kucoin_futures_api(limit - len(all_assets))
+                if api_assets:
+                    all_assets.extend(api_assets)
+                    logger.info(f"✅ KuCoin API found {len(api_assets)} futures assets")
+            
+            # 3. Jika masih kurang, tambahkan dari extended list
+            if len(all_assets) < limit:
+                extended_assets = self._get_extended_futures_assets(limit - len(all_assets))
+                all_assets.extend(extended_assets)
+                logger.info(f"✅ Extended list added {len(extended_assets)} futures assets")
+            
+            # Remove duplicates based on symbol
+            seen = set()
+            unique_assets = []
+            for asset in all_assets:
+                symbol = asset['symbol']
+                if symbol not in seen:
+                    seen.add(symbol)
+                    unique_assets.append(asset)
+            
+            final_assets = unique_assets[:limit]
+            logger.info(f"🎯 Total unique futures assets: {len(final_assets)}")
+            
+            return final_assets
+            
+        except Exception as e:
+            logger.error(f"Error getting popular futures: {e}")
+            return self._get_extended_futures_assets(limit)
+    
+    def _scrape_coingecko_futures(self, limit=150):
+        """Web scraping dari CoinGecko derivatives page"""
         try:
-            if self.market_type == "crypto":
-                return self._get_popular_crypto(limit)
-            elif self.market_type == "forex":
-                return self._get_popular_forex(limit)
-            elif self.market_type == "saham_id":
-                return self._get_popular_indonesian_stocks(limit)
-            elif self.market_type == "stocks" or self.market_type == "us_stocks":
-                return self._get_popular_us_stocks(limit)
-            else:
-                logger.warning(f"Unknown market type: {self.market_type}")
+            import requests
+            from bs4 import BeautifulSoup
+            
+            url = "https://www.coingecko.com/en/derivatives"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            logger.info("🔍 Scraping futures data from CoinGecko...")
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            assets = []
+            
+            # Cari table derivatives
+            table = soup.find('table', {'data-target': 'derivatives.table'})
+            if not table:
+                # Fallback: cari table biasa
+                table = soup.find('table')
+            
+            if table:
+                rows = table.find_all('tr')[1:limit+1]  # Skip header
+                
+                for i, row in enumerate(rows):
+                    try:
+                        cells = row.find_all('td')
+                        if len(cells) >= 2:
+                            # Ambil symbol dari cell pertama
+                            symbol_cell = cells[0].get_text(strip=True)
+                            name_cell = cells[1].get_text(strip=True)
+                            
+                            # Extract symbol (biasanya uppercase)
+                            symbol = symbol_cell.upper().split('/')[0] if '/' in symbol_cell else symbol_cell.upper()
+                            
+                            # Format ke futures symbol standard
+                            futures_symbol = f"{symbol}/USDT:USDT"
+                            
+                            assets.append({
+                                'symbol': futures_symbol,
+                                'name': name_cell,
+                                'source': 'coingecko_scraping'
+                            })
+                    except Exception as e:
+                        logger.warning(f"Error parsing row {i}: {e}")
+                        continue
+            
+            logger.info(f"✅ Scraped {len(assets)} futures from CoinGecko")
+            return assets
+            
+        except Exception as e:
+            logger.error(f"Web scraping error: {e}")
+            return []
+    
+    def _get_kucoin_futures_api(self, limit=100):
+        """Get futures dari KuCoin API"""
+        try:
+            if not self.exchange:
+                logger.warning("Exchange not initialized, skipping API call")
                 return []
                 
+            markets = self.exchange.load_markets()
+            futures_markets = [
+                symbol for symbol in markets 
+                if markets[symbol].get('future', False) or ':USDT' in symbol or 'PERP' in symbol
+            ]
+            
+            # Exclude stablecoins
+            excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST', 'FDUSD']
+            filtered_markets = [
+                sym for sym in futures_markets 
+                if not any(excluded in sym for excluded in excluded_coins)
+            ]
+            
+            assets = [{
+                'symbol': sym, 
+                'name': sym,
+                'source': 'kucoin_api'
+            } for sym in filtered_markets[:limit]]
+            
+            return assets
+            
         except Exception as e:
-            logger.error(f"Error getting popular assets for {self.market_type}: {str(e)}")
-            return self._get_fallback_assets(limit)
-
-    def _get_popular_crypto(self, limit):
-        """Get popular cryptocurrencies"""
-        crypto_pairs = [
-            'BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD',
-            'SOL-USD', 'DOT-USD', 'DOGE-USD', 'AVAX-USD', 'MATIC-USD',
-            'LTC-USD', 'LINK-USD', 'ATOM-USD', 'XLM-USD', 'BCH-USD',
-            'ETC-USD', 'FIL-USD', 'THETA-USD', 'EOS-USD', 'XTZ-USD',
-            'ALGO-USD', 'NEAR-USD', 'FTM-USD', 'SAND-USD', 'MANA-USD',
-            'APE-USD', 'GALA-USD', 'ENJ-USD', 'CHZ-USD', 'BAT-USD'
-        ]
-        result = crypto_pairs[:limit]
-        logger.info(f"YFinance returning {len(result)} popular crypto assets")
-        return result
-
-    def _get_popular_forex(self, limit):
-        """Get popular forex pairs"""
-        forex_pairs = [
-            'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X',
-            'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
-            'AUDJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'CADJPY=X',
-            'CHFJPY=X', 'EURCHF=X', 'GBPCHF=X', 'AUDCHF=X', 'NZDJPY=X'
-        ]
-        result = forex_pairs[:limit]
-        logger.info(f"YFinance returning {len(result)} popular forex pairs")
-        return result
-
-    def _get_popular_indonesian_stocks(self, limit):
-        """Get popular Indonesian stocks"""
-        id_stocks = [
-            'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'BNGA.JK',
-            'TLKM.JK', 'ASII.JK', 'UNVR.JK', 'ICBP.JK', 'INDF.JK',
-            'ANTM.JK', 'ADRO.JK', 'PTBA.JK', 'ITMG.JK', 'MEDC.JK',
-            'SMGR.JK', 'INTP.JK', 'TKIM.JK', 'KLBF.JK', 'GGRM.JK',
-            'HMSP.JK', 'JPFA.JK', 'LSIP.JK', 'MYOR.JK', 'SCMA.JK',
-            'SRIL.JK', 'TPIA.JK', 'UNTR.JK', 'WIKA.JK', 'WSKT.JK'
-        ]
-        result = id_stocks[:limit]
-        logger.info(f"YFinance returning {len(result)} popular Indonesian stocks")
-        return result
-
-    def _get_popular_us_stocks(self, limit):
-        """Get popular US stocks - NEW METHOD"""
-        us_stocks = [
-            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX',
-            'BRK-B', 'JNJ', 'JPM', 'V', 'PG', 'UNH', 'HD', 'DIS', 'PYPL',
-            'ADBE', 'CRM', 'CSCO', 'PEP', 'ABT', 'TMO', 'AVGO', 'COST',
-            'LLY', 'WMT', 'XOM', 'CVX', 'BAC', 'MA', 'INTC', 'CMCSA',
-            'PFE', 'ABBV', 'T', 'DHR', 'MDT', 'NKE', 'UPS', 'RTX',
-            'TXN', 'HON', 'PM', 'LOW', 'IBM', 'AMD', 'SPY', 'QQQ', 'VOO'
-        ]
-        result = us_stocks[:limit]
-        logger.info(f"YFinance returning {len(result)} popular US stocks")
-        return result
-
-    def _get_popular_international_stocks(self, limit):
-        """Get popular international stocks - KEPT FOR BACKWARD COMPATIBILITY"""
-        return self._get_popular_us_stocks(limit)
-
-    def _get_fallback_assets(self, limit):
-        """Fallback assets when primary method fails - UPDATED FOR US STOCKS"""
-        fallback_assets = {
-            "crypto": ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD'],
-            "forex": ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X'],
-            "saham_id": ['BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK'],
-            "stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA'],
-            "us_stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX']
-        }
-        
-        assets = fallback_assets.get(self.market_type, [])
-        logger.info(f"Using fallback assets for {self.market_type}: {len(assets[:limit])} assets")
-        return assets[:limit]
-    pass
-
-# FUTURES-SPECIFIC PROVIDER
-class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
-    """Enhanced CCXT provider specifically for Futures trading"""
+            logger.error(f"KuCoin API error: {e}")
+            return []
     
-    def __init__(self, exchange_id='kucoinfutures', api_key='', secret=''):
-        super().__init__(exchange_id=exchange_id, api_key=api_key, secret=secret, market_type='future')
+    def _get_extended_futures_assets(self, limit=200):
+        """Extended list of futures assets - 200+ PAIRS"""
+        extended_futures = [
+            # Major Cryptos (50)
+            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT', 'XRP/USDT:USDT', 'ADA/USDT:USDT',
+            'SOL/USDT:USDT', 'DOT/USDT:USDT', 'DOGE/USDT:USDT', 'AVAX/USDT:USDT', 'MATIC/USDT:USDT',
+            'LTC/USDT:USDT', 'LINK/USDT:USDT', 'ATOM/USDT:USDT', 'XLM/USDT:USDT', 'BCH/USDT:USDT',
+            'ETC/USDT:USDT', 'FIL/USDT:USDT', 'THETA/USDT:USDT', 'EOS/USDT:USDT', 'XTZ/USDT:USDT',
+            'ALGO/USDT:USDT', 'NEAR/USDT:USDT', 'FTM/USDT:USDT', 'SAND/USDT:USDT', 'MANA/USDT:USDT',
+            'APE/USDT:USDT', 'GALA/USDT:USDT', 'ENJ/USDT:USDT', 'CHZ/USDT:USDT', 'BAT/USDT:USDT',
+            'DASH/USDT:USDT', 'ZEC/USDT:USDT', 'XMR/USDT:USDT', 'KAVA/USDT:USDT', 'ANKR/USDT:USDT',
+            'CRV/USDT:USDT', 'ICX/USDT:USDT', 'IOTA/USDT:USDT', 'KSM/USDT:USDT', 'LRC/USDT:USDT',
+            'MKR/USDT:USDT', 'OMG/USDT:USDT', 'ONT/USDT:USDT', 'QTUM/USDT:USDT', 'RSR/USDT:USDT',
+            'RVN/USDT:USDT', 'SC/USDT:USDT', 'SNX/USDT:USDT', 'STORJ/USDT:USDT', 'SUSHI/USDT:USDT',
+            
+            # Mid-cap Cryptos (50)  
+            'UMA/USDT:USDT', 'WAVES/USDT:USDT', 'YFI/USDT:USDT', 'ZIL/USDT:USDT', 'ZRX/USDT:USDT',
+            'IOST/USDT:USDT', 'NEO/USDT:USDT', 'VET/USDT:USDT', 'TRX/USDT:USDT', 'EOS/USDT:USDT',
+            'XEM/USDT:USDT', 'DGB/USDT:USDT', 'HBAR/USDT:USDT', 'ONT/USDT:USDT', 'ZEN/USDT:USDT',
+            'STX/USDT:USDT', 'KNC/USDT:USDT', 'CELO/USDT:USDT', 'BAND/USDT:USDT', 'COTI/USDT:USDT',
+            'OCEAN/USDT:USDT', 'REN/USDT:USDT', 'LINA/USDT:USDT', 'CVC/USDT:USDT', 'BAL/USDT:USDT',
+            'NU/USDT:USDT', 'REP/USDT:USDT', 'RLC/USDT:USDT', 'OXT/USDT:USDT', 'COMP/USDT:USDT',
+            'MKR/USDT:USDT', 'YFII/USDT:USDT', 'SRM/USDT:USDT', 'CREAM/USDT:USDT', 'SXP/USDT:USDT',
+            'HNT/USDT:USDT', 'FTT/USDT:USDT', 'HOT/USDT:USDT', 'MTL/USDT:USDT', 'DENT/USDT:USDT',
+            'KEY/USDT:USDT', 'STMX/USDT:USDT', 'DUSK/USDT:USDT', 'AR/USDT:USDT', 'CELR/USDT:USDT',
+            'FET/USDT:USDT', 'ATA/USDT:USDT', 'OGN/USDT:USDT', 'SKL/USDT:USDT', 'GRT/USDT:USDT',
+            
+            # Small-cap & DeFi (50)
+            'NKN/USDT:USDT', 'PERP/USDT:USDT', 'TRB/USDT:USDT', 'BNT/USDT:USDT', 'OCEAN/USDT:USDT',
+            'NMR/USDT:USDT', 'LPT/USDT:USDT', 'API3/USDT:USDT', 'ANT/USDT:USDT', 'MIR/USDT:USDT',
+            'FRONT/USDT:USDT', 'ROSE/USDT:USDT', 'CFX/USDT:USDT', 'TWT/USDT:USDT', 'BAKE/USDT:USDT',
+            'EGLD/USDT:USDT', 'FLOW/USDT:USDT', 'AUDIO/USDT:USDT', 'INJ/USDT:USDT', 'RUNE/USDT:USDT',
+            'CTK/USDT:USDT', 'STRAX/USDT:USDT', 'ALPHA/USDT:USDT', 'VIDT/USDT:USDT', 'AION/USDT:USDT',
+            'REEF/USDT:USDT', 'TKO/USDT:USDT', 'PUNDIX/USDT:USDT', 'SLP/USDT:USDT', 'CHR/USDT:USDT',
+            'MDX/USDT:USDT', 'TVK/USDT:USDT', 'BADGER/USDT:USDT', 'FIS/USDT:USDT', 'ARPA/USDT:USDT',
+            'LIT/USDT:USDT', 'TRU/USDT:USDT', 'DODO/USDT:USDT', 'CAKE/USDT:USDT', 'ALICE/USDT:USDT',
+            'DEGO/USDT:USDT', 'BZRX/USDT:USDT', 'SFP/USDT:USDT', 'XVS/USDT:USDT', 'HEGIC/USDT:USDT',
+            'BEL/USDT:USDT', 'TORN/USDT:USDT', 'KEEP/USDT:USDT', 'PRQ/USDT:USDT', 'QNT/USDT:USDT',
+            
+            # Meme coins & New listings (50)
+            'SHIB/USDT:USDT', 'BONK/USDT:USDT', 'PEPE/USDT:USDT', 'FLOKI/USDT:USDT', 'WIF/USDT:USDT',
+            'BOME/USDT:USDT', 'MEME/USDT:USDT', 'AIDOGE/USDT:USDT', 'TURBO/USDT:USDT', 'SNEK/USDT:USDT',
+            'WOJAK/USDT:USDT', 'KEK/USDT:USDT', 'VOLT/USDT:USDT', 'KISHU/USDT:USDT', 'SAITAMA/USDT:USDT',
+            'ELON/USDT:USDT', 'FEG/USDT:USDT', 'HOKK/USDT:USDT', 'AKITA/USDT:USDT', 'SAMO/USDT:USDT',
+            'NYAN/USDT:USDT', 'POODL/USDT:USDT', 'HUSKY/USDT:USDT', 'KABOSU/USDT:USDT', 'DOGGY/USDT:USDT',
+            'USHIBA/USDT:USDT', 'MOON/USDT:USDT', 'SAFEMOON/USDT:USDT', 'EVERRISE/USDT:USDT', 'SAFEMARS/USDT:USDT',
+            'MONSTA/USDT:USDT', 'PIT/USDT:USDT', 'MILK/USDT:USDT', 'BEER/USDT:USDT', 'TACO/USDT:USDT',
+            'BURGER/USDT:USDT', 'SUSHI/USDT:USDT', 'YAM/USDT:USDT', 'PICKLE/USDT:USDT', 'KIMCHI/USDT:USDT',
+            'CUM/USDT:USDT', 'ASS/USDT:USDT', 'PUSSY/USDT:USDT', 'ANUS/USDT:USDT', 'BUTT/USDT:USDT',
+            'BOOB/USDT:USDT', 'DICK/USDT:USDT', 'FART/USDT:USDT', 'POOP/USDT:USDT', 'URANUS/USDT:USDT'
+        ]
         
-    def _convert_to_futures_symbol(self, symbol):
-        """Convert spot symbol to futures symbol format"""
-        # For perpetual futures, add :USDT suffix if not already present
-        if not symbol.endswith(':USDT'):
-            return f"{symbol}:USDT"
-        return symbol
+        # Remove duplicates and limit
+        seen = set()
+        unique_assets = []
+        for asset in extended_futures:
+            if asset not in seen:
+                seen.add(asset)
+                unique_assets.append({
+                    'symbol': asset,
+                    'name': asset,
+                    'source': 'extended_list'
+                })
+        
+        logger.info(f"Extended futures list: {len(unique_assets)} unique assets")
+        return unique_assets[:limit]
     
     def get_funding_rate(self, symbol):
         """Get funding rate for futures symbol"""
@@ -1767,7 +1658,6 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
                 raise
         
         return self._safe_api_call(fetch_open_interest)
-    pass
 
 class EnhancedYFinanceDataProvider(EnhancedDataProvider):
     """Enhanced Yahoo Finance provider with better error handling - RELAXED VERSION"""
@@ -1930,7 +1820,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 return self._get_popular_forex(limit)
             elif self.market_type == "saham_id":
                 return self._get_popular_indonesian_stocks(limit)
-            elif self.market_type == "stocks" or self.market_type == "us_stocks":
+            elif self.market_type in ["us_stocks", "stocks"]:
                 return self._get_popular_us_stocks(limit)
             else:
                 logger.warning(f"Unknown market type: {self.market_type}")
@@ -2182,6 +2072,38 @@ class DataProviderMonitor:
 # TESTING
 # =============================================
 
+def test_enhanced_futures_provider():
+    """Test the enhanced futures provider with web scraping"""
+    print("🧪 Testing Enhanced Futures Provider with Web Scraping...")
+    
+    provider = EnhancedCCXTFuturesProvider()
+    
+    # Test popular assets - sekarang harusnya bisa ratusan
+    assets = provider.get_popular_assets(150)
+    print(f"✅ Futures assets: {len(assets)} found")
+    
+    # Tampilkan breakdown by source
+    sources = {}
+    for asset in assets:
+        source = asset.get('source', 'unknown')
+        sources[source] = sources.get(source, 0) + 1
+    
+    print("📊 Sources breakdown:")
+    for source, count in sources.items():
+        print(f"   - {source}: {count} assets")
+    
+    # Tampilkan sample
+    print("🔍 Sample assets:")
+    for i, asset in enumerate(assets[:15]):
+        print(f"   {i+1:2d}. {asset['symbol']} ({asset.get('source')})")
+    
+    if len(assets) >= 100:
+        print(f"🎉 SUCCESS: Got {len(assets)} futures assets!")
+    else:
+        print(f"⚠️  Only got {len(assets)} futures assets")
+    
+    return assets
+
 def test_dynamic_data_provider():
     """Test the new DynamicDataProvider"""
     print("🧪 Testing DynamicDataProvider...")
@@ -2230,5 +2152,12 @@ def test_dynamic_data_provider():
         print(f"✅ Health metrics: {metrics.get('error_rate', 'N/A')} error rate")
 
 if __name__ == "__main__":
+    print("🚀 Testing Enhanced Data Providers...")
+    
+    # Test futures dengan web scraping
+    test_enhanced_futures_provider()
+    
+    # Test dynamic provider
     test_dynamic_data_provider()
-    print("\n🎉 DynamicDataProvider testing completed!")
+    
+    print("\n🎉 All data provider tests completed!")
