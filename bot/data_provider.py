@@ -2070,7 +2070,7 @@ class EnhancedDexScreenerProvider(DataProvider):
     pass
 
 
-  class EnhancedSolanaPumpFunProvider(DataProvider):
+class EnhancedSolanaPumpFunProvider(DataProvider):
     def __init__(self, rpc_url=None):
         super().__init__()
         self.rpc_url = rpc_url
