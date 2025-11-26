@@ -1366,6 +1366,9 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         self.analysis_history = []
         self.pattern_performance = {}
         
+        # ✅ DETECTION UNTUK FUTURES/SPOT
+        self.futures_symbol_patterns = [':USDT', 'PERP', 'FUTURES', '-M', '-Q', '-H', '-U']
+        
         logger.info(f"Enhanced Technical Analysis Strategy initialized for {market_type}")
     
     def set_market_parameters(self):
@@ -1413,8 +1416,50 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         for key, value in params.items():
             setattr(self, key, value)
 
+    def _is_futures_symbol(self, symbol: str) -> bool:
+        """Detect apakah symbol adalah futures contract"""
+        if not symbol:
+            return False
+            
+        symbol_upper = symbol.upper()
+        return any(pattern in symbol_upper for pattern in self.futures_symbol_patterns)
+
+    def _set_futures_parameters(self):
+        """Set parameters khusus untuk futures trading"""
+        logger.info("🎯 Applying FUTURES trading parameters")
+        
+        # Parameters lebih agresif untuk futures
+        self.atr_multiplier = min(self.atr_multiplier * 1.2, 2.0)  # Max 2.0
+        self.entry_range_pct = max(self.entry_range_pct * 0.8, 0.01)  # Min 1%
+        self.risk_multiplier = min(self.risk_multiplier * 1.3, 1.5)  # Max 1.5
+        
+        # Adjust thresholds untuk futures
+        if hasattr(self, 'rsi_oversold'):
+            self.rsi_oversold = max(self.rsi_oversold - 2, 20)  # More sensitive
+        if hasattr(self, 'rsi_overbought'):
+            self.rsi_overbought = min(self.rsi_overbought + 2, 78)  # More sensitive
+
+    def _set_spot_parameters(self):
+        """Set parameters khusus untuk spot trading"""
+        logger.info("💎 Applying SPOT trading parameters")
+        
+        # Parameters lebih konservatif untuk spot
+        self.atr_multiplier = max(self.atr_multiplier * 0.9, 0.5)  # Min 0.5
+        self.entry_range_pct = min(self.entry_range_pct * 1.1, 0.05)  # Max 5%
+        self.risk_multiplier = max(self.risk_multiplier * 0.8, 0.7)  # Min 0.7
+        
+        # Reset ke default values
+        self.set_market_parameters()
+
     def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Enhanced analysis - COMPLETELY FIXED VERSION WITH SYMBOL AWARENESS"""
+        """Enhanced analysis dengan auto-detection futures/spot"""
+        
+        # ✅ AUTO-DETECT FUTURES VS SPOT BERDASARKAN SYMBOL
+        if symbol and self._is_futures_symbol(symbol):
+            self._set_futures_parameters()
+        elif symbol:
+            self._set_spot_parameters()
+        
         # **ENHANCEMENT: Deteksi simbol khusus untuk XAU/USD**
         if symbol and ('XAU' in symbol or 'GOLD' in symbol):
             # Override parameters untuk Gold
@@ -2434,6 +2479,35 @@ def test_us_stocks_analysis():
     
     return result
 
+def test_futures_spot_detection():
+    """Test function untuk memastikan auto-detection futures/spot bekerja"""
+    strategy = EnhancedTechnicalAnalysisStrategy(market_type="crypto")
+    
+    # Test futures symbols
+    futures_symbols = ['BTCUSDT-PERP', 'ETH/USDT:USDT', 'BTC-QUARTER', 'XRP-FUTURES']
+    spot_symbols = ['BTCUSDT', 'ETH/USDT', 'XRPUSDT']
+    
+    print("=== FUTURES/SPOT DETECTION TEST ===")
+    
+    for symbol in futures_symbols:
+        is_futures = strategy._is_futures_symbol(symbol)
+        print(f"{symbol}: {'🎯 FUTURES' if is_futures else '💎 SPOT'}")
+    
+    for symbol in spot_symbols:
+        is_futures = strategy._is_futures_symbol(symbol)
+        print(f"{symbol}: {'🎯 FUTURES' if is_futures else '💎 SPOT'}")
+    
+    # Test parameter adjustment
+    print(f"\nInitial ATR Multiplier: {strategy.atr_multiplier}")
+    
+    # Simulate futures analysis
+    strategy._set_futures_parameters()
+    print(f"Futures ATR Multiplier: {strategy.atr_multiplier}")
+    
+    # Simulate spot analysis
+    strategy._set_spot_parameters()
+    print(f"Spot ATR Multiplier: {strategy.atr_multiplier}")
+
 if __name__ == "__main__":
     # Test the enhanced strategy
     strategy = EnhancedTechnicalAnalysisStrategy(market_type="crypto")
@@ -2496,5 +2570,9 @@ if __name__ == "__main__":
     # Test US Stocks  
     print("\n=== US STOCKS ANALYSIS TEST ===")
     stocks_result = test_us_stocks_analysis()
+    
+    # Test Futures/Spot Detection
+    print("\n=== FUTURES/SPOT DETECTION TEST ===")
+    test_futures_spot_detection()
     
     print("\n✅ Enhanced Strategies Testing Completed!")
