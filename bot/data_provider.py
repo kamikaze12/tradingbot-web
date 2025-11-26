@@ -5,8 +5,6 @@ from abc import ABC, abstractmethod
 from solana.rpc.api import Client
 from solana.rpc.websocket_api import connect
 import json
-import asyncio
-import base58
 import os
 import requests
 from bs4 import BeautifulSoup
@@ -490,6 +488,452 @@ class EnhancedDataProvider(DataProvider, ABC):
         else:
             return 100.0  # Stocks
 
+# =============================================
+# DYNAMIC DATA PROVIDER - NEW & COMPLETE
+# =============================================
+
+class DynamicDataProvider(EnhancedDataProvider):
+    """Dynamic data provider yang bisa handle semua market type dengan smart detection"""
+    
+    def __init__(self, market_type="crypto"):
+        super().__init__()
+        self.market_type = market_type
+        
+        # Initialize semua provider yang mungkin dibutuhkan
+        self.providers = {
+            'crypto_spot': EnhancedCCXTDataProvider(exchange_id='kucoin', market_type='spot'),
+            'crypto_future': EnhancedCCXTFuturesProvider(exchange_id='kucoinfutures'),
+            'forex': EnhancedYFinanceDataProvider(market_type='forex'),
+            'saham_id': EnhancedYFinanceDataProvider(market_type='saham_id'), 
+            'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
+            'stocks': EnhancedYFinanceDataProvider(market_type='us_stocks')
+        }
+        
+        # Default provider berdasarkan market type
+        self.default_provider = self._get_default_provider(market_type)
+        
+        logger.info(f"DynamicDataProvider initialized for {market_type} market")
+
+    def _get_default_provider(self, market_type):
+        """Get default provider berdasarkan market type"""
+        provider_map = {
+            'crypto': self.providers['crypto_spot'],
+            'forex': self.providers['forex'],
+            'saham_id': self.providers['saham_id'],
+            'us_stocks': self.providers['us_stocks'],
+            'stocks': self.providers['us_stocks']
+        }
+        return provider_map.get(market_type, self.providers['crypto_spot'])
+
+    def _detect_symbol_type(self, symbol):
+        """Detect symbol type secara otomatis berdasarkan pattern"""
+        if not symbol:
+            return 'unknown'
+            
+        symbol_upper = symbol.upper()
+        
+        # Crypto detection
+        if ('/USDT' in symbol_upper or '/BUSD' in symbol_upper or 
+            '/BTC' in symbol_upper or '/ETH' in symbol_upper):
+            if ':USDT' in symbol_upper or 'PERP' in symbol_upper or 'FUTURES' in symbol_upper:
+                return 'crypto_future'
+            else:
+                return 'crypto_spot'
+        
+        # Forex detection
+        if ('/USD' in symbol_upper or '/EUR' in symbol_upper or '/JPY' in symbol_upper or
+            '=X' in symbol_upper or 'FOREX' in symbol_upper):
+            return 'forex'
+        
+        # Saham Indonesia detection
+        if '.JK' in symbol_upper:
+            return 'saham_id'
+        
+        # US Stocks detection (ticker biasanya 1-5 huruf, tanpa special characters)
+        if (len(symbol) <= 5 and symbol.isalpha() and 
+            not any(c in symbol for c in ['/', '=', '.', '-'])):
+            return 'us_stocks'
+        
+        # Default ke crypto spot
+        return 'crypto_spot'
+
+    def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 200):
+        """Get OHLCV data dengan auto-detection symbol type"""
+        try:
+            # Deteksi tipe symbol
+            symbol_type = self._detect_symbol_type(symbol)
+            provider = self.providers.get(symbol_type, self.default_provider)
+            
+            logger.info(f"🔍 Getting OHLCV for {symbol} (detected as {symbol_type}) using {provider.__class__.__name__}")
+            
+            # Gunakan cache mechanism dari base class
+            cached_data = self._get_cached_data(symbol, timeframe, limit)
+            if cached_data is not None:
+                return cached_data
+            
+            # Get data dari provider yang sesuai
+            data = provider.get_ohlcv(symbol, timeframe, limit)
+            
+            # Cache hasil yang valid
+            if data is not None and len(data) > 0:
+                self._set_cached_data(symbol, timeframe, limit, data)
+            
+            return data
+            
+        except Exception as e:
+            logger.error(f"Error getting OHLCV for {symbol}: {e}")
+            # Fallback ke default provider
+            return self.default_provider.get_ohlcv(symbol, timeframe, limit)
+
+    def get_ticker(self, symbol: str):
+        """Get ticker data dengan auto-detection symbol type"""
+        try:
+            # Deteksi tipe symbol
+            symbol_type = self._detect_symbol_type(symbol)
+            provider = self.providers.get(symbol_type, self.default_provider)
+            
+            logger.info(f"🔍 Getting ticker for {symbol} (detected as {symbol_type}) using {provider.__class__.__name__}")
+            
+            return provider.get_ticker(symbol)
+            
+        except Exception as e:
+            logger.error(f"Error getting ticker for {symbol}: {e}")
+            # Fallback ke default provider
+            return self.default_provider.get_ticker(symbol)
+
+    def get_popular_assets(self, limit: int = 100):
+        """Get popular assets untuk market type yang aktif"""
+        try:
+            logger.info(f"📊 Getting {limit} popular assets for {self.market_type}")
+            
+            assets = self.default_provider.get_popular_assets(limit)
+            
+            # Format konsisten: selalu return list of dict dengan 'symbol' dan 'name'
+            formatted_assets = []
+            for asset in assets:
+                if isinstance(asset, dict):
+                    formatted_assets.append(asset)
+                else:
+                    formatted_assets.append({
+                        'symbol': str(asset),
+                        'name': str(asset)
+                    })
+            
+            logger.info(f"✅ Found {len(formatted_assets)} popular assets for {self.market_type}")
+            return formatted_assets
+            
+        except Exception as e:
+            logger.error(f"Error getting popular assets for {self.market_type}: {e}")
+            return self._get_fallback_assets(limit)
+
+    def search_assets(self, query: str, limit: int = 20) -> List[Dict]:
+        """Search assets across all providers berdasarkan query"""
+        try:
+            logger.info(f"🔍 Searching assets for: '{query}' in {self.market_type}")
+            
+            if not query or len(query.strip()) < 2:
+                logger.warning("Search query too short")
+                return []
+            
+            query_clean = query.upper().strip()
+            results = []
+            
+            # Search strategy berdasarkan market type
+            if self.market_type == "crypto":
+                results = self._search_crypto_assets(query_clean, limit)
+            elif self.market_type == "forex":
+                results = self._search_forex_pairs(query_clean, limit)
+            elif self.market_type == "saham_id":
+                results = self._search_saham_id(query_clean, limit)
+            elif self.market_type in ["us_stocks", "stocks"]:
+                results = self._search_us_stocks(query_clean, limit)
+            else:
+                results = self._search_generic(query_clean, limit)
+            
+            logger.info(f"✅ Found {len(results)} assets for query '{query}'")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error searching assets for '{query}': {e}")
+            return []
+
+    def _search_crypto_assets(self, query: str, limit: int) -> List[Dict]:
+        """Search cryptocurrency assets"""
+        try:
+            # Dapatkan popular assets terlebih dahulu
+            popular_assets = self.providers['crypto_spot'].get_popular_assets(200)
+            results = []
+            
+            # Filter berdasarkan query
+            for asset in popular_assets:
+                symbol = asset.get('symbol', '') if isinstance(asset, dict) else str(asset)
+                if query in symbol.upper():
+                    results.append({
+                        'symbol': symbol,
+                        'name': symbol,
+                        'type': 'crypto'
+                    })
+            
+            # Jika tidak cukup, generate synthetic pairs
+            if len(results) < limit:
+                pairs = ['USDT', 'BUSD', 'BTC', 'ETH', 'USD']
+                for pair in pairs:
+                    synthetic_symbol = f"{query}/{pair}"
+                    results.append({
+                        'symbol': synthetic_symbol,
+                        'name': f"{query}-{pair}",
+                        'type': 'crypto'
+                    })
+            
+            # Juga cari di futures
+            try:
+                futures_assets = self.providers['crypto_future'].get_popular_assets(100)
+                for asset in futures_assets:
+                    symbol = asset.get('symbol', '') if isinstance(asset, dict) else str(asset)
+                    if query in symbol.upper():
+                        results.append({
+                            'symbol': symbol,
+                            'name': f"{symbol} (Futures)",
+                            'type': 'crypto_future'
+                        })
+            except:
+                pass  # Skip jika futures provider error
+            
+            return results[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error searching crypto assets: {e}")
+            return self._generate_crypto_suggestions(query, limit)
+
+    def _search_forex_pairs(self, query: str, limit: int) -> List[Dict]:
+        """Search forex pairs"""
+        try:
+            # Major forex pairs
+            major_pairs = [
+                'EUR/USD', 'USD/JPY', 'GBP/USD', 'AUD/USD', 'USD/CAD',
+                'USD/CHF', 'NZD/USD', 'EUR/GBP', 'EUR/JPY', 'GBP/JPY',
+                'AUD/JPY', 'EUR/CAD', 'GBP/CAD', 'AUD/CAD', 'CAD/JPY',
+                'CHF/JPY', 'EUR/CHF', 'GBP/CHF', 'AUD/CHF', 'NZD/JPY'
+            ]
+            
+            # Currency codes
+            currencies = ['USD', 'EUR', 'JPY', 'GBP', 'AUD', 'CAD', 'CHF', 'NZD']
+            
+            results = []
+            
+            # Cari di major pairs
+            for pair in major_pairs:
+                if query in pair:
+                    results.append({
+                        'symbol': pair,
+                        'name': pair,
+                        'type': 'forex'
+                    })
+            
+            # Generate pairs berdasarkan currency code
+            if len(results) < limit and query in currencies:
+                for currency in currencies:
+                    if currency != query:
+                        # Buat pairs dengan currency ini
+                        results.append({
+                            'symbol': f"{query}/{currency}",
+                            'name': f"{query}/{currency}",
+                            'type': 'forex'
+                        })
+                        results.append({
+                            'symbol': f"{currency}/{query}",
+                            'name': f"{currency}/{query}",
+                            'type': 'forex'
+                        })
+            
+            return results[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error searching forex pairs: {e}")
+            return self._generate_forex_suggestions(query, limit)
+
+    def _search_saham_id(self, query: str, limit: int) -> List[Dict]:
+        """Search saham Indonesia"""
+        try:
+            # Daftar saham Indonesia populer
+            saham_list = [
+                'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'BNGA.JK',
+                'TLKM.JK', 'ASII.JK', 'UNVR.JK', 'ICBP.JK', 'INDF.JK',
+                'ANTM.JK', 'ADRO.JK', 'PTBA.JK', 'ITMG.JK', 'MEDC.JK',
+                'SMGR.JK', 'INTP.JK', 'TKIM.JK', 'KLBF.JK', 'GGRM.JK'
+            ]
+            
+            results = []
+            
+            # Cari exact match atau partial match
+            for saham in saham_list:
+                if query in saham.upper():
+                    results.append({
+                        'symbol': saham,
+                        'name': saham,
+                        'type': 'saham_id'
+                    })
+            
+            # Jika query adalah kode saham tanpa .JK, tambahkan
+            if not any('.JK' in result['symbol'] for result in results) and len(query) <= 4:
+                results.append({
+                    'symbol': f"{query}.JK",
+                    'name': f"{query}.JK",
+                    'type': 'saham_id'
+                })
+            
+            return results[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error searching saham Indonesia: {e}")
+            return self._generate_saham_suggestions(query, limit)
+
+    def _search_us_stocks(self, query: str, limit: int) -> List[Dict]:
+        """Search US stocks"""
+        try:
+            # Daftar US stocks populer
+            us_stocks = [
+                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX',
+                'BRK-B', 'JNJ', 'JPM', 'V', 'PG', 'UNH', 'HD', 'DIS', 'PYPL',
+                'ADBE', 'CRM', 'CSCO', 'PEP', 'ABT', 'TMO', 'AVGO', 'COST'
+            ]
+            
+            results = []
+            
+            # Cari exact match atau partial match
+            for stock in us_stocks:
+                if query in stock.upper():
+                    results.append({
+                        'symbol': stock,
+                        'name': stock,
+                        'type': 'us_stocks'
+                    })
+            
+            # Jika query tidak ditemukan, anggap sebagai symbol baru
+            if not results and len(query) <= 5:
+                results.append({
+                    'symbol': query,
+                    'name': query,
+                    'type': 'us_stocks'
+                })
+            
+            return results[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error searching US stocks: {e}")
+            return self._generate_us_stocks_suggestions(query, limit)
+
+    def _search_generic(self, query: str, limit: int) -> List[Dict]:
+        """Generic search fallback"""
+        return [{
+            'symbol': query,
+            'name': query,
+            'type': 'generic'
+        }]
+
+    def _generate_crypto_suggestions(self, query: str, limit: int) -> List[Dict]:
+        """Generate crypto suggestions ketika search gagal"""
+        pairs = ['USDT', 'BUSD', 'BTC', 'ETH']
+        suggestions = []
+        
+        for pair in pairs:
+            suggestions.append({
+                'symbol': f"{query}/{pair}",
+                'name': f"{query}-{pair}",
+                'type': 'crypto'
+            })
+        
+        return suggestions[:limit]
+
+    def _generate_forex_suggestions(self, query: str, limit: int) -> List[Dict]:
+        """Generate forex suggestions ketika search gagal"""
+        majors = ['USD', 'EUR', 'JPY', 'GBP']
+        suggestions = []
+        
+        for currency in majors:
+            if currency != query:
+                suggestions.append({
+                    'symbol': f"{query}/{currency}",
+                    'name': f"{query}/{currency}",
+                    'type': 'forex'
+                })
+        
+        return suggestions[:limit]
+
+    def _generate_saham_suggestions(self, query: str, limit: int) -> List[Dict]:
+        """Generate saham suggestions ketika search gagal"""
+        return [{
+            'symbol': f"{query}.JK",
+            'name': f"{query}.JK",
+            'type': 'saham_id'
+        }]
+
+    def _generate_us_stocks_suggestions(self, query: str, limit: int) -> List[Dict]:
+        """Generate US stocks suggestions ketika search gagal"""
+        return [{
+            'symbol': query,
+            'name': query,
+            'type': 'us_stocks'
+        }]
+
+    def _get_fallback_assets(self, limit: int):
+        """Fallback assets ketika provider gagal"""
+        fallback_assets = {
+            "crypto": [
+                {"symbol": "BTC/USDT", "name": "Bitcoin"},
+                {"symbol": "ETH/USDT", "name": "Ethereum"}, 
+                {"symbol": "BNB/USDT", "name": "Binance Coin"},
+                {"symbol": "XRP/USDT", "name": "Ripple"},
+                {"symbol": "ADA/USDT", "name": "Cardano"}
+            ],
+            "forex": [
+                {"symbol": "EUR/USD", "name": "Euro US Dollar"},
+                {"symbol": "USD/JPY", "name": "US Dollar Japanese Yen"},
+                {"symbol": "GBP/USD", "name": "British Pound US Dollar"},
+                {"symbol": "USD/CHF", "name": "US Dollar Swiss Franc"},
+                {"symbol": "AUD/USD", "name": "Australian Dollar US Dollar"}
+            ],
+            "us_stocks": [
+                {"symbol": "AAPL", "name": "Apple Inc"},
+                {"symbol": "MSFT", "name": "Microsoft Corp"},
+                {"symbol": "GOOGL", "name": "Alphabet Inc"},
+                {"symbol": "AMZN", "name": "Amazon.com Inc"},
+                {"symbol": "TSLA", "name": "Tesla Inc"}
+            ],
+            "saham_id": [
+                {"symbol": "BBCA.JK", "name": "Bank Central Asia"},
+                {"symbol": "BBRI.JK", "name": "Bank Rakyat Indonesia"},
+                {"symbol": "BMRI.JK", "name": "Bank Mandiri"},
+                {"symbol": "TLKM.JK", "name": "Telkom Indonesia"},
+                {"symbol": "ASII.JK", "name": "Astra International"}
+            ]
+        }
+        
+        assets = fallback_assets.get(self.market_type, [])
+        logger.info(f"Using {len(assets)} fallback assets for {self.market_type}")
+        return assets[:limit]
+
+    def get_health_metrics(self) -> Dict:
+        """Get comprehensive health metrics untuk semua providers"""
+        base_metrics = super().get_health_metrics()
+        
+        provider_metrics = {}
+        for provider_name, provider in self.providers.items():
+            try:
+                provider_metrics[provider_name] = provider.get_health_metrics()
+            except:
+                provider_metrics[provider_name] = {'error': 'Unable to get metrics'}
+        
+        base_metrics['providers'] = provider_metrics
+        base_metrics['market_type'] = self.market_type
+        base_metrics['default_provider'] = self.default_provider.__class__.__name__
+        
+        return base_metrics
+
+# =============================================
+# EXISTING PROVIDERS (Keep from your original code)
+# =============================================
+
 class AlphaVantageProvider(EnhancedDataProvider):
     def __init__(self, api_key=None):
         super().__init__()
@@ -695,6 +1139,7 @@ class AlphaVantageProvider(EnhancedDataProvider):
             # Fallback to basic assets
             fallback_assets = ['EUR/USD', 'USD/JPY', 'GBP/USD', 'AAPL', 'MSFT', 'BTC/USD', 'ETH/USD']
             return fallback_assets[:limit]
+    pass
 
 class EnhancedCCXTDataProvider(EnhancedDataProvider):
     """Enhanced CCXT provider with better error handling and fallbacks - RELAXED VERSION"""
@@ -1262,21 +1707,312 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         assets = fallback_assets.get(self.market_type, [])
         logger.info(f"Using fallback assets for {self.market_type}: {len(assets[:limit])} assets")
         return assets[:limit]
-
-# Update the existing classes to use enhanced versions
-class CCXTDataProvider(EnhancedCCXTDataProvider):
-    """Backward compatibility wrapper"""
     pass
 
-class CCXTFuturesProvider(EnhancedCCXTFuturesProvider):
-    """Futures-specific provider"""
+# FUTURES-SPECIFIC PROVIDER
+class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
+    """Enhanced CCXT provider specifically for Futures trading"""
+    
+    def __init__(self, exchange_id='kucoinfutures', api_key='', secret=''):
+        super().__init__(exchange_id=exchange_id, api_key=api_key, secret=secret, market_type='future')
+        
+    def _convert_to_futures_symbol(self, symbol):
+        """Convert spot symbol to futures symbol format"""
+        # For perpetual futures, add :USDT suffix if not already present
+        if not symbol.endswith(':USDT'):
+            return f"{symbol}:USDT"
+        return symbol
+    
+    def get_funding_rate(self, symbol):
+        """Get funding rate for futures symbol"""
+        actual_symbol = self._convert_to_futures_symbol(symbol)
+        
+        def fetch_funding_rate():
+            try:
+                if not self.exchange:
+                    raise Exception("Exchange not initialized")
+                    
+                # Different exchanges have different methods for funding rate
+                if hasattr(self.exchange, 'fetch_funding_rate'):
+                    funding_rate = self.exchange.fetch_funding_rate(actual_symbol)
+                    return funding_rate
+                else:
+                    logger.warning(f"Funding rate not supported for {self.exchange_id}")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"Error fetching funding rate for {actual_symbol}: {str(e)}")
+                raise
+        
+        return self._safe_api_call(fetch_funding_rate)
+    
+    def get_open_interest(self, symbol):
+        """Get open interest for futures symbol"""
+        actual_symbol = self._convert_to_futures_symbol(symbol)
+        
+        def fetch_open_interest():
+            try:
+                if not self.exchange:
+                    raise Exception("Exchange not initialized")
+                    
+                if hasattr(self.exchange, 'fetch_open_interest'):
+                    oi = self.exchange.fetch_open_interest(actual_symbol)
+                    return oi
+                else:
+                    logger.warning(f"Open interest not supported for {self.exchange_id}")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"Error fetching open interest for {actual_symbol}: {str(e)}")
+                raise
+        
+        return self._safe_api_call(fetch_open_interest)
     pass
 
-class YFinanceDataProvider(EnhancedYFinanceDataProvider):
-    """Backward compatibility wrapper"""
+class EnhancedYFinanceDataProvider(EnhancedDataProvider):
+    """Enhanced Yahoo Finance provider with better error handling - RELAXED VERSION"""
+    
+    def __init__(self, market_type='stock'):
+        super().__init__()
+        self.market_type = market_type
+        self.fallback_av = AlphaVantageProvider()
+
+    def _convert_symbol(self, symbol, target='av'):
+        """Convert symbol for different providers"""
+        if target == 'av':
+            if '-' in symbol:
+                return symbol.replace('-', '/')
+        return symbol
+
+    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
+        """Enhanced Yahoo Finance dengan validasi harga yang toleran - RELAXED"""
+        cached_data = self._get_cached_data(symbol, timeframe, limit)
+        if cached_data is not None:
+            return cached_data
+
+        def fetch_yfinance_data():
+            try:
+                interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
+                interval = interval_map.get(timeframe, '1d')
+                
+                # Determine period based on limit and interval
+                if interval == '1h':
+                    period = '2mo' if limit > 30 else '5d'
+                elif interval == '1d':
+                    period = '1y' if limit > 100 else '6mo'
+                else:
+                    period = '1y'
+                
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period=period, interval=interval)
+                
+                if df.empty:
+                    raise ValueError("No data returned from Yahoo Finance")
+                
+                # RELAXED: Handle data yang sedikit
+                if len(df) < 5:
+                    logger.warning(f"YFinance returned only {len(df)} rows for {symbol}")
+                    # Tidak langsung error, lanjut proses
+                
+                if len(df) > limit:
+                    df = df.tail(limit)
+                
+                df.reset_index(inplace=True)
+                df.columns = [col.lower() for col in df.columns]
+                if 'date' in df.columns:
+                    df.rename(columns={'date': 'timestamp'}, inplace=True)
+                elif 'datetime' in df.columns:
+                    df.rename(columns={'datetime': 'timestamp'}, inplace=True)
+                
+                df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+                
+                # RELAXED: Handle zero prices
+                if (df['close'] <= 0).any():
+                    logger.warning(f"Zero or negative prices in YFinance data for {symbol}")
+                    df = df[df['close'] > 0]  # Filter out invalid prices
+                    if len(df) == 0:
+                        raise ValueError("All prices are invalid")
+                
+                # Validate data quality
+                is_valid, issues = self.validator.validate_ohlcv_data(df)
+                if not is_valid:
+                    logger.warning(f"YFinance data validation issues for {symbol}: {issues}")
+                    df = self.validator.clean_ohlcv_data(df)
+                
+                return df
+                
+            except Exception as e:
+                logger.error(f"YFinance error for {symbol}: {str(e)}")
+                raise
+
+        result = self._safe_api_call(fetch_yfinance_data)
+        
+        if result is not None and len(result) > 0:
+            self._set_cached_data(symbol, timeframe, limit, result)
+            return result
+        
+        # Fallback ke Alpha Vantage
+        try:
+            conv_symbol = self._convert_symbol(symbol, 'av')
+            av_df = self.fallback_av.get_ohlcv(conv_symbol, timeframe, limit)
+            if av_df is not None and len(av_df) > 0:
+                logger.info(f"Using AlphaVantage fallback for {symbol}")
+                self._set_cached_data(symbol, timeframe, limit, av_df)
+                return av_df
+        except Exception as e:
+            logger.warning(f"AlphaVantage fallback failed: {str(e)}")
+        
+        # Generate realistic data
+        result = self._generate_realistic_dummy_data(symbol, limit)
+        self._set_cached_data(symbol, timeframe, limit, result)
+        return result
+
+    def get_ticker(self, symbol):
+        """Get ticker data from Yahoo Finance - RELAXED"""
+        def fetch_ticker():
+            try:
+                ticker = yf.Ticker(symbol)
+                info = ticker.info
+                history = ticker.history(period='1d')
+                
+                if not history.empty:
+                    last_price = history['Close'].iloc[-1]
+                    volume = history['Volume'].iloc[-1] if 'Volume' in history.columns else 0
+                else:
+                    last_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                    volume = info.get('volume', 0)
+                
+                # Validasi harga
+                if last_price <= 0:
+                    raise ValueError(f"Invalid price from YFinance: {last_price}")
+                
+                return {
+                    'last': last_price,
+                    'volume': volume,
+                    'high': info.get('dayHigh', 0),
+                    'low': info.get('dayLow', 0),
+                    'market_cap': info.get('marketCap', 0)
+                }
+            except Exception as e:
+                logger.error(f"YFinance ticker error: {str(e)}")
+                raise
+        
+        result = self._safe_api_call(fetch_ticker)
+        
+        # Fallback yang lebih baik
+        if not result or result.get('last', 0) <= 0:
+            try:
+                fallback_result = self.fallback_av.get_ticker(symbol)
+                if fallback_result and fallback_result.get('last', 0) > 0:
+                    logger.info(f"Using AlphaVantage fallback ticker for {symbol}")
+                    return fallback_result
+            except Exception as e:
+                logger.warning(f"AlphaVantage fallback also failed: {str(e)}")
+            
+            # Ultimate fallback
+            estimated_price = self._estimate_realistic_price(symbol)
+            logger.warning(f"All ticker providers failed for {symbol}, using estimated price: {estimated_price}")
+            return {
+                'last': estimated_price,
+                'volume': 100000,
+                'high': estimated_price * 1.02,
+                'low': estimated_price * 0.98
+            }
+        
+        return result
+
+    def get_popular_assets(self, limit=100):
+        """Get popular assets based on market type - UPDATED FOR US STOCKS"""
+        try:
+            if self.market_type == "crypto":
+                return self._get_popular_crypto(limit)
+            elif self.market_type == "forex":
+                return self._get_popular_forex(limit)
+            elif self.market_type == "saham_id":
+                return self._get_popular_indonesian_stocks(limit)
+            elif self.market_type == "stocks" or self.market_type == "us_stocks":
+                return self._get_popular_us_stocks(limit)
+            else:
+                logger.warning(f"Unknown market type: {self.market_type}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error getting popular assets for {self.market_type}: {str(e)}")
+            return self._get_fallback_assets(limit)
+
+    def _get_popular_crypto(self, limit):
+        """Get popular cryptocurrencies"""
+        crypto_pairs = [
+            'BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD',
+            'SOL-USD', 'DOT-USD', 'DOGE-USD', 'AVAX-USD', 'MATIC-USD',
+            'LTC-USD', 'LINK-USD', 'ATOM-USD', 'XLM-USD', 'BCH-USD',
+            'ETC-USD', 'FIL-USD', 'THETA-USD', 'EOS-USD', 'XTZ-USD',
+            'ALGO-USD', 'NEAR-USD', 'FTM-USD', 'SAND-USD', 'MANA-USD',
+            'APE-USD', 'GALA-USD', 'ENJ-USD', 'CHZ-USD', 'BAT-USD'
+        ]
+        result = crypto_pairs[:limit]
+        logger.info(f"YFinance returning {len(result)} popular crypto assets")
+        return result
+
+    def _get_popular_forex(self, limit):
+        """Get popular forex pairs"""
+        forex_pairs = [
+            'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X',
+            'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+            'AUDJPY=X', 'EURCAD=X', 'GBPCAD=X', 'AUDCAD=X', 'CADJPY=X',
+            'CHFJPY=X', 'EURCHF=X', 'GBPCHF=X', 'AUDCHF=X', 'NZDJPY=X'
+        ]
+        result = forex_pairs[:limit]
+        logger.info(f"YFinance returning {len(result)} popular forex pairs")
+        return result
+
+    def _get_popular_indonesian_stocks(self, limit):
+        """Get popular Indonesian stocks"""
+        id_stocks = [
+            'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'BNGA.JK',
+            'TLKM.JK', 'ASII.JK', 'UNVR.JK', 'ICBP.JK', 'INDF.JK',
+            'ANTM.JK', 'ADRO.JK', 'PTBA.JK', 'ITMG.JK', 'MEDC.JK',
+            'SMGR.JK', 'INTP.JK', 'TKIM.JK', 'KLBF.JK', 'GGRM.JK',
+            'HMSP.JK', 'JPFA.JK', 'LSIP.JK', 'MYOR.JK', 'SCMA.JK',
+            'SRIL.JK', 'TPIA.JK', 'UNTR.JK', 'WIKA.JK', 'WSKT.JK'
+        ]
+        result = id_stocks[:limit]
+        logger.info(f"YFinance returning {len(result)} popular Indonesian stocks")
+        return result
+
+    def _get_popular_us_stocks(self, limit):
+        """Get popular US stocks - NEW METHOD"""
+        us_stocks = [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX',
+            'BRK-B', 'JNJ', 'JPM', 'V', 'PG', 'UNH', 'HD', 'DIS', 'PYPL',
+            'ADBE', 'CRM', 'CSCO', 'PEP', 'ABT', 'TMO', 'AVGO', 'COST',
+            'LLY', 'WMT', 'XOM', 'CVX', 'BAC', 'MA', 'INTC', 'CMCSA',
+            'PFE', 'ABBV', 'T', 'DHR', 'MDT', 'NKE', 'UPS', 'RTX',
+            'TXN', 'HON', 'PM', 'LOW', 'IBM', 'AMD', 'SPY', 'QQQ', 'VOO'
+        ]
+        result = us_stocks[:limit]
+        logger.info(f"YFinance returning {len(result)} popular US stocks")
+        return result
+
+    def _get_popular_international_stocks(self, limit):
+        """Get popular international stocks - KEPT FOR BACKWARD COMPATIBILITY"""
+        return self._get_popular_us_stocks(limit)
+
+    def _get_fallback_assets(self, limit):
+        """Fallback assets when primary method fails - UPDATED FOR US STOCKS"""
+        fallback_assets = {
+            "crypto": ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD'],
+            "forex": ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X'],
+            "saham_id": ['BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK'],
+            "stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA'],
+            "us_stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX']
+        }
+        
+        assets = fallback_assets.get(self.market_type, [])
+        logger.info(f"Using fallback assets for {self.market_type}: {len(assets[:limit])} assets")
+        return assets[:limit]
     pass
 
-# Enhanced DexScreenerProvider
 class EnhancedDexScreenerProvider(DataProvider):
     """Enhanced DexScreener with error handling"""
     
@@ -1331,9 +2067,10 @@ class EnhancedDexScreenerProvider(DataProvider):
                 raise
         
         return self.retry_mechanism.execute_with_retry(fetch_popular)
+    pass
 
-# Enhanced Solana provider
-class EnhancedSolanaPumpFunProvider(DataProvider):
+
+   class EnhancedSolanaPumpFunProvider(DataProvider):
     def __init__(self, rpc_url):
         super().__init__()
         self.client = Client(rpc_url)
@@ -1362,8 +2099,28 @@ class EnhancedSolanaPumpFunProvider(DataProvider):
         """Get popular Solana tokens"""
         # This would need actual implementation
         return []
+    pass
 
-# Factory for creating data providers
+# =============================================
+# BACKWARD COMPATIBILITY WRAPPERS
+# =============================================
+
+class CCXTDataProvider(EnhancedCCXTDataProvider):
+    """Backward compatibility wrapper"""
+    pass
+
+class CCXTFuturesProvider(EnhancedCCXTFuturesProvider):
+    """Backward compatibility wrapper"""
+    pass
+
+class YFinanceDataProvider(EnhancedYFinanceDataProvider):
+    """Backward compatibility wrapper"""
+    pass
+
+# =============================================
+# FACTORY AND MONITORING
+# =============================================
+
 class DataProviderFactory:
     """Factory for creating enhanced data providers"""
     
@@ -1381,10 +2138,11 @@ class DataProviderFactory:
             return EnhancedDexScreenerProvider()
         elif provider_type == "solanapump":
             return EnhancedSolanaPumpFunProvider(**kwargs)
+        elif provider_type == "dynamic":
+            return DynamicDataProvider(**kwargs)
         else:
             raise ValueError(f"Unknown provider type: {provider_type}")
 
-# Health monitoring for all providers
 class DataProviderMonitor:
     """Monitor health of all data providers"""
     
@@ -1415,22 +2173,57 @@ class DataProviderMonitor:
         
         return np.mean(scores) if scores else 1.0
 
-# Usage Example:
-if __name__ == "__main__":
-    # Test Futures Provider
-    print("Testing Futures Data Provider...")
+# =============================================
+# TESTING
+# =============================================
+
+def test_dynamic_data_provider():
+    """Test the new DynamicDataProvider"""
+    print("🧪 Testing DynamicDataProvider...")
     
-    # Initialize futures provider
-    futures_provider = EnhancedCCXTFuturesProvider(exchange_id='kucoinfutures')
+    market_types = ["crypto", "forex", "saham_id", "us_stocks"]
     
-    # Get popular futures assets
-    futures_assets = futures_provider.get_popular_assets(limit=5)
-    print("Futures Assets:", futures_assets)
-    
-    # Test OHLCV data for futures
-    for symbol in futures_assets[:2]:
-        data = futures_provider.get_ohlcv(symbol, '1h', 10)
-        print(f"Futures data for {symbol}: {len(data) if data is not None else 0} bars")
+    for market_type in market_types:
+        print(f"\n=== Testing {market_type.upper()} ===")
         
-        ticker = futures_provider.get_ticker(symbol)
-        print(f"Futures ticker for {symbol}: {ticker['last'] if ticker else 'N/A'}")
+        provider = DynamicDataProvider(market_type=market_type)
+        
+        # Test popular assets
+        assets = provider.get_popular_assets(5)
+        print(f"✅ Popular assets: {len(assets)} found")
+        for asset in assets[:3]:
+            print(f"   - {asset.get('symbol')}")
+        
+        # Test search
+        test_queries = {
+            "crypto": "BTC",
+            "forex": "EUR", 
+            "saham_id": "BBCA",
+            "us_stocks": "AAPL"
+        }
+        
+        query = test_queries.get(market_type, "TEST")
+        search_results = provider.search_assets(query, 3)
+        print(f"✅ Search results for '{query}': {len(search_results)} found")
+        for result in search_results:
+            print(f"   - {result.get('symbol')} ({result.get('type')})")
+        
+        # Test OHLCV for first asset
+        if assets:
+            symbol = assets[0].get('symbol')
+            try:
+                ohlcv = provider.get_ohlcv(symbol, '1h', 10)
+                if ohlcv is not None:
+                    print(f"✅ OHLCV data: {len(ohlcv)} rows for {symbol}")
+                else:
+                    print(f"❌ No OHLCV data for {symbol}")
+            except Exception as e:
+                print(f"❌ OHLCV error for {symbol}: {e}")
+        
+        # Test health metrics
+        metrics = provider.get_health_metrics()
+        print(f"✅ Health metrics: {metrics.get('error_rate', 'N/A')} error rate")
+
+if __name__ == "__main__":
+    test_dynamic_data_provider()
+    print("\n🎉 DynamicDataProvider testing completed!")
