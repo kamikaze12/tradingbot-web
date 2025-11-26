@@ -2070,10 +2070,16 @@ class EnhancedDexScreenerProvider(DataProvider):
     pass
 
 
-   class EnhancedSolanaPumpFunProvider(DataProvider):
-    def __init__(self, rpc_url):
+  class EnhancedSolanaPumpFunProvider(DataProvider):
+    def __init__(self, rpc_url=None):
         super().__init__()
-        self.client = Client(rpc_url)
+        self.rpc_url = rpc_url
+        try:
+            from solana.rpc.api import Client
+            self.client = Client(rpc_url)
+        except ImportError:
+            self.client = None
+            logger.warning("Solana client not available, install solana-py package")
         self.program_id = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
         self.dex_provider = EnhancedDexScreenerProvider()
         self.retry_mechanism = RetryMechanism()
@@ -2099,7 +2105,6 @@ class EnhancedDexScreenerProvider(DataProvider):
         """Get popular Solana tokens"""
         # This would need actual implementation
         return []
-    pass
 
 # =============================================
 # BACKWARD COMPATIBILITY WRAPPERS
