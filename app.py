@@ -108,7 +108,7 @@ def get_valid_price(data, symbol=None, bot=None):
     return 1.0
 
 def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
-    """Validate and fix price levels in analysis data"""
+    """Validate and fix price levels in analysis data - ENHANCED VERSION"""
     if not isinstance(analysis, dict):
         return {'symbol': symbol, 'error': 'Invalid analysis data'}
     
@@ -120,12 +120,37 @@ def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
     if current_price <= 0:
         current_price = 1.0
     
-    price_fields = ['entry_price', 'ideal_entry', 'current_price', 'close', 'last']
+    # ✅ PERBAIKAN: Pastikan semua field price ada dan valid
+    price_fields = ['entry_price', 'ideal_entry', 'current_price', 'close', 'last', 
+                   'entry_range_low', 'entry_range_high', 'best_entry']
+    
     for field in price_fields:
         if analysis.get(field, 0) <= 0:
             analysis[field] = current_price
     
-    action = analysis.get('action', 'LONG')
+    action = analysis.get('action', 'NEUTRAL')
+    
+    # ✅ PERBAIKAN: Jika entry range masih 0, hitung ulang
+    if (analysis.get('entry_range_low', 0) <= 0 or 
+        analysis.get('entry_range_high', 0) <= 0 or 
+        analysis.get('best_entry', 0) <= 0):
+        
+        if action == "LONG":
+            analysis['entry_range_low'] = current_price * 0.98
+            analysis['entry_range_high'] = current_price * 0.99
+            analysis['best_entry'] = (analysis['entry_range_low'] + analysis['entry_range_high']) / 2
+        elif action == "SHORT":
+            analysis['entry_range_low'] = current_price * 1.01
+            analysis['entry_range_high'] = current_price * 1.02
+            analysis['best_entry'] = (analysis['entry_range_low'] + analysis['entry_range_high']) / 2
+        else:
+            analysis['entry_range_low'] = current_price * 0.995
+            analysis['entry_range_high'] = current_price * 1.005
+            analysis['best_entry'] = current_price
+        
+        analysis['range_size'] = (analysis['entry_range_high'] - analysis['entry_range_low']) / current_price * 100
+    
+    # Validasi TP/SL
     tp1 = analysis.get('tp1', 0)
     tp2 = analysis.get('tp2', 0) 
     tp3 = analysis.get('tp3', 0)
