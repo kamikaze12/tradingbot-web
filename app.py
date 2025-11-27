@@ -251,6 +251,51 @@ def calculate_tp_probability(current_price, tp1, tp2, tp3, sl, action, volatilit
         # Return probabilities yang lebih realistis sebagai fallback
         return {"tp1": 0.6, "tp2": 0.35, "tp3": 0.15}
 
+def plot_entry_range(analysis):
+    """Plot visual entry range"""
+    if not PLOTLY_AVAILABLE:
+        return None
+        
+    fig = go.Figure()
+    
+    current_price = analysis.get('current_price', 0)
+    entry_low = analysis.get('entry_range_low', 0)
+    entry_high = analysis.get('entry_range_high', 0)
+    best_entry = analysis.get('best_entry', 0)
+    
+    # Jika data tidak valid, return fig kosong
+    if current_price <= 0 or entry_low <= 0 or entry_high <= 0 or best_entry <= 0:
+        return fig
+    
+    # Add range area
+    fig.add_trace(go.Scatter(
+        x=[entry_low, entry_high],
+        y=['Entry Range', 'Entry Range'],
+        fill='toself',
+        fillcolor='rgba(0,255,0,0.2)',
+        line=dict(color='rgba(255,255,255,0)'),
+        name='Entry Range'
+    ))
+    
+    # Add points
+    fig.add_trace(go.Scatter(
+        x=[current_price, best_entry],
+        y=['Current Price', 'Ideal Entry'],
+        mode='markers+text',
+        marker=dict(size=15, color=['blue', 'red']),
+        text=['Current', 'Ideal'],
+        textposition="middle right"
+    ))
+    
+    fig.update_layout(
+        title="Entry Range Analysis",
+        xaxis_title="Price",
+        showlegend=False,
+        height=200
+    )
+    
+    return fig
+
 def run_scheduler(bot):
     """Jalankan auto scan tiap 30 detik."""
     def scan_job():
@@ -391,7 +436,7 @@ def main_app():
         "📈 History", "📡 Live Scanner", "🤖 ML Backtest", "⚖️ Portfolio"
     ])
 
-    # Tab 1: Scan Assets - ENHANCED
+    # Tab 1: Scan Assets - ENHANCED dengan Entry Range
     with tab1:
         st.subheader("Scan Potential Assets")
         
@@ -425,7 +470,7 @@ def main_app():
                 except Exception as e:
                     st.error(f"Scan error: {e}")
 
-        # Display scanned results - ENHANCED dengan probabilitas TP
+        # Display scanned results - ENHANCED dengan probabilitas TP dan ENTRY RANGE
         if st.session_state.scanned_results:
             st.subheader("Top Assets:")
             for i, res in enumerate(st.session_state.scanned_results, 1):
@@ -437,25 +482,33 @@ def main_app():
                         st.write(f"{i}. {action_color} **{safe_get(res, 'symbol')}** - {action} (Score: {safe_get(res, 'score', 0)})")
                         
                         current_price = get_valid_price(res, safe_get(res, 'symbol'), bot)
-                        st.write(f"💰 Price: `{current_price:.5f}` | SL: `{safe_get(res, 'sl', 0):.5f}`")
+                        st.write(f"💰 Current Price: `{current_price:.5f}`")
+                        
+                        # ✅ TAMPILKAN ENTRY RANGE DAN IDEAL ENTRY
+                        st.write(f"📊 **Entry Range:** `{res.get('entry_range_low', 0):.5f} - {res.get('entry_range_high', 0):.5f}`")
+                        st.write(f"🎯 **Ideal Entry:** `{res.get('best_entry', 0):.5f}`")
+                        st.write(f"📏 **Range Size:** `{res.get('range_size', 0):.1f}%`")
                         
                         # Display TP levels
                         tp1, tp2, tp3 = safe_get(res, 'tp1', 0), safe_get(res, 'tp2', 0), safe_get(res, 'tp3', 0)
+                        sl = safe_get(res, 'sl', 0)
+                        
                         if action == "LONG":
                             tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
                         else:
                             tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
                         
-                        st.write(f"🎯 TP: `{tp1:.5f}` | `{tp2:.5f}` | `{tp3:.5f}`")
+                        st.write(f"🎯 **TP Levels:** `{tp1:.5f}` | `{tp2:.5f}` | `{tp3:.5f}`")
+                        st.write(f"🛑 **Stop Loss:** `{sl:.5f}`")
                         
                         # Hitung dan tampilkan probabilitas TP jika belum ada
                         if 'tp_probabilities' not in res:
                             res['tp_probabilities'] = calculate_tp_probability(
-                                current_price, tp1, tp2, tp3, safe_get(res, 'sl', 0), action
+                                current_price, tp1, tp2, tp3, sl, action
                             )
                         
                         probs = res['tp_probabilities']
-                        st.write(f"📊 **Probabilitas:** TP1: {probs.get('tp1', 0)*100:.1f}% | TP2: {probs.get('tp2', 0)*100:.1f}% | TP3: {probs.get('tp3', 0)*100:.1f}%")
+                        st.write(f"📊 **Probabilities:** TP1: {probs.get('tp1', 0)*100:.1f}% | TP2: {probs.get('tp2', 0)*100:.1f}% | TP3: {probs.get('tp3', 0)*100:.1f}%")
                     
                     with col2:
                         if st.button(f"Select", key=f"select_{i}"):
@@ -521,7 +574,7 @@ def main_app():
                             if 'detected_patterns' in res and res['detected_patterns']:
                                 st.write(f"📊 Pola: {', '.join(res['detected_patterns'])}")
 
-    # Tab 2: Analyze Asset - ENHANCED
+    # Tab 2: Analyze Asset - ENHANCED dengan Entry Range
     with tab2:
         st.subheader("Analyze Specific Asset")
         
@@ -580,8 +633,26 @@ def main_app():
                 if 'tp_probabilities' in analysis:
                     probs = analysis['tp_probabilities']
                     st.metric("TP1 Probability", f"{probs.get('tp1', 0)*100:.1f}%")
+            
+            # ✅ TAMBAHAN: ENTRY RANGE DETAILS
+            st.subheader("🎯 Entry Range Details")
+            col_range1, col_range2, col_range3 = st.columns(3)
+            with col_range1:
+                st.metric("Entry Range Low", f"{analysis.get('entry_range_low', 0):.5f}")
+            with col_range2:
+                st.metric("Entry Range High", f"{analysis.get('entry_range_high', 0):.5f}")
+            with col_range3:
+                st.metric("Ideal Entry", f"{analysis.get('best_entry', 0):.5f}")
+            
+            st.metric("Range Size", f"{analysis.get('range_size', 0):.1f}%")
+            
+            # Plot entry range jika available
+            if PLOTLY_AVAILABLE:
+                fig_range = plot_entry_range(analysis)
+                if fig_range:
+                    st.plotly_chart(fig_range, use_container_width=True)
 
-    # Tab 3: Custom Entry - DARI APP (1).PY
+    # Tab 3: Custom Entry - DARI APP (1).PY dengan Entry Range
     with tab3:
         st.subheader("🎯 Custom Entry")
         
@@ -592,7 +663,7 @@ def main_app():
         if st.button("🧮 Hitung TP/SL", key="calculate_custom"):
             if symbol_custom and entry_price_custom > 0:
                 with st.spinner("Menghitung..."):
-                    result = bot.calculate_custom_entry(symbol_custom, entry_price_custom)
+                    result = bot.calculate_custom_entry(symbol_custom, entry_price_custom, action_custom)
                     if result:
                         # Pastikan TP/SL berbeda dari entry price
                         if (result['tp1'] == result['tp2'] == result['tp3'] == result['sl'] == entry_price_custom):
@@ -653,6 +724,18 @@ def main_app():
                     risk_reward = (result['entry_price'] - result['tp1']) / (result['sl'] - result['entry_price'])
                 st.metric("📊 Risk/Reward", f"{risk_reward:.2f}")
             
+            # ✅ TAMBAHAN: ENTRY RANGE DETAILS
+            st.subheader("🎯 Entry Range Details")
+            col_range1, col_range2, col_range3 = st.columns(3)
+            with col_range1:
+                st.metric("Entry Range Low", f"{result.get('entry_range_low', 0):.5f}")
+            with col_range2:
+                st.metric("Entry Range High", f"{result.get('entry_range_high', 0):.5f}")
+            with col_range3:
+                st.metric("Best Entry", f"{result.get('best_entry', 0):.5f}")
+            
+            st.metric("Range Size", f"{result.get('range_size', 0):.1f}%")
+            
             # Tampilkan probabilitas TP
             if 'tp_probabilities' in result:
                 st.subheader("📊 Probabilitas TP")
@@ -664,6 +747,12 @@ def main_app():
                     st.metric("TP2 Probability", f"{probs.get('tp2', 0)*100:.1f}%")
                 with col_prob3:
                     st.metric("TP3 Probability", f"{probs.get('tp3', 0)*100:.1f}%")
+            
+            # Plot entry range jika available
+            if PLOTLY_AVAILABLE:
+                fig_range = plot_entry_range(result)
+                if fig_range:
+                    st.plotly_chart(fig_range, use_container_width=True)
             
             # Tombol untuk menambahkan ke posisi
             if st.button("✅ Tambahkan ke Posisi Aktif", key="add_custom"):
@@ -683,8 +772,8 @@ def main_app():
                     tp2=tp2,
                     tp3=tp3,
                     sl=result['sl'],
-                    entry_low=result['entry_price'] * 0.99,
-                    entry_high=result['entry_price'] * 1.01,
+                    entry_low=result.get('entry_range_low', result['entry_price'] * 0.99),
+                    entry_high=result.get('entry_range_high', result['entry_price'] * 1.01),
                 )
                 if position_id:
                     st.success(f"Posisi {result['symbol']} ditambahkan!")
@@ -715,6 +804,10 @@ def main_app():
                         tp2 = pos[8] if len(pos) > 8 else 0
                         tp3 = pos[9] if len(pos) > 9 else 0
                         sl = pos[10] if len(pos) > 10 else 0
+                        # ✅ TAMBAHAN: Ambil entry range dari database jika ada
+                        entry_low = pos[12] if len(pos) > 12 else entry_price * 0.99
+                        entry_high = pos[13] if len(pos) > 13 else entry_price * 1.01
+                        best_entry = (entry_low + entry_high) / 2
                     else:
                         symbol = safe_get(pos, 'symbol')
                         action = safe_get(pos, 'action')
@@ -724,6 +817,9 @@ def main_app():
                         tp2 = safe_get(pos, 'tp2', 0)
                         tp3 = safe_get(pos, 'tp3', 0)
                         sl = safe_get(pos, 'sl', 0)
+                        entry_low = safe_get(pos, 'entry_low', entry_price * 0.99)
+                        entry_high = safe_get(pos, 'entry_high', entry_price * 1.01)
+                        best_entry = safe_get(pos, 'best_entry', (entry_low + entry_high) / 2)
                     
                     # Calculate P/L
                     if action == "LONG":
@@ -743,6 +839,10 @@ def main_app():
                         st.write(f"**{symbol}** - {action}")
                         st.write(f"Entry: `{entry_price:.5f}` | Current: `{current_price:.5f}`")
                         st.write(f"P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
+                        
+                        # ✅ TAMBAHAN: Tampilkan Entry Range untuk posisi aktif
+                        st.write(f"📊 **Entry Range:** `{entry_low:.5f} - {entry_high:.5f}`")
+                        st.write(f"🎯 **Ideal Entry:** `{best_entry:.5f}`")
                     
                     with col2:
                         # Display TP levels dengan probabilitas
