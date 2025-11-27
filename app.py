@@ -353,7 +353,7 @@ def run_scheduler(bot):
         time.sleep(1)
 
 # ====================================
-# Main App - ENHANCED VERSION
+# Main App - FULLY FIXED VERSION
 # ====================================
 def main_app():
     st.title("🚀 TradingBot Pro - Enhanced Dashboard")
@@ -447,15 +447,21 @@ def main_app():
         if st.session_state.market_set:
             st.success(f"✅ Active: {st.session_state.current_market}")
         
-        # Refresh data
-        if st.button("🔄 Refresh Data", key="refresh_data"):
+        # Refresh data - 🔥 PERBAIKAN: Refresh yang benar-benar bekerja
+        if st.button("🔄 Refresh All Data", key="refresh_data"):
             try:
+                # Clear cache untuk memaksa refresh
+                if 'positions_data' in st.session_state:
+                    del st.session_state.positions_data
+                if 'history_data' in st.session_state:
+                    del st.session_state.history_data
+                    
                 st.session_state.positions_data = bot.get_active_positions()
                 st.session_state.history_data = bot.get_trade_history()
-                st.success("Data refreshed!")
+                st.success("✅ All data refreshed successfully!")
                 st.rerun()
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"❌ Refresh error: {e}")
 
     # Check if market is set
     if not st.session_state.market_set:
@@ -825,90 +831,183 @@ def main_app():
                 else:
                     st.error("Gagal tambah posisi.")
 
-    # Tab 4: Positions - ENHANCED
+    # 🔥 TAB 4: POSITIONS - FULLY FIXED VERSION
     with tab4:
-        st.subheader("Active Positions")
+        st.subheader("💼 Active Positions")
         
-        if st.button("🔄 Refresh Positions", key="refresh_positions"):
-            st.session_state.positions_data = bot.get_active_positions()
-            st.rerun()
+        # 🔥 PERBAIKAN: Refresh yang benar-benar bekerja
+        col_refresh, col_auto = st.columns([1, 3])
+        with col_refresh:
+            if st.button("🔄 Refresh Positions", key="refresh_positions", type="primary"):
+                try:
+                    # Clear cache untuk memaksa refresh
+                    if 'positions_data' in st.session_state:
+                        del st.session_state.positions_data
+                    st.session_state.positions_data = bot.get_active_positions()
+                    st.success("✅ Positions refreshed successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Refresh error: {e}")
+        
+        with col_auto:
+            auto_refresh_positions = st.checkbox("🔄 Auto-refresh every 15 seconds", value=False, key="auto_refresh_pos")
         
         if not st.session_state.positions_data:
-            st.info("No active positions")
+            st.info("📭 No active positions")
         else:
+            # 🔥 PERBAIKAN: Update semua positions dengan harga REAL-TIME
+            updated_positions = []
+            
             for pos in st.session_state.positions_data:
                 try:
+                    # 🔥 PERBAIKAN: Ambil data dengan benar dan update harga terkini
                     if isinstance(pos, tuple):
+                        position_id = pos[0]
                         symbol = pos[1]
                         action = pos[3]
-                        entry_price = pos[4]
-                        current_price = pos[11] if len(pos) > 11 else entry_price
-                        tp1 = pos[7] if len(pos) > 7 else 0
-                        tp2 = pos[8] if len(pos) > 8 else 0
-                        tp3 = pos[9] if len(pos) > 9 else 0
-                        sl = pos[10] if len(pos) > 10 else 0
-                        # ✅ TAMBAHAN: Ambil entry range dari database jika ada
-                        entry_low = pos[12] if len(pos) > 12 else entry_price * 0.99
-                        entry_high = pos[13] if len(pos) > 13 else entry_price * 1.01
-                        best_entry = (entry_low + entry_high) / 2
+                        entry_price = float(pos[4])
+                        
+                        # 🔥 PERBAIKAN: Ambil harga REAL-TIME, bukan dari database
+                        try:
+                            ticker = bot.data_provider.get_ticker(symbol)
+                            if ticker and 'last' in ticker:
+                                current_price = float(ticker['last'])
+                            else:
+                                current_price = entry_price
+                        except Exception as ticker_error:
+                            current_price = entry_price
+                        
+                        tp1 = float(pos[7]) if len(pos) > 7 and pos[7] else 0
+                        tp2 = float(pos[8]) if len(pos) > 8 and pos[8] else 0
+                        tp3 = float(pos[9]) if len(pos) > 9 and pos[9] else 0
+                        sl = float(pos[10]) if len(pos) > 10 and pos[10] else 0
+                        
+                        # 🔥 PERBAIKAN: Validasi Entry Range yang REALISTIS
+                        entry_low = float(pos[12]) if len(pos) > 12 and pos[12] else 0
+                        entry_high = float(pos[13]) if len(pos) > 13 and pos[13] else 0
+                        
                     else:
+                        position_id = safe_get(pos, 'id')
                         symbol = safe_get(pos, 'symbol')
                         action = safe_get(pos, 'action')
-                        entry_price = safe_get(pos, 'entry_price')
-                        current_price = safe_get(pos, 'current_price', entry_price)
-                        tp1 = safe_get(pos, 'tp1', 0)
-                        tp2 = safe_get(pos, 'tp2', 0)
-                        tp3 = safe_get(pos, 'tp3', 0)
-                        sl = safe_get(pos, 'sl', 0)
-                        entry_low = safe_get(pos, 'entry_low', entry_price * 0.99)
-                        entry_high = safe_get(pos, 'entry_high', entry_price * 1.01)
-                        best_entry = safe_get(pos, 'best_entry', (entry_low + entry_high) / 2)
+                        entry_price = float(safe_get(pos, 'entry_price'))
+                        
+                        # 🔥 PERBAIKAN: Ambil harga REAL-TIME
+                        try:
+                            ticker = bot.data_provider.get_ticker(symbol)
+                            if ticker and 'last' in ticker:
+                                current_price = float(ticker['last'])
+                            else:
+                                current_price = entry_price
+                        except Exception as ticker_error:
+                            current_price = entry_price
+                        
+                        tp1 = float(safe_get(pos, 'tp1', 0))
+                        tp2 = float(safe_get(pos, 'tp2', 0))
+                        tp3 = float(safe_get(pos, 'tp3', 0))
+                        sl = float(safe_get(pos, 'sl', 0))
+                        
+                        # Validasi Entry Range
+                        entry_low = float(safe_get(pos, 'entry_low', 0))
+                        entry_high = float(safe_get(pos, 'entry_high', 0))
                     
-                    # Calculate P/L
+                    # 🔥 PERBAIKAN: Jika entry range tidak valid, hitung ulang
+                    if entry_low <= 0 or entry_high <= 0 or entry_low == entry_high:
+                        if action == "LONG":
+                            entry_low = entry_price * 0.99
+                            entry_high = entry_price * 0.995
+                        else:  # SHORT
+                            entry_low = entry_price * 1.005
+                            entry_high = entry_price * 1.01
+                    
+                    best_entry = (entry_low + entry_high) / 2
+                    
+                    # 🔥 PERBAIKAN: Hitung P/L dengan harga TERKINI
                     if action == "LONG":
                         pl_pct = ((current_price - entry_price) / entry_price) * 100
+                        pl_emoji = "📈" if pl_pct >= 0 else "📉"
                     else:
                         pl_pct = ((entry_price - current_price) / entry_price) * 100
+                        pl_emoji = "📈" if pl_pct >= 0 else "📉"
                     
                     pl_color = "green" if pl_pct >= 0 else "red"
                     
-                    # Hitung probabilitas TP untuk posisi aktif
+                    # Hitung probabilitas TP dengan harga TERKINI
                     tp_probabilities = calculate_tp_probability(
                         current_price, tp1, tp2, tp3, sl, action
                     )
                     
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    with col1:
-                        st.write(f"**{symbol}** - {action}")
-                        st.write(f"Entry: `{entry_price:.5f}` | Current: `{current_price:.5f}`")
-                        st.write(f"P/L: <span style='color:{pl_color}'>{pl_pct:.2f}%</span>", unsafe_allow_html=True)
+                    # Tampilkan position card
+                    with st.container():
+                        col1, col2, col3 = st.columns([3, 2, 1])
                         
-                        # ✅ TAMBAHAN: Tampilkan Entry Range untuk posisi aktif
-                        st.write(f"📊 **Entry Range:** `{entry_low:.5f} - {entry_high:.5f}`")
-                        st.write(f"🎯 **Ideal Entry:** `{best_entry:.5f}`")
+                        with col1:
+                            st.write(f"**{symbol}** - {action} {pl_emoji}")
+                            st.write(f"🏁 Entry: `{entry_price:.5f}`")
+                            st.write(f"📊 Current: `{current_price:.5f}`")
+                            st.write(f"💰 P/L: <span style='color:{pl_color}; font-weight:bold'>{pl_pct:+.2f}%</span>", unsafe_allow_html=True)
+                            
+                            # 🔥 PERBAIKAN: Tampilkan Entry Range yang VALID
+                            st.write(f"🎯 **Entry Range:** `{entry_low:.5f} - {entry_high:.5f}`")
+                            st.write(f"⭐ **Ideal Entry:** `{best_entry:.5f}`")
+                        
+                        with col2:
+                            # Display TP levels dengan probabilitas
+                            st.write(f"🎯 **TP1:** `{tp1:.5f}` ({tp_probabilities.get('tp1', 0)*100:.1f}%)")
+                            st.write(f"🎯 **TP2:** `{tp2:.5f}` ({tp_probabilities.get('tp2', 0)*100:.1f}%)")
+                            st.write(f"🎯 **TP3:** `{tp3:.5f}` ({tp_probabilities.get('tp3', 0)*100:.1f}%)")
+                            st.write(f"🛑 **SL:** `{sl:.5f}`")
+                        
+                        with col3:
+                            # 🔥 PERBAIKAN: Tombol Close yang BEKERJA
+                            close_key = f"close_{position_id}_{symbol}"
+                            if st.button("❌ Close", key=close_key, type="secondary"):
+                                try:
+                                    # Gunakan harga current untuk close
+                                    success = bot.close_position(position_id, current_price)
+                                    if success:
+                                        st.success(f"✅ {symbol} position closed at {current_price:.5f}!")
+                                        # Refresh data
+                                        time.sleep(1)
+                                        st.session_state.positions_data = bot.get_active_positions()
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ Failed to close {symbol}")
+                                except Exception as close_error:
+                                    st.error(f"❌ Close error: {close_error}")
                     
-                    with col2:
-                        # Display TP levels dengan probabilitas
-                        st.write(f"🎯 TP1: `{tp1:.5f}` ({tp_probabilities.get('tp1', 0)*100:.1f}%)")
-                        st.write(f"🎯 TP2: `{tp2:.5f}` ({tp_probabilities.get('tp2', 0)*100:.1f}%)")
-                        st.write(f"🎯 TP3: `{tp3:.5f}` ({tp_probabilities.get('tp3', 0)*100:.1f}%)")
-                        st.write(f"🛑 SL: `{sl:.5f}`")
+                    st.markdown("---")
                     
-                    with col3:
-                        if st.button("Close", key=f"close_{symbol}"):
-                            try:
-                                if bot.close_position(safe_get(pos, 'id', 0), current_price):
-                                    st.success("Position closed!")
-                                    st.session_state.positions_data = bot.get_active_positions()
-                                    st.rerun()
-                            except Exception as e:
-                                st.error(f"Close error: {e}")
+                    # Simpan posisi yang sudah di-update
+                    updated_positions.append({
+                        'id': position_id,
+                        'symbol': symbol,
+                        'action': action,
+                        'entry_price': entry_price,
+                        'current_price': current_price,
+                        'tp1': tp1,
+                        'tp2': tp2,
+                        'tp3': tp3,
+                        'sl': sl,
+                        'entry_low': entry_low,
+                        'entry_high': entry_high,
+                        'best_entry': best_entry
+                    })
+                    
                 except Exception as e:
-                    st.error(f"Position error: {e}")
+                    st.error(f"❌ Position error for {safe_get(pos, 'symbol', 'unknown')}: {str(e)}")
+            
+            # 🔥 PERBAIKAN: Simpan posisi yang sudah di-update ke session state
+            st.session_state.positions_data = updated_positions
+            
+            # Auto-refresh jika diaktifkan
+            if auto_refresh_positions:
+                time.sleep(15)
+                st.rerun()
 
     # Tab 5: History - SAMA SEBELUMNYA
     with tab5:
-        st.subheader("Trade History")
+        st.subheader("📈 Trade History")
         
         if st.button("🔄 Refresh History", key="refresh_history"):
             st.session_state.history_data = bot.get_trade_history()
@@ -942,47 +1041,104 @@ def main_app():
                 except Exception as e:
                     st.error(f"History error: {e}")
 
-    # Tab 6: Live Scanner - DARI APP (1).PY
+    # 🔥 TAB 6: LIVE SCANNER - FULLY FIXED VERSION
     with tab6:
         st.subheader("📡 Live Scanner")
         
-        if st.button("🚀 Mulai Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Hentikan Live Monitoring"):
-            st.session_state.live_monitoring = not st.session_state.live_monitoring
-            st.rerun()
+        # 🔥 PERBAIKAN: State management yang lebih baik
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            if st.button("🚀 Mulai Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Hentikan Live Monitoring", 
+                        key="toggle_live", type="primary"):
+                st.session_state.live_monitoring = not st.session_state.live_monitoring
+                if st.session_state.live_monitoring:
+                    st.success("📡 Live monitoring started!")
+                else:
+                    st.info("⏹️ Live monitoring stopped")
+                st.rerun()
+        
+        with col2:
+            auto_refresh_live = st.checkbox("🔄 Auto Refresh setiap 10 detik", value=True, key="auto_refresh_live")
         
         if st.session_state.live_monitoring:
-            st.info("📡 Live monitoring aktif. Harga akan diperbarui setiap 30 detik.")
+            st.info("📡 Live monitoring aktif. Harga real-time akan ditampilkan.")
+            
+            # Refresh manual
+            if st.button("🔄 Refresh Sekarang", key="manual_refresh_live"):
+                st.rerun()
             
             if st.session_state.positions_data:
-                st.subheader("📊 Posisi Aktif - Live")
-                for pos in st.session_state.positions_data:
-                    symbol = safe_get(pos, 'symbol')
-                    if not symbol:
-                        continue
-                    entry_price = safe_get(pos, 'entry_price')
-                    current_price = safe_get(pos, 'current_price', entry_price)
-                    
-                    ticker = bot.data_provider.get_ticker(symbol)
-                    if ticker and 'last' in ticker:
-                        latest_price = ticker['last']
-                        price_change = ((latest_price - current_price) / current_price) * 100
-                        total_change = ((latest_price - entry_price) / entry_price) * 100
-                        
-                        color = "green" if price_change >= 0 else "red"
-                        total_color = "green" if total_change >= 0 else "red"
-                        
-                        st.write(f"**{symbol}**")
-                        st.write(f"📊 Current: `{current_price:.5f}` → Live: `{latest_price:.5f}`")
-                        st.write(f"📈 Change: <span style='color:{color}'>{price_change:+.2f}%</span>", unsafe_allow_html=True)
-                        st.write(f"💰 Total P/L: <span style='color:{total_color}'>{total_change:+.2f}%</span>", unsafe_allow_html=True)
-                        st.markdown("---")
-            
-            st_auto_refresh = st.checkbox("🔄 Auto Refresh (30s)")
-            if st_auto_refresh:
-                time.sleep(30)
-                st.rerun()
+                st.subheader("📊 Posisi Aktif - Live Prices")
                 
-            if st.button("🔄 Refresh Sekarang"):
+                # 🔥 PERBAIKAN: Update SEMUA posisi dengan harga real-time
+                live_updated_positions = []
+                
+                for pos in st.session_state.positions_data:
+                    try:
+                        symbol = safe_get(pos, 'symbol')
+                        if not symbol:
+                            continue
+                        
+                        # Dapatkan harga real-time
+                        ticker = bot.data_provider.get_ticker(symbol)
+                        if ticker and 'last' in ticker:
+                            latest_price = float(ticker['last'])
+                            entry_price = float(safe_get(pos, 'entry_price'))
+                            action = safe_get(pos, 'action')
+                            
+                            # Update posisi dengan harga terbaru
+                            pos_dict = {
+                                'id': safe_get(pos, 'id'),
+                                'symbol': symbol,
+                                'action': action,
+                                'entry_price': entry_price,
+                                'current_price': latest_price,
+                                'tp1': float(safe_get(pos, 'tp1', 0)),
+                                'tp2': float(safe_get(pos, 'tp2', 0)),
+                                'tp3': float(safe_get(pos, 'tp3', 0)),
+                                'sl': float(safe_get(pos, 'sl', 0))
+                            }
+                            
+                            live_updated_positions.append(pos_dict)
+                            
+                            # Hitung perubahan
+                            if action == "LONG":
+                                change_pct = ((latest_price - entry_price) / entry_price) * 100
+                            else:
+                                change_pct = ((entry_price - latest_price) / entry_price) * 100
+                            
+                            color = "green" if change_pct >= 0 else "red"
+                            emoji = "📈" if change_pct >= 0 else "📉"
+                            
+                            # Tampilkan data live
+                            col_live1, col_live2, col_live3 = st.columns([2, 2, 1])
+                            with col_live1:
+                                st.write(f"**{symbol}** - {action}")
+                                st.write(f"🏁 Entry: `{entry_price:.5f}`")
+                            with col_live2:
+                                st.write(f"{emoji} Live: `{latest_price:.5f}`")
+                                st.write(f"💰 Change: <span style='color:{color}; font-weight:bold'>{change_pct:+.2f}%</span>", unsafe_allow_html=True)
+                            with col_live3:
+                                if st.button("🔄", key=f"refresh_live_{symbol}"):
+                                    st.rerun()
+                            
+                            st.markdown("---")
+                        else:
+                            st.warning(f"⚠️ Tidak dapat mengambil data live untuk {symbol}")
+                            
+                    except Exception as e:
+                        st.error(f"❌ Error updating {symbol}: {str(e)}")
+                
+                # 🔥 PERBAIKAN: Update session state dengan data live
+                st.session_state.positions_data = live_updated_positions
+                
+            else:
+                st.info("📭 Tidak ada posisi aktif untuk di-monitor")
+            
+            # 🔥 PERBAIKAN: Auto-refresh menggunakan time.sleep
+            if auto_refresh_live:
+                with st.spinner("Memperbarui data..."):
+                    time.sleep(10)  # Refresh setiap 10 detik
                 st.rerun()
                 
         else:
