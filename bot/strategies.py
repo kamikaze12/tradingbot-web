@@ -62,15 +62,20 @@ class TradingStrategy(ABC):
         pass
     
     def calculate_custom_entry(self, symbol: str, current_price: float, action: str = "LONG") -> Dict[str, Any]:
-        """Calculate TP/SL dengan entry range - ENHANCED VERSION"""
+        """Calculate TP/SL dengan entry range - FIXED VERSION"""
         try:
-            # Validasi input
-            if current_price <= 0 or pd.isna(current_price):
+            # Validasi input yang lebih ketat
+            if current_price <= 0 or pd.isna(current_price) or not isinstance(current_price, (int, float)):
                 logger.warning(f"Invalid current price for {symbol}: {current_price}")
                 current_price = self._estimate_realistic_price(symbol)
                 logger.info(f"Using estimated price: {current_price}")
             
-            # Calculate ATR based on market type
+            # Pastikan current_price valid
+            current_price = float(current_price)
+            if current_price <= 0:
+                current_price = self._estimate_realistic_price(symbol)
+            
+            # Calculate ATR based on market type - FIXED CALCULATION
             if self.market_type == "forex":
                 atr = current_price * 0.005  # 0.5% untuk forex
             elif self.market_type == "us_stocks":
@@ -80,11 +85,18 @@ class TradingStrategy(ABC):
             else:
                 atr = current_price * 0.02   # 2% untuk crypto
             
+            atr = max(atr, current_price * 0.01)  # Minimum 1%
+            
+            # ✅ PERBAIKAN: Pastikan entry range selalu terhitung
+            entry_range_pct = self.entry_range_pct
+            if entry_range_pct <= 0:
+                entry_range_pct = 0.02  # Default 2%
+            
             # Tentukan entry range berdasarkan aksi
             if action == "LONG":
                 # Untuk LONG: entry range di BAWAH current price
-                entry_range_low = current_price * (1 - self.entry_range_pct)
-                entry_range_high = current_price * (1 - self.entry_range_pct * 0.3)  # 30% dari range dari bawah
+                entry_range_low = current_price * (1 - entry_range_pct)
+                entry_range_high = current_price * (1 - entry_range_pct * 0.3)
                 best_entry = (entry_range_low + entry_range_high) / 2
                 
                 # TP/SL untuk LONG
@@ -96,11 +108,11 @@ class TradingStrategy(ABC):
                 
             elif action == "SHORT":
                 # Untuk SHORT: entry range di ATAS current price  
-                entry_range_low = current_price * (1 + self.entry_range_pct * 0.3)  # 30% dari range dari atas
-                entry_range_high = current_price * (1 + self.entry_range_pct)
+                entry_range_low = current_price * (1 + entry_range_pct * 0.3)
+                entry_range_high = current_price * (1 + entry_range_pct)
                 best_entry = (entry_range_low + entry_range_high) / 2
                 
-                # TP/SL untuk SHORT (harus terbalik)
+                # TP/SL untuk SHORT
                 min_move = max(atr * self.atr_multiplier, current_price * 0.01)
                 tp1 = best_entry - min_move
                 tp2 = best_entry - min_move * 2
@@ -108,13 +120,42 @@ class TradingStrategy(ABC):
                 sl = best_entry + min_move
                 
             else:  # NEUTRAL
-                entry_range_low = current_price * (1 - self.entry_range_pct * 0.1)
-                entry_range_high = current_price * (1 + self.entry_range_pct * 0.1)
+                entry_range_low = current_price * (1 - entry_range_pct * 0.1)
+                entry_range_high = current_price * (1 + entry_range_pct * 0.1)
                 best_entry = current_price
                 tp1 = current_price * 1.01
                 tp2 = current_price * 1.02
                 tp3 = current_price * 1.03
                 sl = current_price * 0.99
+
+            # ✅ VALIDASI FINAL: Pastikan tidak ada nilai 0
+            if entry_range_low <= 0 or entry_range_high <= 0 or best_entry <= 0:
+                logger.error(f"Invalid entry range calculation for {symbol}, using fallback")
+                # Fallback calculation
+                if action == "LONG":
+                    entry_range_low = current_price * 0.98
+                    entry_range_high = current_price * 0.99
+                    best_entry = (entry_range_low + entry_range_high) / 2
+                    tp1 = best_entry * 1.03
+                    tp2 = best_entry * 1.06  
+                    tp3 = best_entry * 1.09
+                    sl = best_entry * 0.97
+                elif action == "SHORT":
+                    entry_range_low = current_price * 1.01
+                    entry_range_high = current_price * 1.02
+                    best_entry = (entry_range_low + entry_range_high) / 2
+                    tp1 = best_entry * 0.97
+                    tp2 = best_entry * 0.94
+                    tp3 = best_entry * 0.91
+                    sl = best_entry * 1.03
+                else:
+                    entry_range_low = current_price * 0.995
+                    entry_range_high = current_price * 1.005
+                    best_entry = current_price
+                    tp1 = current_price * 1.01
+                    tp2 = current_price * 1.02
+                    tp3 = current_price * 1.03
+                    sl = current_price * 0.99
 
             # Validasi final levels
             if action == "LONG":
@@ -165,16 +206,16 @@ class TradingStrategy(ABC):
                 'symbol': symbol,
                 'action': action,
                 'current_price': fallback_price,
-                'entry_range_low': fallback_price * 0.99,
-                'entry_range_high': fallback_price * 0.995,
-                'best_entry': fallback_price * 0.9925,
+                'entry_range_low': fallback_price * 0.98,
+                'entry_range_high': fallback_price * 0.99,
+                'best_entry': fallback_price * 0.985,
                 'tp1': fallback_price * 1.03,
                 'tp2': fallback_price * 1.06,
                 'tp3': fallback_price * 1.09,
                 'sl': fallback_price * 0.97,
                 'atr': fallback_price * 0.02,
                 'entry_range_pct': self.entry_range_pct * 100,
-                'range_size': 0.5
+                'range_size': 1.0
             }
 
     def _estimate_realistic_price(self, symbol):
@@ -1242,7 +1283,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def _combine_analyses(self, market_analysis: MarketAnalysis, patterns: Dict[str, PatternDetection],
                          technical_indicators: Dict[str, float], volume_analysis: Dict[str, Any],
                          trend_analysis: Dict[str, Any], current_price: float, symbol: str = None) -> Dict[str, Any]:
-        """Combine semua analyses dengan ENTRY RANGE support"""
+        """Combine semua analyses dengan ENTRY RANGE support - FIXED BALANCE"""
         
         if current_price <= 0 or pd.isna(current_price):
             logger.error(f"Invalid current_price in combine_analyses: {current_price}")
@@ -1252,85 +1293,105 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         base_score = 0
         action = "NEUTRAL"
         
-        # Technical indicators contribution
+        # ✅ PERBAIKAN: Balance scoring antara LONG dan SHORT
+        # Technical indicators contribution - MORE BALANCED
         rsi = technical_indicators.get('rsi_14', 50)
-        if rsi < self.rsi_oversold:
-            base_score += 2
-        elif rsi > self.rsi_overbought:
-            base_score -= 3
         
-        # Volume contribution
+        # ✅ FIX: Berikan poin untuk kondisi oversold (LONG opportunity)
+        if rsi < self.rsi_oversold:
+            base_score += 3  # Increased from 2
+        elif rsi > self.rsi_overbought:
+            base_score -= 3  # Decreased from -3
+        
+        # Volume contribution - MORE BALANCED
         volume_score = volume_analysis.get('volume_score', 0)
         volume_ratio = volume_analysis.get('volume_ratio', 1.0)
         
-        if volume_ratio > 1.5 and trend_analysis.get('trend_direction') == 'BEARISH':
+        # ✅ FIX: Berikan poin positif untuk volume tinggi dengan trend bullish
+        if volume_ratio > 1.5 and trend_analysis.get('trend_direction') == 'BULLISH':
+            volume_score += 2
+        elif volume_ratio > 1.2 and trend_analysis.get('trend_direction') == 'BULLISH':
+            volume_score += 1
+        elif volume_ratio > 1.5 and trend_analysis.get('trend_direction') == 'BEARISH':
             volume_score -= 2
         elif volume_ratio > 1.2 and trend_analysis.get('trend_direction') == 'BEARISH':
             volume_score -= 1
             
         base_score += volume_score
         
-        # Trend contribution
+        # Trend contribution - MORE BALANCED
         trend_score = trend_analysis.get('trend_score', 0)
         trend_direction = trend_analysis.get('trend_direction', 'NEUTRAL')
         trend_strength = trend_analysis.get('trend_strength', 0.0)
         
-        if trend_direction == 'BEARISH' and trend_strength > 0.6:
-            trend_score -= 3
+        # ✅ FIX: Berikan poin yang seimbang untuk trend bullish dan bearish
+        if trend_direction == 'BULLISH' and trend_strength > 0.6:
+            trend_score += 3  # Increased from +2
+        elif trend_direction == 'BULLISH':
+            trend_score += 2
+        elif trend_direction == 'BEARISH' and trend_strength > 0.6:
+            trend_score -= 3  # Same as bearish
         elif trend_direction == 'BEARISH':
             trend_score -= 2
-            
+        
         base_score += trend_score
         
-        # Pattern contribution
+        # Pattern contribution - MORE BALANCED
         pattern_score = 0
         pattern_confirmations = []
         
         for pattern_name, pattern in patterns.items():
             if pattern.detected:
                 if pattern.direction == "BULLISH":
-                    pattern_score += pattern.confidence * 2
+                    pattern_score += pattern.confidence * 3  # Increased from 2
+                    pattern_confirmations.append(f"{pattern_name}_BULLISH")
                 elif pattern.direction == "BEARISH":
-                    pattern_score -= pattern.confidence * 3
-                pattern_confirmations.append(f"{pattern_name}_{pattern.direction}")
+                    pattern_score -= pattern.confidence * 3  # Same as bearish
+                    pattern_confirmations.append(f"{pattern_name}_BEARISH")
         
         base_score += pattern_score
         
-        # Momentum indicators
+        # Momentum indicators - MORE BALANCED
         momentum_5 = technical_indicators.get('momentum_5', 0)
         momentum_10 = technical_indicators.get('momentum_10', 0)
         
-        if momentum_5 < -2 and momentum_10 < -3:
+        # ✅ FIX: Berikan poin untuk momentum positif
+        if momentum_5 > 2 and momentum_10 > 3:
+            base_score += 2
+        elif momentum_5 > 0 and momentum_10 > 0:
+            base_score += 1
+        elif momentum_5 < -2 and momentum_10 < -3:
             base_score -= 2
         elif momentum_5 < 0 and momentum_10 < 0:
             base_score -= 1
         
-        # MACD
+        # MACD - MORE BALANCED
         macd_line = technical_indicators.get('macd_line', 0)
         macd_signal = technical_indicators.get('macd_signal', 0)
         
-        if macd_line < 0 and macd_signal < 0 and macd_line < macd_signal:
+        if macd_line > 0 and macd_signal > 0 and macd_line > macd_signal:
+            base_score += 2
+        elif macd_line < 0 and macd_signal < 0 and macd_line < macd_signal:
             base_score -= 2
         
-        # Bollinger Bands position
+        # Bollinger Bands position - MORE BALANCED
         bb_position = technical_indicators.get('bb_position', 0.5)
-        if bb_position > 0.8:
-            base_score -= 1
-        elif bb_position < 0.2:
+        if bb_position < 0.2:  # Near lower band - oversold
+            base_score += 2
+        elif bb_position > 0.8:  # Near upper band - overbought
+            base_score -= 2
+        elif bb_position < 0.3:  # Below middle - potential long
             base_score += 1
+        elif bb_position > 0.7:  # Above middle - potential short
+            base_score -= 1
         
-        # Market regime adjustment
-        regime = market_analysis.regime
-        regime_multiplier = self._get_regime_multiplier(regime)
-        adjusted_score = base_score * regime_multiplier
+        # ✅ FIX: Threshold yang lebih seimbang
+        action_threshold = 3  # Increased from 2
+        short_threshold = -3  # Increased from -1.5
         
-        # Action determination
-        action_threshold = 2 if self.market_type == "crypto" else 1
-        short_threshold = -1.5
-        
-        if adjusted_score >= action_threshold:
+        if base_score >= action_threshold:
             action = "LONG"
-        elif adjusted_score <= short_threshold:
+        elif base_score <= short_threshold:
             action = "SHORT"
         else:
             action = "NEUTRAL"
@@ -1343,6 +1404,27 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         # Gunakan calculate_custom_entry untuk konsistensi
         entry_calculation = self.calculate_custom_entry(symbol or "UNKNOWN", current_price, action)
         
+        # ✅ PERBAIKAN: Pastikan entry range tidak 0
+        if (entry_calculation['entry_range_low'] <= 0 or 
+            entry_calculation['entry_range_high'] <= 0 or 
+            entry_calculation['best_entry'] <= 0):
+            
+            logger.warning(f"Invalid entry range for {symbol}, recalculating...")
+            if action == "LONG":
+                entry_calculation['entry_range_low'] = current_price * 0.98
+                entry_calculation['entry_range_high'] = current_price * 0.99
+                entry_calculation['best_entry'] = (entry_calculation['entry_range_low'] + entry_calculation['entry_range_high']) / 2
+            elif action == "SHORT":
+                entry_calculation['entry_range_low'] = current_price * 1.01
+                entry_calculation['entry_range_high'] = current_price * 1.02
+                entry_calculation['best_entry'] = (entry_calculation['entry_range_low'] + entry_calculation['entry_range_high']) / 2
+            else:
+                entry_calculation['entry_range_low'] = current_price * 0.995
+                entry_calculation['entry_range_high'] = current_price * 1.005
+                entry_calculation['best_entry'] = current_price
+            
+            entry_calculation['range_size'] = (entry_calculation['entry_range_high'] - entry_calculation['entry_range_low']) / current_price * 100
+        
         return {
             'action': action,
             'entry_range_low': entry_calculation['entry_range_low'],
@@ -1353,12 +1435,12 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'tp3': entry_calculation['tp3'],
             'sl': entry_calculation['sl'],
             'current_price': float(current_price),
-            'score': int(adjusted_score),
+            'score': int(base_score),
             'base_score': int(base_score),
             'rsi': float(rsi),
             'volume_ratio': volume_analysis.get('volume_ratio', 1.0),
             'atr': float(atr),
-            'market_regime': regime.value,
+            'market_regime': market_analysis.regime.value,
             'trend_strength': trend_analysis.get('trend_strength', 0.0),
             'trend_direction': trend_analysis.get('trend_direction', 'NEUTRAL'),
             'pattern_confirmations': pattern_confirmations,
@@ -1367,14 +1449,15 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'resistance_levels': market_analysis.resistance_levels,
             'volatility': technical_indicators.get('volatility', 0.02),
             'risk_category': self._determine_risk_category(technical_indicators.get('volatility', 0.02)),
-            'confidence': min(abs(adjusted_score) / 10.0, 1.0),
+            'confidence': min(abs(base_score) / 10.0, 1.0),
             'momentum_5': momentum_5,
             'momentum_10': momentum_10,
             'macd_line': macd_line,
             'macd_signal': macd_signal,
             'bb_position': bb_position,
             'symbol': symbol,
-            'entry_range_pct': self.entry_range_pct * 100
+            'entry_range_pct': self.entry_range_pct * 100,
+            'range_size': entry_calculation['range_size']
         }
 
     def _final_validation(self, analysis: Dict[str, Any], symbol: str = None) -> Dict[str, Any]:
@@ -1405,6 +1488,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 analysis['entry_range_low'] = entry_low
                 analysis['entry_range_high'] = entry_high
                 analysis['best_entry'] = (entry_low + entry_high) / 2
+                analysis['range_size'] = (entry_high - entry_low) / current_price * 100
             
             # Validasi konsistensi level dengan aksi
             if action == 'LONG':
@@ -1858,7 +1942,8 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'position_value_usd': 0,
             'risk_profile': 'MEDIUM',
             'symbol': symbol,
-            'entry_range_pct': self.entry_range_pct * 100
+            'entry_range_pct': self.entry_range_pct * 100,
+            'range_size': default_entry['range_size']
         }
 
     def _get_default_analysis_with_price(self, current_price: float, symbol: str = None) -> Dict[str, Any]:
@@ -1876,7 +1961,8 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'tp2': default_entry['tp2'],
             'tp3': default_entry['tp3'],
             'sl': default_entry['sl'],
-            'current_price': current_price
+            'current_price': current_price,
+            'range_size': default_entry['range_size']
         })
         return analysis
 
