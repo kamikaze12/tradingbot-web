@@ -21,7 +21,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)  # FIXED: Removed extra .getLogger
+logger = logging.getLogger(__name__)
 
 class TradeType(Enum):
     LONG = "LONG"
@@ -72,17 +72,27 @@ class DatabaseHandler:
         self.connection_pool = {}
         self.max_pool_size = 5
         
-        # Initialize performance monitoring FIRST
+        # Initialize performance monitoring
         self.query_count = 0
         self.error_count = 0
         self.last_cleanup = datetime.now()
         
-        # Then initialize database
+        # Initialize database
         self._initialize_database()
         self.create_enhanced_tables()
         
-        # Run migration to ensure all columns exist
-        self.migrate_positions_table()
+        # Run migrations - FIXED: Tidak menggunakan __init__ untuk migrasi
+        self._run_migrations()
+
+    def _run_migrations(self):
+        """Run all necessary database migrations"""
+        try:
+            self.migrate_positions_table()
+            self.migrate_trade_history_table()
+            logger.info("✅ All database migrations completed successfully")
+        except Exception as e:
+            logger.error(f"❌ Database migrations failed: {e}")
+            # Jangan hentikan eksekusi jika migrasi gagal
 
     # =========================================================
     # ENHANCED CONNECTION MANAGEMENT
@@ -91,7 +101,6 @@ class DatabaseHandler:
     def _initialize_database(self):
         """Initialize database dengan connection pool"""
         try:
-            # Test connection dan create database jika tidak ada
             conn_params = self._get_connection_params()
             if not conn_params:
                 logger.error("No database configuration found")
@@ -104,7 +113,7 @@ class DatabaseHandler:
             
         except Exception as e:
             logger.error(f"❌ Database initialization failed: {e}")
-            self.error_count += 1  # Track error
+            self.error_count += 1
             if hasattr(st, 'error'):
                 st.error(f"Database initialization failed: {e}")
 
@@ -152,7 +161,6 @@ class DatabaseHandler:
 
     def _get_connection_params(self):
         """Enhanced connection parameters dengan fallback options"""
-        # Default values
         params = {
             'dbname': 'postgres',
             'user': 'postgres',
@@ -172,7 +180,6 @@ class DatabaseHandler:
             if hasattr(st, 'secrets'):
                 secrets = st.secrets
                
-                # Check individual parameters first
                 if all(key in secrets for key in ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME']):
                     params.update({
                         'host': secrets['DB_HOST'],
@@ -183,7 +190,6 @@ class DatabaseHandler:
                     })
                     return params
                
-                # Check database section
                 if 'database' in secrets:
                     db_config = secrets['database']
                     if all(key in db_config for key in ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME']):
@@ -234,7 +240,6 @@ class DatabaseHandler:
                 self.thread_local.conn.close()
                 del self.thread_local.conn
                 
-            # Close any other connections in pool
             for thread_id, conn in list(self.connection_pool.items()):
                 try:
                     conn.close()
@@ -247,7 +252,7 @@ class DatabaseHandler:
             logger.error(f"Error closing connections: {e}")
 
     # =========================================================
-    # AUTO-MIGRATION FOR MISSING COLUMNS
+    # AUTO-MIGRATION FOR MISSING COLUMNS - ENHANCED
     # =========================================================
     
     def migrate_positions_table(self):
@@ -256,7 +261,6 @@ class DatabaseHandler:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # List of columns to check and add if missing
                 columns_to_add = [
                     ('position_size', 'REAL DEFAULT 0.0'),
                     ('trailing_stop', 'REAL'),
@@ -272,7 +276,6 @@ class DatabaseHandler:
                 
                 for column_name, column_type in columns_to_add:
                     try:
-                        # Check if column exists
                         cursor.execute("""
                             SELECT column_name 
                             FROM information_schema.columns 
@@ -296,6 +299,50 @@ class DatabaseHandler:
         except Exception as e:
             logger.error(f"Error during positions table migration: {e}")
 
+    def migrate_trade_history_table(self):
+        """Automatically migrate trade_history table if columns are missing"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                columns_to_add = [
+                    ('position_size', 'REAL NOT NULL DEFAULT 0.0'),
+                    ('profit_loss_percent', 'REAL'),
+                    ('commission', 'REAL DEFAULT 0'),
+                    ('slippage', 'REAL DEFAULT 0'),
+                    ('type', 'TEXT'),
+                    ('duration_minutes', 'INTEGER'),
+                    ('risk_reward_ratio', 'REAL'),
+                    ('position_score', 'INTEGER'),
+                    ('exit_reason', 'TEXT'),
+                    ('strategy_version', 'TEXT DEFAULT \'v2.0\'')
+                ]
+                
+                for column_name, column_type in columns_to_add:
+                    try:
+                        cursor.execute("""
+                            SELECT column_name 
+                            FROM information_schema.columns 
+                            WHERE table_name='trade_history' AND column_name=%s
+                        """, (column_name,))
+                        
+                        if not cursor.fetchone():
+                            logger.info(f"Adding missing column '{column_name}' to trade_history table")
+                            cursor.execute(f"ALTER TABLE trade_history ADD COLUMN {column_name} {column_type}")
+                            conn.commit()
+                            logger.info(f"✅ Successfully added column '{column_name}' to trade_history")
+                            
+                    except Exception as e:
+                        logger.warning(f"Could not add column '{column_name}' to trade_history: {e}")
+                        conn.rollback()
+                        continue
+                
+                cursor.close()
+                logger.info("✅ Trade_history table migration completed")
+                
+        except Exception as e:
+            logger.error(f"Error during trade_history table migration: {e}")
+
     # =========================================================
     # ENHANCED TABLE SCHEMA
     # =========================================================
@@ -305,9 +352,6 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                # Drop tables jika perlu reset (comment out in production)
-                # self._drop_tables(cursor)
-                
                 # Table: signals (enhanced)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS signals (
@@ -400,7 +444,7 @@ class DatabaseHandler:
                     )
                 """)
                 
-                # Table: portfolio_allocations (NEW)
+                # Table: portfolio_allocations
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS portfolio_allocations (
                         id SERIAL PRIMARY KEY,
@@ -416,7 +460,7 @@ class DatabaseHandler:
                     )
                 """)
                 
-                # Table: backtest_results (NEW)
+                # Table: backtest_results
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS backtest_results (
                         id SERIAL PRIMARY KEY,
@@ -439,7 +483,7 @@ class DatabaseHandler:
                     )
                 """)
                 
-                # Table: ml_analysis (NEW)
+                # Table: ml_analysis
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS ml_analysis (
                         id SERIAL PRIMARY KEY,
@@ -455,7 +499,7 @@ class DatabaseHandler:
                     )
                 """)
                 
-                # Table: market_regimes (NEW)
+                # Table: market_regimes
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS market_regimes (
                         id SERIAL PRIMARY KEY,
@@ -471,7 +515,7 @@ class DatabaseHandler:
                     )
                 """)
                 
-                # Table: performance_metrics (NEW)
+                # Table: performance_metrics
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS performance_metrics (
                         id SERIAL PRIMARY KEY,
@@ -491,7 +535,7 @@ class DatabaseHandler:
                     )
                 """)
                 
-                # Sekarang buat semua INDEX dengan statement terpisah
+                # Create indexes
                 self._create_indexes(cursor)
                 
                 conn.commit()
@@ -508,75 +552,25 @@ class DatabaseHandler:
     def _create_indexes(self, cursor):
         """Create all necessary indexes separately"""
         try:
-            # Indexes for signals table
-            cursor.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS signals_symbol_market_timestamp_idx 
-                ON signals (symbol, market_type, timestamp)
-            """)
+            indexes = [
+                ("signals_symbol_market_timestamp_idx", "signals (symbol, market_type, timestamp)"),
+                ("positions_symbol_status_idx", "positions (symbol, status)"),
+                ("positions_market_type_status_idx", "positions (market_type, status)"),
+                ("positions_created_at_idx", "positions (created_at)"),
+                ("trade_history_symbol_timestamp_idx", "trade_history (symbol, timestamp)"),
+                ("trade_history_market_type_idx", "trade_history (market_type)"),
+                ("trade_history_timestamp_idx", "trade_history (timestamp)"),
+                ("portfolio_allocations_symbol_idx", "portfolio_allocations (symbol)"),
+                ("portfolio_allocations_optimization_date_idx", "portfolio_allocations (optimization_date)"),
+                ("backtest_results_symbol_idx", "backtest_results (symbol)"),
+                ("backtest_results_test_date_idx", "backtest_results (test_date)"),
+                ("ml_analysis_symbol_date_idx", "ml_analysis (symbol, analysis_date)"),
+                ("market_regimes_symbol_regime_idx", "market_regimes (symbol, regime_type)"),
+                ("market_regimes_detected_at_idx", "market_regimes (detected_at)")
+            ]
             
-            # Indexes for positions table
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS positions_symbol_status_idx 
-                ON positions (symbol, status)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS positions_market_type_status_idx 
-                ON positions (market_type, status)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS positions_created_at_idx 
-                ON positions (created_at)
-            """)
-            
-            # Indexes for trade_history table
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS trade_history_symbol_timestamp_idx 
-                ON trade_history (symbol, timestamp)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS trade_history_market_type_idx 
-                ON trade_history (market_type)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS trade_history_timestamp_idx 
-                ON trade_history (timestamp)
-            """)
-            
-            # Indexes for portfolio_allocations table
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS portfolio_allocations_symbol_idx 
-                ON portfolio_allocations (symbol)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS portfolio_allocations_optimization_date_idx 
-                ON portfolio_allocations (optimization_date)
-            """)
-            
-            # Indexes for backtest_results table
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS backtest_results_symbol_idx 
-                ON backtest_results (symbol)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS backtest_results_test_date_idx 
-                ON backtest_results (test_date)
-            """)
-            
-            # Indexes for ml_analysis table
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS ml_analysis_symbol_date_idx 
-                ON ml_analysis (symbol, analysis_date)
-            """)
-            
-            # Indexes for market_regimes table
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS market_regimes_symbol_regime_idx 
-                ON market_regimes (symbol, regime_type)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS market_regimes_detected_at_idx 
-                ON market_regimes (detected_at)
-            """)
+            for index_name, index_def in indexes:
+                cursor.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {index_def}")
             
             logger.info("✅ All indexes created successfully")
             
@@ -584,21 +578,6 @@ class DatabaseHandler:
             logger.error(f"Error creating indexes: {e}")
             self.error_count += 1
             raise
-
-    def _drop_tables(self, cursor):
-        """Drop tables untuk development (gunakan dengan hati-hati!)"""
-        tables = [
-            'signals', 'positions', 'trade_history', 'portfolio_allocations',
-            'backtest_results', 'ml_analysis', 'market_regimes', 'performance_metrics'
-        ]
-        
-        for table in tables:
-            try:
-                cursor.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
-                logger.info(f"Dropped table: {table}")
-            except Exception as e:
-                logger.warning(f"Error dropping table {table}: {e}")
-                self.error_count += 1
 
     # =========================================================
     # ENHANCED SIGNALS MANAGEMENT
@@ -609,22 +588,13 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                # Convert numpy types dan handle data validation
                 converted_data = self._convert_numpy_types(data)
                 
-                # Prepare pattern details
                 pattern_details = converted_data.get('pattern_details', {})
-                if isinstance(pattern_details, dict):
-                    pattern_details_json = json.dumps(pattern_details)
-                else:
-                    pattern_details_json = '{}'
+                pattern_details_json = json.dumps(pattern_details) if isinstance(pattern_details, dict) else '{}'
                 
-                # Prepare TP probabilities
                 tp_probabilities = converted_data.get('tp_probabilities', {})
-                if isinstance(tp_probabilities, dict):
-                    tp_probabilities_json = json.dumps(tp_probabilities)
-                else:
-                    tp_probabilities_json = '{}'
+                tp_probabilities_json = json.dumps(tp_probabilities) if isinstance(tp_probabilities, dict) else '{}'
                 
                 cursor.execute("""
                     INSERT INTO signals (
@@ -695,10 +665,7 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                query = """
-                    SELECT * FROM signals 
-                    WHERE timestamp >= NOW() - INTERVAL %s hours
-                """
+                query = "SELECT * FROM signals WHERE timestamp >= NOW() - INTERVAL %s hours"
                 params = [hours_back]
                 
                 if market_type:
@@ -741,31 +708,8 @@ class DatabaseHandler:
             finally:
                 cursor.close()
 
-    def delete_old_signals(self, days: int = 7) -> int:
-        """Delete signals older than specified days"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute(
-                    "DELETE FROM signals WHERE timestamp < NOW() - INTERVAL %s days",
-                    (days,)
-                )
-                deleted_count = cursor.rowcount
-                conn.commit()
-                
-                logger.info(f"Deleted {deleted_count} signals older than {days} days")
-                return deleted_count
-                
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Error deleting old signals: {e}")
-                self.error_count += 1
-                return 0
-            finally:
-                cursor.close()
-
     # =========================================================
-    # ENHANCED POSITIONS MANAGEMENT - FIXED TP1-TP3
+    # ENHANCED POSITIONS MANAGEMENT - FIXED
     # =========================================================
     
     def save_position(self, symbol: str, market_type: str, action: str, 
@@ -785,10 +729,8 @@ class DatabaseHandler:
                 if entry_high is None:
                     entry_high = entry_price * 1.02
                 if position_size is None:
-                    # Calculate default position size based on risk
                     position_size = self._calculate_default_position_size(entry_price, sl)
                 
-                # Calculate trailing stop jika enabled
                 trailing_stop = None
                 if trailing_distance > 0:
                     if action == "LONG":
@@ -838,7 +780,6 @@ class DatabaseHandler:
             
         position_size = risk_amount / price_risk
         
-        # Limit to 20% of account balance
         max_position_value = account_balance * 0.2
         max_position_size = max_position_value / entry_price
         
@@ -849,7 +790,6 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                # Get position details
                 cursor.execute(
                     "SELECT id, entry_price, action, position_size FROM positions WHERE symbol = %s AND status = 'active'",
                     (symbol,)
@@ -862,15 +802,13 @@ class DatabaseHandler:
                 
                 position_id, entry_price, action, position_size = position
                 
-                # Calculate PnL
                 if action == "LONG":
                     pnl = (current_price - entry_price) * position_size
                     pnl_percent = (current_price - entry_price) / entry_price * 100
-                else:  # SHORT
+                else:
                     pnl = (entry_price - current_price) * position_size
                     pnl_percent = (entry_price - current_price) / entry_price * 100
                 
-                # Update position
                 cursor.execute("""
                     UPDATE positions 
                     SET current_price = %s, pnl = %s, pnl_percent = %s, updated_at = CURRENT_TIMESTAMP
@@ -889,153 +827,16 @@ class DatabaseHandler:
             finally:
                 cursor.close()
 
-    def update_trailing_stop(self, symbol: str, new_stop: float) -> bool:
-        """Update trailing stop loss untuk position"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    UPDATE positions 
-                    SET trailing_stop = %s, updated_at = CURRENT_TIMESTAMP
-                    WHERE symbol = %s AND status = 'active'
-                """, (new_stop, symbol))
-                
-                affected = cursor.rowcount
-                conn.commit()
-                
-                if affected > 0:
-                    logger.info(f"Updated trailing stop for {symbol} to {new_stop}")
-                    return True
-                else:
-                    logger.warning(f"No active position found for {symbol} to update trailing stop")
-                    return False
-                    
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Error updating trailing stop: {e}")
-                self.error_count += 1
-                return False
-            finally:
-                cursor.close()
-
-    def execute_partial_take_profit(self, position_id: int, tp_level: float, 
-                                  close_percentage: float = 0.5) -> bool:
-        """Execute partial take profit untuk position - FIXED"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                # Get current position - HANYA ambil kolom yang diperlukan
-                cursor.execute(
-                    "SELECT symbol, position_size, partial_tp_executed FROM positions WHERE id = %s",
-                    (position_id,)
-                )
-                position = cursor.fetchone()
-                
-                if not position:
-                    logger.error(f"Position {position_id} not found")
-                    return False
-                
-                symbol, current_size, partial_tp_json = position
-                
-                # Parse existing partial TPs
-                partial_tp_executed = []
-                if partial_tp_json:
-                    try:
-                        partial_tp_executed = json.loads(partial_tp_json)
-                    except:
-                        partial_tp_executed = []
-                
-                # Calculate new position size
-                close_size = current_size * close_percentage
-                new_size = current_size - close_size
-                
-                # Add to partial TP history
-                partial_tp_executed.append({
-                    'timestamp': datetime.now().isoformat(),
-                    'price': tp_level,
-                    'size': close_size,
-                    'percentage': close_percentage
-                })
-                
-                # Update position
-                cursor.execute("""
-                    UPDATE positions 
-                    SET position_size = %s, partial_tp_executed = %s, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                """, (new_size, json.dumps(partial_tp_executed), position_id))
-                
-                # If position size is very small, close it
-                if new_size < 0.001:
-                    cursor.execute("""
-                        UPDATE positions 
-                        SET status = 'closed', closed_at = CURRENT_TIMESTAMP, close_reason = 'partial_tp_complete'
-                        WHERE id = %s
-                    """, (position_id,))
-                
-                conn.commit()
-                logger.info(f"Partial TP executed for {symbol}: closed {close_percentage:.1%} at {tp_level}")
-                return True
-                
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Error executing partial TP: {e}")
-                self.error_count += 1
-                return False
-            finally:
-                cursor.close()
-
-    def get_active_positions(self, market_type: str = None) -> List[Dict]:
-        """Get active positions dengan enhanced data - FIXED"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                if market_type:
-                    cursor.execute("""
-                        SELECT * FROM positions
-                        WHERE status = 'active' AND market_type = %s
-                        ORDER BY created_at DESC
-                    """, (market_type,))
-                else:
-                    cursor.execute("""
-                        SELECT * FROM positions 
-                        WHERE status = 'active' 
-                        ORDER BY created_at DESC
-                    """)
-                
-                columns = [desc[0] for desc in cursor.description]
-                results = []
-                
-                for row in cursor.fetchall():
-                    result_dict = dict(zip(columns, row))
-                    
-                    # Parse JSON fields
-                    if result_dict.get('partial_tp_executed'):
-                        try:
-                            result_dict['partial_tp_executed'] = json.loads(result_dict['partial_tp_executed'])
-                        except:
-                            result_dict['partial_tp_executed'] = []
-                    
-                    results.append(result_dict)
-                
-                return results
-                
-            except Exception as e:
-                logger.error(f"Error getting active positions: {e}")
-                self.error_count += 1
-                return []
-            finally:
-                cursor.close()
-
     def close_position(self, position_id: int, close_price: float, 
                       exit_type: str = "manual", commission: float = 0) -> bool:
-        """Close position dan save ke trade history - FIXED"""
+        """Close position dan save ke trade history - FIXED VERSION"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                # Get position details - AMBIL SEMUA KOLOM TP YANG DIPERLUKAN
+                # Get position details
                 cursor.execute("""
                     SELECT symbol, market_type, action, entry_price, position_size, 
-                           current_price, sl, tp1, tp2, tp3, created_at
+                           sl, tp1, created_at
                     FROM positions WHERE id = %s
                 """, (position_id,))
                 
@@ -1044,24 +845,22 @@ class DatabaseHandler:
                     logger.error(f"Position {position_id} not found")
                     return False
                 
-                # Unpack semua nilai termasuk tp1, tp2, tp3
-                (symbol, market_type, action, entry_price, position_size, 
-                 current_price, sl, tp1, tp2, tp3, created_at) = position
+                symbol, market_type, action, entry_price, position_size, sl, tp1, created_at = position
                 
                 # Calculate final PnL
                 if action == "LONG":
                     profit_loss = (close_price - entry_price) * position_size
-                else:  # SHORT
+                    profit_loss_percent = ((close_price - entry_price) / entry_price) * 100
+                else:
                     profit_loss = (entry_price - close_price) * position_size
-                
-                profit_loss_percent = (profit_loss / (entry_price * position_size)) * 100 if entry_price * position_size > 0 else 0
+                    profit_loss_percent = ((entry_price - close_price) / entry_price) * 100
                 
                 # Calculate duration
                 duration_minutes = 0
                 if created_at:
                     duration_minutes = int((datetime.now() - created_at).total_seconds() / 60)
                 
-                # Calculate risk/reward ratio menggunakan tp1
+                # Calculate risk/reward ratio
                 risk_reward_ratio = 0
                 if sl and tp1 and entry_price:
                     if action == "LONG":
@@ -1113,26 +912,104 @@ class DatabaseHandler:
             finally:
                 cursor.close()
 
-    def delete_signal_by_symbol(self, symbol, market_type):
-        """Delete signals by symbol"""
+    def get_active_positions(self, market_type: str = None) -> List[Dict]:
+        """Get active positions dengan enhanced data"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                if market_type:
+                    cursor.execute("""
+                        SELECT * FROM positions
+                        WHERE status = 'active' AND market_type = %s
+                        ORDER BY created_at DESC
+                    """, (market_type,))
+                else:
+                    cursor.execute("""
+                        SELECT * FROM positions 
+                        WHERE status = 'active' 
+                        ORDER BY created_at DESC
+                    """)
+                
+                columns = [desc[0] for desc in cursor.description]
+                results = []
+                
+                for row in cursor.fetchall():
+                    result_dict = dict(zip(columns, row))
+                    
+                    if result_dict.get('partial_tp_executed'):
+                        try:
+                            result_dict['partial_tp_executed'] = json.loads(result_dict['partial_tp_executed'])
+                        except:
+                            result_dict['partial_tp_executed'] = []
+                    
+                    results.append(result_dict)
+                
+                return results
+                
+            except Exception as e:
+                logger.error(f"Error getting active positions: {e}")
+                self.error_count += 1
+                return []
+            finally:
+                cursor.close()
+
+    def execute_partial_take_profit(self, position_id: int, tp_level: float, 
+                                  close_percentage: float = 0.5) -> bool:
+        """Execute partial take profit untuk position"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
                 cursor.execute(
-                    "DELETE FROM signals WHERE symbol = %s AND market_type = %s",
-                    (symbol, market_type)
+                    "SELECT symbol, position_size, partial_tp_executed FROM positions WHERE id = %s",
+                    (position_id,)
                 )
-                deleted_count = cursor.rowcount
-                conn.commit()
+                position = cursor.fetchone()
                 
-                logger.info(f"Deleted {deleted_count} signals for {symbol}")
-                return deleted_count
+                if not position:
+                    logger.error(f"Position {position_id} not found")
+                    return False
+                
+                symbol, current_size, partial_tp_json = position
+                
+                partial_tp_executed = []
+                if partial_tp_json:
+                    try:
+                        partial_tp_executed = json.loads(partial_tp_json)
+                    except:
+                        partial_tp_executed = []
+                
+                close_size = current_size * close_percentage
+                new_size = current_size - close_size
+                
+                partial_tp_executed.append({
+                    'timestamp': datetime.now().isoformat(),
+                    'price': tp_level,
+                    'size': close_size,
+                    'percentage': close_percentage
+                })
+                
+                cursor.execute("""
+                    UPDATE positions 
+                    SET position_size = %s, partial_tp_executed = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (new_size, json.dumps(partial_tp_executed), position_id))
+                
+                if new_size < 0.001:
+                    cursor.execute("""
+                        UPDATE positions 
+                        SET status = 'closed', closed_at = CURRENT_TIMESTAMP, close_reason = 'partial_tp_complete'
+                        WHERE id = %s
+                    """, (position_id,))
+                
+                conn.commit()
+                logger.info(f"Partial TP executed for {symbol}: closed {close_percentage:.1%} at {tp_level}")
+                return True
                 
             except Exception as e:
                 conn.rollback()
-                logger.error(f"Error deleting signals: {e}")
+                logger.error(f"Error executing partial TP: {e}")
                 self.error_count += 1
-                return 0
+                return False
             finally:
                 cursor.close()
 
@@ -1146,10 +1023,7 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                query = """
-                    SELECT * FROM trade_history 
-                    WHERE timestamp >= NOW() - INTERVAL %s days
-                """
+                query = "SELECT * FROM trade_history WHERE timestamp >= NOW() - INTERVAL %s days"
                 params = [days_back]
                 
                 if market_type:
@@ -1196,26 +1070,8 @@ class DatabaseHandler:
                 (total_trades, winning_trades, losing_trades, 
                  avg_win, avg_loss, total_pnl, avg_return_percent) = result
                 
-                # Calculate additional metrics
                 win_rate = winning_trades / total_trades if total_trades > 0 else 0
                 profit_factor = abs(avg_win * winning_trades) / abs(avg_loss * losing_trades) if losing_trades > 0 and avg_loss else float('inf')
-                
-                # Get best and worst trades
-                cursor.execute("""
-                    SELECT symbol, profit_loss, profit_loss_percent, timestamp
-                    FROM trade_history 
-                    WHERE timestamp >= NOW() - INTERVAL %s days
-                    ORDER BY profit_loss DESC LIMIT 5
-                """, (days,))
-                best_trades = cursor.fetchall()
-                
-                cursor.execute("""
-                    SELECT symbol, profit_loss, profit_loss_percent, timestamp
-                    FROM trade_history 
-                    WHERE timestamp >= NOW() - INTERVAL %s days
-                    ORDER BY profit_loss ASC LIMIT 5
-                """, (days,))
-                worst_trades = cursor.fetchall()
                 
                 return {
                     'total_trades': total_trades,
@@ -1227,8 +1083,6 @@ class DatabaseHandler:
                     'avg_loss': avg_loss or 0,
                     'avg_return_percent': avg_return_percent or 0,
                     'profit_factor': profit_factor,
-                    'best_trades': best_trades,
-                    'worst_trades': worst_trades,
                     'period_days': days
                 }
                 
@@ -1240,217 +1094,25 @@ class DatabaseHandler:
                 cursor.close()
 
     # =========================================================
-    # PORTFOLIO ALLOCATIONS
+    # UTILITY METHODS
     # =========================================================
     
-    def save_portfolio_allocation(self, allocations: List[Dict[str, Any]]) -> bool:
-        """Save portfolio allocations"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
+    def _convert_numpy_types(self, data):
+        """Convert numpy types to native Python types"""
+        if isinstance(data, dict):
+            return {k: self._convert_numpy_types(v) for k, v in data.items()}
+        if data is None:
+            return None
+        if hasattr(data, "item"):
+            return data.item()
+        try:
+            return float(data)
+        except (ValueError, TypeError):
             try:
-                # Delete old allocations for today
-                cursor.execute("""
-                    DELETE FROM portfolio_allocations 
-                    WHERE optimization_date >= CURRENT_DATE
-                """)
-                
-                # Insert new allocations
-                for allocation in allocations:
-                    cursor.execute("""
-                        INSERT INTO portfolio_allocations (
-                            symbol, market_type, allocation_percent, allocated_capital,
-                            risk_category, score, expected_return, risk_adjustment
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        allocation.get('symbol'),
-                        allocation.get('market_type', 'crypto'),
-                        allocation.get('allocation_percent', 0),
-                        allocation.get('allocated_capital', 0),
-                        allocation.get('risk_category', 'MEDIUM'),
-                        allocation.get('score', 0),
-                        allocation.get('expected_return', 0),
-                        allocation.get('risk_adjustment', 1.0)
-                    ))
-                
-                conn.commit()
-                logger.info(f"Saved {len(allocations)} portfolio allocations")
-                return True
-                
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Error saving portfolio allocations: {e}")
-                self.error_count += 1
-                return False
-            finally:
-                cursor.close()
+                return str(data)
+            except:
+                return data
 
-    def get_current_portfolio_allocations(self) -> List[Dict]:
-        """Get current portfolio allocations"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    SELECT * FROM portfolio_allocations 
-                    WHERE optimization_date >= CURRENT_DATE
-                    ORDER BY allocation_percent DESC
-                """)
-                
-                columns = [desc[0] for desc in cursor.description]
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
-                
-            except Exception as e:
-                logger.error(f"Error getting portfolio allocations: {e}")
-                self.error_count += 1
-                return []
-            finally:
-                cursor.close()
-
-    # =========================================================
-    # BACKTEST RESULTS
-    # =========================================================
-    
-    def save_backtest_result(self, result_data: Dict[str, Any]) -> bool:
-        """Save backtest results"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                equity_curve = result_data.get('equity_curve', [])
-                parameters = result_data.get('parameters', {})
-                
-                cursor.execute("""
-                    INSERT INTO backtest_results (
-                        symbol, market_type, strategy_name, timeframe,
-                        total_trades, winning_trades, losing_trades, win_rate,
-                        total_pnl, sharpe_ratio, max_drawdown, final_balance,
-                        period_days, parameters, equity_curve
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    result_data.get('symbol'),
-                    result_data.get('market_type', 'crypto'),
-                    result_data.get('strategy_name', 'EnhancedStrategy'),
-                    result_data.get('timeframe', '1h'),
-                    result_data.get('total_trades', 0),
-                    result_data.get('winning_trades', 0),
-                    result_data.get('losing_trades', 0),
-                    result_data.get('win_rate', 0),
-                    result_data.get('total_pnl', 0),
-                    result_data.get('sharpe_ratio', 0),
-                    result_data.get('max_drawdown', 0),
-                    result_data.get('final_balance', 0),
-                    result_data.get('period_days', 0),
-                    json.dumps(parameters),
-                    json.dumps(equity_curve)
-                ))
-                
-                conn.commit()
-                logger.info(f"Backtest result saved for {result_data.get('symbol')}")
-                return True
-                
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Error saving backtest result: {e}")
-                self.error_count += 1
-                return False
-            finally:
-                cursor.close()
-
-    def get_backtest_results(self, symbol: str = None, limit: int = 10) -> List[Dict]:
-        """Get backtest results"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                if symbol:
-                    cursor.execute("""
-                        SELECT * FROM backtest_results 
-                        WHERE symbol = %s 
-                        ORDER BY test_date DESC 
-                        LIMIT %s
-                    """, (symbol, limit))
-                else:
-                    cursor.execute("""
-                        SELECT * FROM backtest_results 
-                        ORDER BY test_date DESC 
-                        LIMIT %s
-                    """, (limit,))
-                
-                columns = [desc[0] for desc in cursor.description]
-                results = []
-                
-                for row in cursor.fetchall():
-                    result_dict = dict(zip(columns, row))
-                    
-                    # Parse JSON fields
-                    if result_dict.get('parameters'):
-                        try:
-                            result_dict['parameters'] = json.loads(result_dict['parameters'])
-                        except:
-                            result_dict['parameters'] = {}
-                    
-                    if result_dict.get('equity_curve'):
-                        try:
-                            result_dict['equity_curve'] = json.loads(result_dict['equity_curve'])
-                        except:
-                            result_dict['equity_curve'] = []
-                    
-                    results.append(result_dict)
-                
-                return results
-                
-            except Exception as e:
-                logger.error(f"Error getting backtest results: {e}")
-                self.error_count += 1
-                return []
-            finally:
-                cursor.close()
-
-    # =========================================================
-    # ML ANALYSIS STORAGE
-    # =========================================================
-    
-    def save_ml_analysis(self, analysis_data: Dict[str, Any]) -> bool:
-        """Save ML analysis results"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                feature_importance = analysis_data.get('feature_importance', {})
-                prediction_metrics = analysis_data.get('prediction_metrics', {})
-                risk_metrics = analysis_data.get('risk_metrics', {})
-                
-                cursor.execute("""
-                    INSERT INTO ml_analysis (
-                        symbol, market_type, traditional_score, ml_confidence,
-                        combined_score, feature_importance, prediction_metrics, risk_metrics
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    analysis_data.get('symbol'),
-                    analysis_data.get('market_type', 'crypto'),
-                    analysis_data.get('traditional_score', 0),
-                    analysis_data.get('ml_confidence', 0.5),
-                    analysis_data.get('combined_score', 0),
-                    json.dumps(feature_importance),
-                    json.dumps(prediction_metrics),
-                    json.dumps(risk_metrics)
-                ))
-                
-                conn.commit()
-                logger.debug(f"ML analysis saved for {analysis_data.get('symbol')}")
-                return True
-                
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Error saving ML analysis: {e}")
-                self.error_count += 1
-                return False
-            finally:
-                cursor.close()
-
-    # =========================================================
-    # PERFORMANCE METRICS
-    # =========================================================
-    
     def _update_performance_metrics(self):
         """Update daily performance metrics"""
         with self.get_connection() as conn:
@@ -1458,7 +1120,6 @@ class DatabaseHandler:
             try:
                 today = datetime.now().date()
                 
-                # Get today's trades
                 cursor.execute("""
                     SELECT 
                         COUNT(*) as total_trades,
@@ -1476,7 +1137,6 @@ class DatabaseHandler:
                 
                 win_rate = winning_trades / total_trades if total_trades > 0 else 0
                 
-                # Calculate additional metrics
                 cursor.execute("""
                     SELECT 
                         AVG(CASE WHEN profit_loss > 0 THEN profit_loss END) as avg_profit,
@@ -1490,7 +1150,6 @@ class DatabaseHandler:
                 
                 profit_factor = abs(avg_profit * winning_trades) / abs(avg_loss * (total_trades - winning_trades)) if avg_loss and (total_trades - winning_trades) > 0 else 0
                 
-                # Insert or update daily metrics
                 cursor.execute("""
                     INSERT INTO performance_metrics (
                         metric_date, total_trades, winning_trades, total_pnl, win_rate,
@@ -1522,177 +1181,15 @@ class DatabaseHandler:
             finally:
                 cursor.close()
 
-    def get_performance_metrics(self, days: int = 30) -> List[Dict]:
-        """Get performance metrics untuk period tertentu"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    SELECT * FROM performance_metrics 
-                    WHERE metric_date >= CURRENT_DATE - INTERVAL %s days
-                    ORDER BY metric_date DESC
-                """, (days,))
-                
-                columns = [desc[0] for desc in cursor.description]
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
-                
-            except Exception as e:
-                logger.error(f"Error getting performance metrics: {e}")
-                self.error_count += 1
-                return []
-            finally:
-                cursor.close()
-
-    # =========================================================
-    # DATA MAINTENANCE AND CLEANUP
-    # =========================================================
-    
-    def cleanup_old_data(self, days: int = 30):
-        """Clean up old data dari semua tables"""
-        try:
-            results = {}
-            
-            # Clean up old signals
-            signals_count = self.delete_old_signals(days)
-            results['signals'] = signals_count
-            
-            # Clean up old trade history
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    cursor.execute(
-                        "DELETE FROM trade_history WHERE timestamp < NOW() - INTERVAL %s days",
-                        (days,)
-                    )
-                    history_count = cursor.rowcount
-                    results['trade_history'] = history_count
-                    
-                    # Clean up closed positions
-                    cursor.execute(
-                        "DELETE FROM positions WHERE status = 'closed' AND closed_at < NOW() - INTERVAL %s days",
-                        (days,)
-                    )
-                    positions_count = cursor.rowcount
-                    results['positions'] = positions_count
-                    
-                    # Clean up old backtest results
-                    cursor.execute(
-                        "DELETE FROM backtest_results WHERE test_date < NOW() - INTERVAL %s days",
-                        (days * 3,)  # Keep backtests longer
-                    )
-                    backtest_count = cursor.rowcount
-                    results['backtest_results'] = backtest_count
-                    
-                    # Clean up old ML analysis
-                    cursor.execute(
-                        "DELETE FROM ml_analysis WHERE analysis_date < NOW() - INTERVAL %s days",
-                        (days * 7,)  # Keep ML analysis longer
-                    )
-                    ml_count = cursor.rowcount
-                    results['ml_analysis'] = ml_count
-                    
-                    conn.commit()
-                    
-                except Exception as e:
-                    conn.rollback()
-                    logger.error(f"Error during data cleanup: {e}")
-                    self.error_count += 1
-                finally:
-                    cursor.close()
-            
-            self.last_cleanup = datetime.now()
-            logger.info(f"Data cleanup completed: {results}")
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error in cleanup_old_data: {e}")
-            self.error_count += 1
-            return {}
-
-    def get_database_stats(self) -> Dict[str, Any]:
-        """Get database statistics"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                stats = {}
-                tables = [
-                    'signals', 'positions', 'trade_history', 'portfolio_allocations',
-                    'backtest_results', 'ml_analysis', 'performance_metrics'
-                ]
-                
-                for table in tables:
-                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                    count = cursor.fetchone()[0]
-                    stats[table] = count
-                
-                # Get recent activity
-                cursor.execute("""
-                    SELECT 
-                        COUNT(*) as active_positions,
-                        SUM(pnl) as total_open_pnl
-                    FROM positions 
-                    WHERE status = 'active'
-                """)
-                active_result = cursor.fetchone()
-                stats['active_positions'] = active_result[0] if active_result else 0
-                stats['total_open_pnl'] = active_result[1] if active_result else 0
-                
-                # Get today's trades
-                cursor.execute("""
-                    SELECT COUNT(*), COALESCE(SUM(profit_loss), 0)
-                    FROM trade_history 
-                    WHERE DATE(timestamp) = CURRENT_DATE
-                """)
-                today_result = cursor.fetchone()
-                stats['today_trades'] = today_result[0] if today_result else 0
-                stats['today_pnl'] = today_result[1] if today_result else 0
-                
-                # Add performance metrics
-                stats['total_queries'] = self.query_count
-                stats['total_errors'] = self.error_count
-                stats['error_rate'] = self.error_count / max(1, self.query_count)
-                stats['last_cleanup'] = self.last_cleanup
-                
-                return stats
-                
-            except Exception as e:
-                logger.error(f"Error getting database stats: {e}")
-                self.error_count += 1
-                return {}
-            finally:
-                cursor.close()
-
-    # =========================================================
-    # UTILITY METHODS
-    # =========================================================
-    
-    def _convert_numpy_types(self, data):
-        """Convert numpy types to native Python types"""
-        if isinstance(data, dict):
-            return {k: self._convert_numpy_types(v) for k, v in data.items()}
-        if data is None:
-            return None
-        if hasattr(data, "item"):
-            return data.item()
-        try:
-            return float(data)
-        except (ValueError, TypeError):
-            try:
-                return str(data)
-            except:
-                return data
-
     def health_check(self) -> Dict[str, Any]:
         """Comprehensive database health check"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Test basic query
                 cursor.execute("SELECT 1")
                 basic_test = cursor.fetchone()[0] == 1
                 
-                # Check table counts
                 cursor.execute("""
                     SELECT table_name 
                     FROM information_schema.tables 
@@ -1700,7 +1197,6 @@ class DatabaseHandler:
                 """)
                 tables = [row[0] for row in cursor.fetchall()]
                 
-                # Check connection metrics
                 cursor.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()")
                 active_connections = cursor.fetchone()[0]
                 
@@ -1725,14 +1221,18 @@ class DatabaseHandler:
                 'error': str(e)
             }
 
-# Example usage and testing
-def test_tp_functionality():
-    """Test function untuk verify TP1-TP3 functionality"""
+# Test function
+def test_database_functionality():
+    """Test comprehensive database functionality"""
     db = DatabaseHandler()
     
-    print("🧪 Testing TP1-TP3 functionality...")
+    print("🧪 Testing Database Handler...")
     
-    # Test save position dengan TP1-TP3
+    # Test health check
+    health = db.health_check()
+    print(f"Health Check: {health['status']}")
+    
+    # Test save position
     position_id = db.save_position(
         symbol="BTC/USDT",
         market_type="crypto", 
@@ -1750,17 +1250,6 @@ def test_tp_functionality():
     positions = db.get_active_positions()
     print(f"✅ Active positions: {len(positions)}")
     
-    for pos in positions:
-        print(f"   Symbol: {pos['symbol']}, TP1: {pos['tp1']}, TP2: {pos['tp2']}, TP3: {pos['tp3']}")
-    
-    # Test partial TP
-    if position_id:
-        success = db.execute_partial_take_profit(position_id, 52000, 0.5)
-        if success:
-            print("✅ Partial TP executed successfully")
-        else:
-            print("❌ Partial TP execution failed")
-    
     # Test close position
     if position_id:
         success = db.close_position(position_id, 53000, "test")
@@ -1769,27 +1258,11 @@ def test_tp_functionality():
         else:
             print("❌ Position close failed")
     
-    print("🎉 TP1-TP3 testing completed!")
-
-if __name__ == "__main__":
-    # Test the enhanced database handler
-    db = DatabaseHandler()
-    
-    print("🚀 Testing Enhanced Database Handler...")
-    
-    # Test health check
-    health = db.health_check()
-    print(f"Health Check: {health}")
-    
-    # Test database stats
-    stats = db.get_database_stats()
-    print(f"Database Stats: {stats}")
-    
     # Test performance stats
     performance = db.get_performance_stats(days=7)
-    print(f"Performance Stats: {performance}")
+    print(f"✅ Performance stats retrieved")
     
-    # Test TP functionality
-    test_tp_functionality()
-    
-    print("✅ Enhanced Database Handler Testing Completed!")
+    print("🎉 Database testing completed!")
+
+if __name__ == "__main__":
+    test_database_functionality()
