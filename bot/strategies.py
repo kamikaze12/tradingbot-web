@@ -61,8 +61,8 @@ class TradingStrategy(ABC):
         """Analyze market data and return trading signals"""
         pass
     
-    def calculate_custom_entry(self, symbol: str, current_price: float, action: str = "LONG") -> Dict[str, Any]:
-        """Calculate TP/SL dengan entry range - FIXED VERSION"""
+    def calculate_custom_entry(self, symbol: str, current_price: float, action: str = "LONG", df: pd.DataFrame = None) -> Dict[str, Any]:
+        """Calculate TP/SL dengan entry range - FIXED VERSION with dynamic ATR and sentiment modifier"""
         try:
             # Validasi input yang lebih ketat
             if current_price <= 0 or pd.isna(current_price) or not isinstance(current_price, (int, float)):
@@ -75,20 +75,30 @@ class TradingStrategy(ABC):
             if current_price <= 0:
                 current_price = self._estimate_realistic_price(symbol)
             
-            # Calculate ATR based on market type - FIXED CALCULATION
-            if self.market_type == "forex":
-                atr = current_price * 0.005  # 0.5% untuk forex
-            elif self.market_type == "us_stocks":
-                atr = current_price * 0.015  # 1.5% untuk saham US
-            elif self.market_type == "forex_gold":
-                atr = current_price * 0.008  # 0.8% untuk gold
+            # Calculate dynamic ATR from real data if DF provided, else fallback
+            if df is not None and not df.empty and all(col in df.columns for col in ['high', 'low', 'close']):
+                atr = self._calculate_atr(df)
             else:
-                atr = current_price * 0.02   # 2% untuk crypto
+                if self.market_type == "forex":
+                    atr = current_price * 0.005  # 0.5% untuk forex
+                elif self.market_type == "us_stocks":
+                    atr = current_price * 0.015  # 1.5% untuk saham US
+                elif self.market_type == "forex_gold":
+                    atr = current_price * 0.008  # 0.8% untuk gold
+                else:
+                    atr = current_price * 0.02   # 2% untuk crypto
             
             atr = max(atr, current_price * 0.01)  # Minimum 1%
             
-            # ✅ PERBAIKAN: Pastikan entry range selalu terhitung
+            # Sentiment modifier: Widen range if sentiment < -0.3
             entry_range_pct = self.entry_range_pct
+            if df is not None and 'sentiment' in df.columns:
+                avg_sentiment = df['sentiment'].mean()
+                if avg_sentiment < -0.3:
+                    entry_range_pct *= 1.5  # Widen by 50% for caution
+                    logger.info(f"Negative sentiment ({avg_sentiment:.2f}) detected; widening entry range to {entry_range_pct*100:.2f}%")
+            
+            # ✅ PERBAIKAN: Pastikan entry range selalu terhitung
             if entry_range_pct <= 0:
                 entry_range_pct = 0.02  # Default 2%
             
@@ -194,7 +204,7 @@ class TradingStrategy(ABC):
                 'tp3': tp3,
                 'sl': sl,
                 'atr': atr,
-                'entry_range_pct': self.entry_range_pct * 100,
+                'entry_range_pct': entry_range_pct * 100,
                 'range_size': (entry_range_high - entry_range_low) / current_price * 100
             }
             
@@ -515,7 +525,6 @@ class AdvancedPatternDetector:
                 return PatternDetection("gartley", False, "", 0, 0, 0, 0, 0, "")
             
             current_price = df['close'].iloc[-1]
-            
             if current_price <= 0:
                 return PatternDetection("gartley", False, "", 0, 0, 0, 0, 0, "")
             
@@ -643,44 +652,47 @@ class AdvancedPatternDetector:
             peak2_idx = 2 * len(highs) // 3
             
             peak1 = np.max(highs[:peak1_idx]) if peak1_idx > 0 else 0
-            peak2 = np.max(highs[peak1_idx:]) if peak1_idx < len(highs) else 0
+            peak2 = np.max(highs[peak1_idx:peak2_idx]) if peak2_idx > peak1_idx else 0
             
-            trough1_idx = len(lows) // 3
-            trough2_idx = 2 * len(lows) // 3
-            trough1 = np.min(lows[:trough1_idx]) if trough1_idx > 0 else 0
-            trough2 = np.min(lows[trough1_idx:]) if trough1_idx < len(lows) else 0
+            if peak1 > 0 and peak2 > 0 and abs(peak1 - peak2) / ((peak1 + peak2)/2) < 0.02:  # Peaks within 2%
+                valley = np.min(lows[peak1_idx:peak2_idx])
+                
+                if valley > 0 and (peak1 - valley) / peak1 > 0.03:  # At least 3% drop
+                
+                    detected = True
+                    confidence = 0.65
+                    direction = "BEARISH"  # Double Top
+                    entry = current_price
+                    target = current_price - (peak1 - valley)
+                    stop_loss = max(peak1, peak2) * 1.01
+                    rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                    
+                    return PatternDetection(
+                        "double_top", True, direction, confidence,
+                        entry, target, stop_loss, rr_ratio, "1D"
+                    )
             
-            # Double Top detection
-            if (peak1 > 0 and peak2 > 0 and 
-                abs(peak1 - peak2) / peak1 < 0.015 and
-                current_price < (peak1 + peak2) / 2):
-                
-                confidence = 0.7
-                entry = current_price
-                target = current_price * 0.94
-                stop_loss = max(peak1, peak2) * 1.01
-                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
-                
-                return PatternDetection(
-                    "double_top", True, "BEARISH", confidence,
-                    entry, target, stop_loss, rr_ratio, "1D"
-                )
+            # Similar logic for Double Bottom (inverted)
+            bottom1 = np.min(lows[:peak1_idx]) if peak1_idx > 0 else 0
+            bottom2 = np.min(lows[peak1_idx:peak2_idx]) if peak2_idx > peak1_idx else 0
             
-            # Double Bottom detection
-            if (trough1 > 0 and trough2 > 0 and 
-                abs(trough1 - trough2) / trough1 < 0.015 and
-                current_price > (trough1 + trough2) / 2):
+            if bottom1 > 0 and bottom2 > 0 and abs(bottom1 - bottom2) / ((bottom1 + bottom2)/2) < 0.02:
+                peak_valley = np.max(highs[peak1_idx:peak2_idx])
                 
-                confidence = 0.7
-                entry = current_price
-                target = current_price * 1.06
-                stop_loss = min(trough1, trough2) * 0.99
-                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
-                
-                return PatternDetection(
-                    "double_bottom", True, "BULLISH", confidence,
-                    entry, target, stop_loss, rr_ratio, "1D"
-                )
+                if peak_valley > 0 and (peak_valley - bottom1) / bottom1 > 0.03:
+                    
+                    detected = True
+                    confidence = 0.65
+                    direction = "BULLISH"  # Double Bottom
+                    entry = current_price
+                    target = current_price + (peak_valley - bottom1)
+                    stop_loss = min(bottom1, bottom2) * 0.99
+                    rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                    
+                    return PatternDetection(
+                        "double_bottom", True, direction, confidence,
+                        entry, target, stop_loss, rr_ratio, "1D"
+                    )
             
         except Exception as e:
             logger.error(f"Double Top/Bottom detection error: {e}")
@@ -688,866 +700,503 @@ class AdvancedPatternDetector:
         return PatternDetection("double_top_bottom", False, "", 0, 0, 0, 0, 0, "")
     
     def _detect_triangle_patterns_advanced(self, df: pd.DataFrame) -> Dict[str, PatternDetection]:
-        """Advanced triangle pattern detection"""
-        patterns = {}
-        return patterns
-    
-    def _detect_candlestick_patterns(self, df: pd.DataFrame) -> Dict[str, PatternDetection]:
-        """Detect Japanese candlestick patterns"""
+        """Detect triangle patterns: Ascending, Descending, Symmetrical"""
         patterns = {}
         
         try:
-            if not TALIB_AVAILABLE or len(df) < 10:
+            if len(df) < 50:
                 return patterns
             
             current_price = df['close'].iloc[-1]
             if current_price <= 0:
                 return patterns
             
-            open_prices = df['open'].values
-            high_prices = df['high'].values
-            low_prices = df['low'].values
-            close_prices = df['close'].values
+            highs = df['high'].tail(50).values
+            lows = df['low'].tail(50).values
             
-            patterns_to_check = [
-                ('CDLENGULFING', 'engulfing'),
-                ('CDLHAMMER', 'hammer'),
-                ('CDLSHOOTINGSTAR', 'shooting_star'),
-                ('CDLDOJI', 'doji'),
-                ('CDLMORNINGSTAR', 'morning_star'),
-                ('CDLEVENINGSTAR', 'evening_star')
-            ]
+            # Calculate trendlines
+            upper_trendline = self._calculate_trendline(highs, 'upper')
+            lower_trendline = self._calculate_trendline(lows, 'lower')
             
-            for talib_pattern, pattern_name in patterns_to_check:
-                try:
-                    pattern_func = getattr(talib, talib_pattern)
-                    result = pattern_func(open_prices, high_prices, low_prices, close_prices)
-                    
-                    if result[-1] != 0:
-                        direction = "BULLISH" if result[-1] > 0 else "BEARISH"
-                        
-                        if direction == "BULLISH":
-                            target = current_price * 1.03
-                            stop_loss = current_price * 0.98
-                        else:
-                            target = current_price * 0.97
-                            stop_loss = current_price * 1.02
-                        
-                        rr_ratio = abs(target - current_price) / abs(current_price - stop_loss) if abs(current_price - stop_loss) > 0 else 1.0
-                        confidence = 0.6
-                        
-                        patterns[pattern_name] = PatternDetection(
-                            pattern_name, True, direction, confidence,
-                            current_price, target, stop_loss, rr_ratio, "1D"
-                        )
-                        
-                except Exception as e:
-                    logger.warning(f"Error detecting {pattern_name}: {e}")
-                    continue
+            # Check for convergence
+            upper_slope = upper_trendline['slope']
+            lower_slope = lower_trendline['slope']
+            
+            if abs(upper_slope) < 0.001 and abs(lower_slope) < 0.001:  # Both flat
+                return patterns  # Not a triangle
+            
+            # Symmetrical Triangle: Upper down, lower up
+            if upper_slope < 0 and lower_slope > 0:
+                confidence = 0.7
+                direction = "BULLISH" if current_price > (upper_trendline['intercept'] + lower_trendline['intercept']) / 2 else "BEARISH"
+                entry = current_price
+                target = current_price * 1.05 if direction == "BULLISH" else current_price * 0.95
+                stop_loss = current_price * 0.98 if direction == "BULLISH" else current_price * 1.02
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                
+                patterns['symmetrical_triangle'] = PatternDetection(
+                    "symmetrical_triangle", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
+            
+            # Ascending Triangle: Upper flat, lower up
+            if abs(upper_slope) < 0.001 and lower_slope > 0:
+                confidence = 0.75
+                direction = "BULLISH"
+                entry = current_price
+                target = current_price * 1.05
+                stop_loss = current_price * 0.98
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                
+                patterns['ascending_triangle'] = PatternDetection(
+                    "ascending_triangle", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
+            
+            # Descending Triangle: Upper down, lower flat
+            if upper_slope < 0 and abs(lower_slope) < 0.001:
+                confidence = 0.75
+                direction = "BEARISH"
+                entry = current_price
+                target = current_price * 0.95
+                stop_loss = current_price * 1.02
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                
+                patterns['descending_triangle'] = PatternDetection(
+                    "descending_triangle", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
+            
+            return patterns
+            
+        except Exception as e:
+            logger.error(f"Triangle pattern detection error: {e}")
+            return {}
+    
+    def _calculate_trendline(self, prices: np.ndarray, direction: str = 'upper') -> Dict[str, float]:
+        """Calculate trendline slope and intercept"""
+        try:
+            if len(prices) < 5:
+                return {'slope': 0, 'intercept': 0}
+            
+            x = np.arange(len(prices))
+            slope, intercept, r_value, _, _ = stats.linregress(x, prices)
+            
+            return {'slope': slope, 'intercept': intercept, 'r_squared': r_value**2}
+            
+        except Exception as e:
+            logger.error(f"Trendline calculation error: {e}")
+            return {'slope': 0, 'intercept': 0}
+    
+    def _detect_candlestick_patterns(self, df: pd.DataFrame) -> Dict[str, PatternDetection]:
+        """Detect candlestick patterns"""
+        patterns = {}
+        
+        try:
+            if not TALIB_AVAILABLE:
+                return patterns
+            
+            if len(df) < 5:
+                return patterns
+            
+            open_price = df['open'].values
+            high = df['high'].values
+            low = df['low'].values
+            close = df['close'].values
+            
+            if (open_price <= 0).any() or (high <= 0).any() or (low <= 0).any() or (close <= 0).any():
+                return patterns
+            
+            # Doji
+            doji = talib.CDLDOJI(open_price, high, low, close)
+            if doji[-1] != 0:
+                confidence = 0.6
+                direction = "REVERSAL"
+                entry = close[-1]
+                target = entry * 1.02  # Neutral reversal
+                stop_loss = entry * 0.98
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                
+                patterns['doji'] = PatternDetection(
+                    "doji", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
+            
+            # Hammer
+            hammer = talib.CDLHAMMER(open_price, high, low, close)
+            if hammer[-1] != 0:
+                confidence = 0.65
+                direction = "BULLISH"
+                entry = close[-1]
+                target = entry * 1.03
+                stop_loss = low[-1] * 0.99
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                
+                patterns['hammer'] = PatternDetection(
+                    "hammer", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
+            
+            # Shooting Star
+            shooting_star = talib.CDLSHOOTINGSTAR(open_price, high, low, close)
+            if shooting_star[-1] != 0:
+                confidence = 0.65
+                direction = "BEARISH"
+                entry = close[-1]
+                target = entry * 0.97
+                stop_loss = high[-1] * 1.01
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                
+                patterns['shooting_star'] = PatternDetection(
+                    "shooting_star", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
+            
+            # Engulfing
+            engulfing = talib.CDLENGULFING(open_price, high, low, close)
+            if engulfing[-1] != 0:
+                confidence = 0.7
+                direction = "BULLISH" if engulfing[-1] > 0 else "BEARISH"
+                entry = close[-1]
+                target = entry * 1.03 if direction == "BULLISH" else entry * 0.97
+                stop_loss = low[-1] * 0.99 if direction == "BULLISH" else high[-1] * 1.01
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                
+                patterns['engulfing'] = PatternDetection(
+                    "engulfing", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
+            
+            # Add more candlestick patterns as needed
+            
+            return patterns
             
         except Exception as e:
             logger.error(f"Candlestick pattern detection error: {e}")
-        
-        return patterns
+            return {}
     
     def _detect_volume_patterns(self, df: pd.DataFrame) -> Dict[str, PatternDetection]:
         """Detect volume-based patterns"""
         patterns = {}
         
         try:
-            if 'volume' not in df.columns:
+            if 'volume' not in df.columns or len(df) < 20:
                 return patterns
             
-            volumes = df['volume'].values
-            prices = df['close'].values
-            
-            if len(volumes) < 20:
-                return patterns
-            
-            current_price = prices[-1]
+            current_price = df['close'].iloc[-1]
             if current_price <= 0:
                 return patterns
             
-            volume_ma = np.mean(volumes[-20:])
+            volumes = df['volume'].tail(20).values
+            prices = df['close'].tail(20).values
+            
+            volume_ma = np.mean(volumes)
             current_volume = volumes[-1]
             
-            if current_volume > volume_ma * 2:
-                price_change = (prices[-1] - prices[-2]) / prices[-2] if prices[-2] > 0 else 0
+            # Volume Spike
+            if current_volume > volume_ma * 2.0 and prices[-1] > prices[-2]:
+                confidence = 0.7
+                direction = "BULLISH"
+                entry = current_price
+                target = entry * 1.05
+                stop_loss = entry * 0.98
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
                 
-                if abs(price_change) > 0.01:
-                    direction = "BULLISH" if price_change > 0 else "BEARISH"
-                    target = current_price * (1 + price_change * 2)
-                    stop_loss = current_price * (1 - price_change)
-                    rr_ratio = abs(target - current_price) / abs(current_price - stop_loss) if abs(current_price - stop_loss) > 0 else 1.0
-                    
-                    patterns['volume_spike'] = PatternDetection(
-                        "volume_spike", True, direction, 0.65,
-                        current_price, target, stop_loss, rr_ratio, "1D"
-                    )
+                patterns['volume_spike'] = PatternDetection(
+                    "volume_spike", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
+            
+            # Volume Divergence
+            price_trend = prices[-1] - prices[0]
+            volume_trend = volumes[-1] - volumes[0]
+            
+            if price_trend > 0 and volume_trend < 0:
+                confidence = 0.6
+                direction = "BEARISH"  # Bullish divergence
+                entry = current_price
+                target = entry * 0.95
+                stop_loss = entry * 1.02
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                
+                patterns['volume_divergence'] = PatternDetection(
+                    "volume_divergence", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
+            
+            return patterns
             
         except Exception as e:
             logger.error(f"Volume pattern detection error: {e}")
-        
-        return patterns
-    
-    def _detect_trend_patterns(self, df: pd.DataFrame) -> Dict[str, PatternDetection]:
-        """Detect trend-based patterns"""
-        patterns = {}
-        return patterns
-
-# =============================================
-# ADVANCED MARKET REGIME DETECTION
-# =============================================
-
-class MarketRegimeDetector:
-    """Advanced market regime detection"""
-    
-    def __init__(self):
-        self.regime_history = []
-        self.volatility_lookback = 20
-        
-    def analyze_market_regime(self, df: pd.DataFrame, symbol: str = None) -> MarketAnalysis:
-        """Comprehensive market regime analysis"""
-        try:
-            if df is None or len(df) < 50:
-                return self._get_default_analysis()
-            
-            current_price = df['close'].iloc[-1]
-            if current_price <= 0:
-                logger.warning("Invalid current price in regime analysis")
-                return self._get_default_analysis()
-            
-            # Trend Analysis
-            trend_strength, trend_direction = self._analyze_trend_strength(df)
-            
-            # Volatility Analysis
-            volatility_regime = self._analyze_volatility_regime(df)
-            
-            # Support/Resistance Levels
-            support_levels, resistance_levels = self._calculate_support_resistance(df)
-            key_levels = self._identify_key_levels(df)
-            
-            # Volume Analysis
-            volume_profile = self._analyze_volume_profile(df)
-            
-            # Market Sentiment
-            market_sentiment = self._analyze_market_sentiment(df)
-            
-            # Determine overall regime
-            regime = self._determine_overall_regime(
-                trend_strength, trend_direction, volatility_regime, market_sentiment
-            )
-            
-            analysis = MarketAnalysis(
-                regime=regime,
-                trend_strength=trend_strength,
-                volatility_regime=volatility_regime,
-                support_levels=support_levels,
-                resistance_levels=resistance_levels,
-                key_levels=key_levels,
-                volume_profile=volume_profile,
-                market_sentiment=market_sentiment
-            )
-            
-            self.regime_history.append(analysis)
-            if len(self.regime_history) > 100:
-                self.regime_history.pop(0)
-            
-            return analysis
-            
-        except Exception as e:
-            logger.error(f"Market regime analysis error: {e}")
-            return self._get_default_analysis()
-    
-    def _analyze_trend_strength(self, df: pd.DataFrame) -> Tuple[float, str]:
-        """Analyze trend strength and direction"""
-        try:
-            prices = df['close'].values
-            
-            if len(prices) < 20:
-                return 0.0, "NEUTRAL"
-            
-            if (prices <= 0).any():
-                return 0.0, "NEUTRAL"
-            
-            # ADX for trend strength
-            if TALIB_AVAILABLE:
-                adx = talib.ADX(df['high'], df['low'], df['close'], timeperiod=14)
-                current_adx = adx.iloc[-1] if not pd.isna(adx.iloc[-1]) else 0
-            else:
-                current_adx = self._calculate_simple_adx(df)
-            
-            # Moving average alignment
-            sma_20 = np.mean(prices[-20:])
-            sma_50 = np.mean(prices[-min(50, len(prices)):])
-            
-            price_vs_sma20 = (prices[-1] - sma_20) / sma_20 if sma_20 > 0 else 0
-            price_vs_sma50 = (prices[-1] - sma_50) / sma_50 if sma_50 > 0 else 0
-            
-            if price_vs_sma20 > 0.02 and price_vs_sma50 > 0.02:
-                direction = "BULLISH"
-            elif price_vs_sma20 < -0.02 and price_vs_sma50 < -0.02:
-                direction = "BEARISH"
-            else:
-                direction = "NEUTRAL"
-            
-            trend_strength = min(current_adx / 50.0, 1.0)
-            
-            return trend_strength, direction
-            
-        except Exception as e:
-            logger.error(f"Trend analysis error: {e}")
-            return 0.0, "NEUTRAL"
-    
-    def _calculate_simple_adx(self, df: pd.DataFrame) -> float:
-        """Calculate simplified ADX"""
-        try:
-            highs = df['high'].values
-            lows = df['low'].values
-            closes = df['close'].values
-            
-            if len(highs) < 14:
-                return 0.0
-            
-            if (highs <= 0).any() or (lows <= 0).any() or (closes <= 0).any():
-                return 0.0
-            
-            tr = np.zeros(len(highs))
-            for i in range(1, len(highs)):
-                tr1 = highs[i] - lows[i]
-                tr2 = abs(highs[i] - closes[i-1])
-                tr3 = abs(lows[i] - closes[i-1])
-                tr[i] = max(tr1, tr2, tr3)
-            
-            plus_dm = np.zeros(len(highs))
-            minus_dm = np.zeros(len(highs))
-            
-            for i in range(1, len(highs)):
-                up_move = highs[i] - highs[i-1]
-                down_move = lows[i-1] - lows[i]
-                
-                if up_move > down_move and up_move > 0:
-                    plus_dm[i] = up_move
-                if down_move > up_move and down_move > 0:
-                    minus_dm[i] = down_move
-            
-            tr_smooth = np.mean(tr[-14:])
-            plus_dm_smooth = np.mean(plus_dm[-14:])
-            minus_dm_smooth = np.mean(minus_dm[-14:])
-            
-            if tr_smooth > 0:
-                plus_di = 100 * plus_dm_smooth / tr_smooth
-                minus_di = 100 * minus_dm_smooth / tr_smooth
-                dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) > 0 else 0
-            else:
-                dx = 0
-            
-            return dx
-            
-        except Exception as e:
-            logger.error(f"Simple ADX calculation error: {e}")
-            return 0.0
-    
-    def _analyze_volatility_regime(self, df: pd.DataFrame) -> str:
-        """Analyze volatility regime"""
-        try:
-            prices = df['close'].values
-            
-            if len(prices) < 20:
-                return "NORMAL"
-            
-            if (prices <= 0).any():
-                return "NORMAL"
-            
-            returns = np.diff(prices) / prices[:-1]
-            volatility = np.std(returns) * np.sqrt(252)
-            
-            if len(returns) > 50:
-                historical_vol = np.std(returns[-50:]) * np.sqrt(252)
-            else:
-                historical_vol = volatility
-            
-            vol_ratio = volatility / historical_vol if historical_vol > 0 else 1.0
-            
-            if vol_ratio > 1.5:
-                return "HIGH_VOLATILITY"
-            elif vol_ratio < 0.7:
-                return "LOW_VOLATILITY"
-            else:
-                return "NORMAL_VOLATILITY"
-                
-        except Exception as e:
-            logger.error(f"Volatility analysis error: {e}")
-            return "NORMAL_VOLATILITY"
-    
-    def _calculate_support_resistance(self, df: pd.DataFrame) -> Tuple[List[float], List[float]]:
-        """Calculate support and resistance levels"""
-        try:
-            if len(df) < 20:
-                return [], []
-            
-            current_price = df['close'].iloc[-1]
-            if current_price <= 0:
-                return [], []
-            
-            highs = df['high'].tail(50).values
-            lows = df['low'].tail(50).values
-            
-            price_levels = np.concatenate([highs, lows])
-            
-            if len(price_levels) < 5:
-                return [], []
-            
-            from sklearn.cluster import KMeans
-            
-            n_clusters = min(5, len(price_levels) // 5)
-            if n_clusters < 2:
-                return [], []
-            
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-            clusters = kmeans.fit_predict(price_levels.reshape(-1, 1))
-            
-            levels = kmeans.cluster_centers_.flatten()
-            
-            support_levels = [level for level in levels if level < current_price]
-            resistance_levels = [level for level in levels if level > current_price]
-            
-            support_levels = sorted(support_levels, reverse=True)[:3]
-            resistance_levels = sorted(resistance_levels)[:3]
-            
-            return support_levels, resistance_levels
-            
-        except Exception as e:
-            logger.error(f"Support/resistance calculation error: {e}")
-            return [], []
-    
-    def _identify_key_levels(self, df: pd.DataFrame) -> List[float]:
-        """Identify key psychological and technical levels"""
-        try:
-            current_price = df['close'].iloc[-1]
-            if current_price <= 0:
-                return []
-            
-            key_levels = []
-            
-            round_level = round(current_price / 10) * 10
-            key_levels.append(round_level)
-            
-            recent_high = df['high'].tail(20).max()
-            recent_low = df['low'].tail(20).min()
-            key_levels.extend([recent_high, recent_low])
-            
-            if len(df) >= 50:
-                ma_20 = df['close'].tail(20).mean()
-                ma_50 = df['close'].tail(50).mean()
-                key_levels.extend([ma_20, ma_50])
-            
-            return sorted(list(set(key_levels)))
-            
-        except Exception as e:
-            logger.error(f"Key level identification error: {e}")
-            return []
-    
-    def _analyze_volume_profile(self, df: pd.DataFrame) -> Dict[str, float]:
-        """Analyze volume profile and anomalies"""
-        try:
-            if 'volume' not in df.columns:
-                return {}
-            
-            volumes = df['volume'].values
-            
-            if len(volumes) < 20:
-                return {}
-            
-            volume_profile = {
-                'current_volume': volumes[-1],
-                'volume_ma_20': np.mean(volumes[-20:]),
-                'volume_ratio': volumes[-1] / np.mean(volumes[-20:]) if np.mean(volumes[-20:]) > 0 else 1.0,
-                'volume_trend': self._calculate_volume_trend(volumes),
-                'volume_volatility': np.std(volumes[-20:]) / np.mean(volumes[-20:]) if np.mean(volumes[-20:]) > 0 else 0.0
-            }
-            
-            return volume_profile
-            
-        except Exception as e:
-            logger.error(f"Volume profile analysis error: {e}")
             return {}
     
-    def _calculate_volume_trend(self, volumes: np.ndarray) -> float:
-        """Calculate volume trend strength"""
-        if len(volumes) < 10:
-            return 0.0
+    def _detect_trend_patterns(self, df: pd.DataFrame) -> Dict[str, PatternDetection]:
+        """Detect trend continuation/reversal patterns"""
+        patterns = {}
         
-        x = np.arange(len(volumes))
-        slope, _, r_value, _, _ = stats.linregress(x, volumes)
-        
-        normalized_slope = slope / np.mean(volumes) if np.mean(volumes) > 0 else 0
-        trend_strength = normalized_slope * (r_value ** 2)
-        
-        return trend_strength
-    
-    def _analyze_market_sentiment(self, df: pd.DataFrame) -> str:
-        """Analyze overall market sentiment"""
         try:
+            if len(df) < 30:
+                return patterns
+            
+            current_price = df['close'].iloc[-1]
+            if current_price <= 0:
+                return patterns
+            
             prices = df['close'].values
             
-            if len(prices) < 20:
-                return "NEUTRAL"
+            # Channel Pattern
+            upper_trend = self._calculate_trendline(df['high'].values, 'upper')
+            lower_trend = self._calculate_trendline(df['low'].values, 'lower')
             
-            if (prices <= 0).any():
-                return "NEUTRAL"
-            
-            rsi = self._calculate_rsi(prices, 14)
-            price_position = (prices[-1] - np.min(prices[-20:])) / (np.max(prices[-20:]) - np.min(prices[-20:])) if (np.max(prices[-20:]) - np.min(prices[-20:])) > 0 else 0.5
-            
-            sentiment_score = 0
-            
-            if rsi > 70:
-                sentiment_score -= 2
-            elif rsi < 30:
-                sentiment_score += 2
-            elif rsi > 60:
-                sentiment_score -= 1
-            elif rsi < 40:
-                sentiment_score += 1
-            
-            if price_position > 0.7:
-                sentiment_score -= 1
-            elif price_position < 0.3:
-                sentiment_score += 1
-            
-            if sentiment_score >= 2:
-                return "BULLISH"
-            elif sentiment_score <= -2:
-                return "BEARISH"
-            else:
-                return "NEUTRAL"
+            if abs(upper_trend['slope'] - lower_trend['slope']) < 0.001 and abs(upper_trend['slope']) > 0.001:
+                confidence = 0.7
+                direction = "BULLISH" if upper_trend['slope'] > 0 else "BEARISH"
+                entry = current_price
+                target = entry * 1.05 if direction == "BULLISH" else entry * 0.95
+                stop_loss = entry * 0.98 if direction == "BULLISH" else entry * 1.02
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
                 
-        except Exception as e:
-            logger.error(f"Market sentiment analysis error: {e}")
-            return "NEUTRAL"
-    
-    def _calculate_rsi(self, prices: np.ndarray, period: int = 14) -> float:
-        """Calculate RSI"""
-        if len(prices) < period + 1:
-            return 50.0
-        
-        if (prices <= 0).any():
-            return 50.0
-        
-        deltas = np.diff(prices)
-        gains = np.where(deltas > 0, deltas, 0)
-        losses = np.where(deltas < 0, -deltas, 0)
-        
-        avg_gains = np.mean(gains[-period:])
-        avg_losses = np.mean(losses[-period:])
-        
-        if avg_losses == 0:
-            return 100.0
-        
-        rs = avg_gains / avg_losses
-        rsi = 100 - (100 / (1 + rs))
-        
-        return rsi
-    
-    def _determine_overall_regime(self, trend_strength: float, trend_direction: str, 
-                                volatility_regime: str, market_sentiment: str) -> MarketRegime:
-        """Determine overall market regime"""
-        try:
-            if trend_strength > 0.6:
-                if trend_direction == "BULLISH":
-                    return MarketRegime.BULL_TREND
-                elif trend_direction == "BEARISH":
-                    return MarketRegime.BEAR_TREND
+                patterns['trend_channel'] = PatternDetection(
+                    "trend_channel", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
             
-            if volatility_regime == "HIGH_VOLATILITY":
-                return MarketRegime.HIGH_VOLATILITY
-            elif volatility_regime == "LOW_VOLATILITY":
-                return MarketRegime.LOW_VOLATILITY
+            # Breakout Pattern
+            recent_high = np.max(prices[-20:-1])
+            if prices[-1] > recent_high * 1.01:
+                confidence = 0.75
+                direction = "BULLISH"
+                entry = current_price
+                target = entry * 1.05
+                stop_loss = recent_high * 0.99
+                rr_ratio = abs(target - entry) / abs(entry - stop_loss) if abs(entry - stop_loss) > 0 else 1.0
+                
+                patterns['breakout'] = PatternDetection(
+                    "breakout", True, direction, confidence,
+                    entry, target, stop_loss, rr_ratio, "1D"
+                )
             
-            return MarketRegime.RANGING
+            return patterns
             
         except Exception as e:
-            logger.error(f"Regime determination error: {e}")
-            return MarketRegime.UNKNOWN
-    
-    def _get_default_analysis(self) -> MarketAnalysis:
-        """Get default market analysis"""
-        return MarketAnalysis(
-            regime=MarketRegime.UNKNOWN,
-            trend_strength=0.0,
-            volatility_regime="NORMAL",
-            support_levels=[],
-            resistance_levels=[],
-            key_levels=[],
-            volume_profile={},
-            market_sentiment="NEUTRAL"
-        )
+            logger.error(f"Trend pattern detection error: {e}")
+            return {}
 
 # =============================================
-# ENHANCED TECHNICAL ANALYSIS STRATEGY - FIXED WITH ENTRY RANGE
+# ENHANCED TECHNICAL ANALYSIS STRATEGY
 # =============================================
 
 class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
-    """Enhanced technical analysis strategy dengan ENTRY RANGE support"""
+    """Enhanced technical analysis strategy dengan multi-timeframe dan pattern detection"""
     
     def __init__(self, market_type="crypto", atr_multiplier=1.0, entry_range_pct=0.02):
         super().__init__(market_type, atr_multiplier, entry_range_pct)
-        
         self.pattern_detector = AdvancedPatternDetector()
-        self.regime_detector = MarketRegimeDetector()
         self.risk_engine = DynamicRiskEngine()
-        
-        self.set_market_parameters()
         self.analysis_history = []
-        self.pattern_performance = {}
+        self.min_pattern_confidence = 0.6
         
-        logger.info(f"Enhanced Technical Analysis Strategy initialized for {market_type}")
-    
-    def set_market_parameters(self):
-        """Set optimized parameters untuk different market types"""
-        market_params = {
-            "crypto": {
-                'rsi_oversold': 25, 'rsi_overbought': 75, 'volume_threshold': 1.3,
-                'adx_trend_threshold': 20, 'pattern_weight': 2.0, 'trend_weight': 2.0,
-                'volatility_threshold': 0.02, 'atr_period': 14, 'risk_multiplier': 1.2
-            },
-            "forex": {
-                'rsi_oversold': 30, 'rsi_overbought': 70, 'volume_threshold': 1.1,
-                'adx_trend_threshold': 25, 'pattern_weight': 1.0, 'trend_weight': 1.0,
-                'volatility_threshold': 0.005, 'atr_period': 20, 'risk_multiplier': 0.8
-            },
-            "us_stocks": {
-                'rsi_oversold': 30, 'rsi_overbought': 70, 'volume_threshold': 1.2,
-                'adx_trend_threshold': 22, 'pattern_weight': 1.3, 'trend_weight': 1.3,
-                'volatility_threshold': 0.015, 'atr_period': 14, 'risk_multiplier': 1.0
-            },
-            "forex_gold": {
-                'rsi_oversold': 25, 'rsi_overbought': 75, 'volume_threshold': 1.3,
-                'adx_trend_threshold': 20, 'pattern_weight': 2.0, 'trend_weight': 2.0,
-                'volatility_threshold': 0.008, 'atr_period': 14, 'risk_multiplier': 1.1
-            }
-        }
-        
-        params = market_params.get(self.market_type, market_params["crypto"])
-        for key, value in params.items():
-            setattr(self, key, value)
-
     def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Enhanced analysis dengan entry range support"""
-        
-        if df is None or len(df) < 20:
-            logger.error("Insufficient or None data for analysis")
-            return self._get_default_analysis(symbol)
-        
+        """Analyze market data with enhanced features and entry range"""
         try:
-            required_columns = ['open', 'high', 'low', 'close']
-            for col in required_columns:
-                if col not in df.columns:
-                    logger.error(f"Missing required column: {col}")
-                    return self._get_default_analysis(symbol)
+            if df is None or df.empty:
+                logger.warning("Empty DataFrame in analyze")
+                return self._get_default_analysis(symbol)
             
+            # Get valid current price
             current_price = self._get_valid_current_price(df)
+            if current_price <= 0:
+                logger.warning("Invalid current price in analyze")
+                return self._get_default_analysis(symbol)
             
-            if current_price <= 0 or pd.isna(current_price):
-                logger.error(f"All price data invalid, using estimated price")
-                estimated_price = self._estimate_realistic_price(symbol or "UNKNOWN")
-                return self._get_default_analysis_with_price(estimated_price, symbol)
+            # Calculate enhanced indicators
+            indicators = self._calculate_enhanced_indicators(df)
             
-            logger.info(f"Analysis starting with valid price: {current_price}")
-            
-            market_analysis = self.regime_detector.analyze_market_regime(df, symbol)
-            patterns = self.pattern_detector.detect_comprehensive_patterns(df, symbol)
-            technical_indicators = self._calculate_enhanced_indicators(df)
+            # Analyze volume
             volume_analysis = self._analyze_volume_advanced(df)
+            
+            # Analyze trend
             trend_analysis = self._analyze_trend_advanced(df)
             
-            combined_analysis = self._combine_analyses(
-                market_analysis, patterns, technical_indicators, 
-                volume_analysis, trend_analysis, current_price, symbol
-            )
+            # Detect patterns
+            patterns = self.pattern_detector.detect_comprehensive_patterns(df, symbol)
+            pattern_count = len(patterns)
+            pattern_confirmations = list(patterns.keys())
+            pattern_score = sum(p.confidence for p in patterns.values()) / max(1, pattern_count) * 3
             
-            risk_adjusted_signal = self._apply_risk_adjustment(combined_analysis, df, symbol)
-            final_signal = self._final_validation(risk_adjusted_signal, symbol)
+            # Calculate base score
+            base_score = self._calculate_base_score(indicators, volume_analysis, trend_analysis, pattern_score)
             
-            self._store_analysis_history(final_signal)
+            # Get market regime
+            market_regime = self._analyze_market_regime(df, base_score, indicators['volatility'], trend_analysis['trend_strength'])
+            regime_multiplier = self._get_regime_multiplier(market_regime)
             
-            logger.info(f"Analysis completed - Entry Range: {final_signal['entry_range_low']:.5f}-{final_signal['entry_range_high']:.5f}")
+            # Apply regime adjustment
+            adjusted_score = base_score * regime_multiplier
             
-            return final_signal
+            # Determine action
+            action = "LONG" if adjusted_score > 5 else "SHORT" if adjusted_score < -5 else "NEUTRAL"
             
-        except Exception as e:
-            logger.error(f"Enhanced analysis error: {e}")
-            return self._get_default_analysis(symbol)
-
-    def _combine_analyses(self, market_analysis: MarketAnalysis, patterns: Dict[str, PatternDetection],
-                         technical_indicators: Dict[str, float], volume_analysis: Dict[str, Any],
-                         trend_analysis: Dict[str, Any], current_price: float, symbol: str = None) -> Dict[str, Any]:
-        """Combine semua analyses dengan ENTRY RANGE support - FIXED BALANCE"""
-        
-        if current_price <= 0 or pd.isna(current_price):
-            logger.error(f"Invalid current_price in combine_analyses: {current_price}")
-            current_price = self._estimate_realistic_price(symbol or "UNKNOWN")
-        
-        # Base scores
-        base_score = 0
-        action = "NEUTRAL"
-        
-        # ✅ PERBAIKAN: Balance scoring antara LONG dan SHORT
-        # Technical indicators contribution - MORE BALANCED
-        rsi = technical_indicators.get('rsi_14', 50)
-        
-        # ✅ FIX: Berikan poin untuk kondisi oversold (LONG opportunity)
-        if rsi < self.rsi_oversold:
-            base_score += 3  # Increased from 2
-        elif rsi > self.rsi_overbought:
-            base_score -= 3  # Decreased from -3
-        
-        # Volume contribution - MORE BALANCED
-        volume_score = volume_analysis.get('volume_score', 0)
-        volume_ratio = volume_analysis.get('volume_ratio', 1.0)
-        
-        # ✅ FIX: Berikan poin positif untuk volume tinggi dengan trend bullish
-        if volume_ratio > 1.5 and trend_analysis.get('trend_direction') == 'BULLISH':
-            volume_score += 2
-        elif volume_ratio > 1.2 and trend_analysis.get('trend_direction') == 'BULLISH':
-            volume_score += 1
-        elif volume_ratio > 1.5 and trend_analysis.get('trend_direction') == 'BEARISH':
-            volume_score -= 2
-        elif volume_ratio > 1.2 and trend_analysis.get('trend_direction') == 'BEARISH':
-            volume_score -= 1
+            # Calculate custom entry with DF for dynamic ATR and sentiment
+            entry_calculation = self.calculate_custom_entry(symbol, current_price, action, df)
             
-        base_score += volume_score
-        
-        # Trend contribution - MORE BALANCED
-        trend_score = trend_analysis.get('trend_score', 0)
-        trend_direction = trend_analysis.get('trend_direction', 'NEUTRAL')
-        trend_strength = trend_analysis.get('trend_strength', 0.0)
-        
-        # ✅ FIX: Berikan poin yang seimbang untuk trend bullish dan bearish
-        if trend_direction == 'BULLISH' and trend_strength > 0.6:
-            trend_score += 3  # Increased from +2
-        elif trend_direction == 'BULLISH':
-            trend_score += 2
-        elif trend_direction == 'BEARISH' and trend_strength > 0.6:
-            trend_score -= 3  # Same as bearish
-        elif trend_direction == 'BEARISH':
-            trend_score -= 2
-        
-        base_score += trend_score
-        
-        # Pattern contribution - MORE BALANCED
-        pattern_score = 0
-        pattern_confirmations = []
-        
-        for pattern_name, pattern in patterns.items():
-            if pattern.detected:
-                if pattern.direction == "BULLISH":
-                    pattern_score += pattern.confidence * 3  # Increased from 2
-                    pattern_confirmations.append(f"{pattern_name}_BULLISH")
-                elif pattern.direction == "BEARISH":
-                    pattern_score -= pattern.confidence * 3  # Same as bearish
-                    pattern_confirmations.append(f"{pattern_name}_BEARISH")
-        
-        base_score += pattern_score
-        
-        # Momentum indicators - MORE BALANCED
-        momentum_5 = technical_indicators.get('momentum_5', 0)
-        momentum_10 = technical_indicators.get('momentum_10', 0)
-        
-        # ✅ FIX: Berikan poin untuk momentum positif
-        if momentum_5 > 2 and momentum_10 > 3:
-            base_score += 2
-        elif momentum_5 > 0 and momentum_10 > 0:
-            base_score += 1
-        elif momentum_5 < -2 and momentum_10 < -3:
-            base_score -= 2
-        elif momentum_5 < 0 and momentum_10 < 0:
-            base_score -= 1
-        
-        # MACD - MORE BALANCED
-        macd_line = technical_indicators.get('macd_line', 0)
-        macd_signal = technical_indicators.get('macd_signal', 0)
-        
-        if macd_line > 0 and macd_signal > 0 and macd_line > macd_signal:
-            base_score += 2
-        elif macd_line < 0 and macd_signal < 0 and macd_line < macd_signal:
-            base_score -= 2
-        
-        # Bollinger Bands position - MORE BALANCED
-        bb_position = technical_indicators.get('bb_position', 0.5)
-        if bb_position < 0.2:  # Near lower band - oversold
-            base_score += 2
-        elif bb_position > 0.8:  # Near upper band - overbought
-            base_score -= 2
-        elif bb_position < 0.3:  # Below middle - potential long
-            base_score += 1
-        elif bb_position > 0.7:  # Above middle - potential short
-            base_score -= 1
-        
-        # ✅ FIX: Threshold yang lebih seimbang
-        action_threshold = 3  # Increased from 2
-        short_threshold = -3  # Increased from -1.5
-        
-        if base_score >= action_threshold:
-            action = "LONG"
-        elif base_score <= short_threshold:
-            action = "SHORT"
-        else:
-            action = "NEUTRAL"
-        
-        # **ENTRY RANGE CALCULATION**
-        atr = technical_indicators.get('atr', current_price * 0.02)
-        if atr <= 0:
-            atr = current_price * 0.02
-        
-        # Gunakan calculate_custom_entry untuk konsistensi
-        entry_calculation = self.calculate_custom_entry(symbol or "UNKNOWN", current_price, action)
-        
-        # ✅ PERBAIKAN: Pastikan entry range tidak 0
-        if (entry_calculation['entry_range_low'] <= 0 or 
-            entry_calculation['entry_range_high'] <= 0 or 
-            entry_calculation['best_entry'] <= 0):
+            # Final analysis dict
+            analysis = {
+                'action': action,
+                'entry_range_low': entry_calculation['entry_range_low'],
+                'entry_range_high': entry_calculation['entry_range_high'],
+                'best_entry': entry_calculation['best_entry'],
+                'tp1': entry_calculation['tp1'],
+                'tp2': entry_calculation['tp2'],
+                'tp3': entry_calculation['tp3'],
+                'sl': entry_calculation['sl'],
+                'current_price': current_price,
+                'score': adjusted_score,
+                'base_score': base_score,
+                'rsi': indicators['rsi_14'],
+                'volume_ratio': volume_analysis['volume_ratio'],
+                'atr': indicators['atr'],
+                'market_regime': market_regime.value,
+                'trend_strength': trend_analysis['trend_strength'],
+                'trend_direction': trend_analysis['trend_direction'],
+                'pattern_confirmations': pattern_confirmations,
+                'pattern_count': pattern_count,
+                'support_levels': self._find_support_resistance(df)['support'],
+                'resistance_levels': self._find_support_resistance(df)['resistance'],
+                'volatility': indicators['volatility'],
+                'risk_category': self._determine_risk_category(indicators['volatility']),
+                'confidence': min(abs(adjusted_score) / 10.0, 1.0),
+                'momentum_5': indicators['momentum_5'],
+                'momentum_10': indicators['momentum_10'],
+                'macd_line': indicators['macd_line'],
+                'macd_signal': indicators['macd_signal'],
+                'bb_position': indicators['bb_position'],
+                'symbol': symbol,
+                'entry_range_pct': entry_calculation['entry_range_pct'],
+                'range_size': entry_calculation['range_size']
+            }
             
-            logger.warning(f"Invalid entry range for {symbol}, recalculating...")
-            if action == "LONG":
-                entry_calculation['entry_range_low'] = current_price * 0.98
-                entry_calculation['entry_range_high'] = current_price * 0.99
-                entry_calculation['best_entry'] = (entry_calculation['entry_range_low'] + entry_calculation['entry_range_high']) / 2
-            elif action == "SHORT":
-                entry_calculation['entry_range_low'] = current_price * 1.01
-                entry_calculation['entry_range_high'] = current_price * 1.02
-                entry_calculation['best_entry'] = (entry_calculation['entry_range_low'] + entry_calculation['entry_range_high']) / 2
-            else:
-                entry_calculation['entry_range_low'] = current_price * 0.995
-                entry_calculation['entry_range_high'] = current_price * 1.005
-                entry_calculation['best_entry'] = current_price
+            # Final validation
+            analysis = self._final_validation(analysis, symbol)
             
-            entry_calculation['range_size'] = (entry_calculation['entry_range_high'] - entry_calculation['entry_range_low']) / current_price * 100
-        
-        return {
-            'action': action,
-            'entry_range_low': entry_calculation['entry_range_low'],
-            'entry_range_high': entry_calculation['entry_range_high'],
-            'best_entry': entry_calculation['best_entry'],
-            'tp1': entry_calculation['tp1'],
-            'tp2': entry_calculation['tp2'],
-            'tp3': entry_calculation['tp3'],
-            'sl': entry_calculation['sl'],
-            'current_price': float(current_price),
-            'score': int(base_score),
-            'base_score': int(base_score),
-            'rsi': float(rsi),
-            'volume_ratio': volume_analysis.get('volume_ratio', 1.0),
-            'atr': float(atr),
-            'market_regime': market_analysis.regime.value,
-            'trend_strength': trend_analysis.get('trend_strength', 0.0),
-            'trend_direction': trend_analysis.get('trend_direction', 'NEUTRAL'),
-            'pattern_confirmations': pattern_confirmations,
-            'pattern_count': len(patterns),
-            'support_levels': market_analysis.support_levels,
-            'resistance_levels': market_analysis.resistance_levels,
-            'volatility': technical_indicators.get('volatility', 0.02),
-            'risk_category': self._determine_risk_category(technical_indicators.get('volatility', 0.02)),
-            'confidence': min(abs(base_score) / 10.0, 1.0),
-            'momentum_5': momentum_5,
-            'momentum_10': momentum_10,
-            'macd_line': macd_line,
-            'macd_signal': macd_signal,
-            'bb_position': bb_position,
-            'symbol': symbol,
-            'entry_range_pct': self.entry_range_pct * 100,
-            'range_size': entry_calculation['range_size']
-        }
-
-    def _final_validation(self, analysis: Dict[str, Any], symbol: str = None) -> Dict[str, Any]:
-        """Final validation dengan entry range support"""
-        try:
-            action = analysis.get('action', 'NEUTRAL')
-            entry_low = analysis.get('entry_range_low', 0)
-            entry_high = analysis.get('entry_range_high', 0)
-            current_price = analysis.get('current_price', 0)
+            # Apply risk adjustment
+            analysis = self._apply_risk_adjustment(analysis, df, symbol)
             
-            # Validasi entry range
-            if entry_low <= 0 or entry_high <= 0:
-                logger.error(f"Invalid entry range: {entry_low}-{entry_high}")
-                base_price = analysis.get('current_price', self._estimate_realistic_price(symbol or "UNKNOWN"))
-                if base_price <= 0:
-                    base_price = self._estimate_realistic_price(symbol or "UNKNOWN")
-                
-                if action == "LONG":
-                    entry_low = base_price * 0.98
-                    entry_high = base_price * 0.99
-                elif action == "SHORT":
-                    entry_low = base_price * 1.01
-                    entry_high = base_price * 1.02
-                else:
-                    entry_low = base_price * 0.995
-                    entry_high = base_price * 1.005
-                
-                analysis['entry_range_low'] = entry_low
-                analysis['entry_range_high'] = entry_high
-                analysis['best_entry'] = (entry_low + entry_high) / 2
-                analysis['range_size'] = (entry_high - entry_low) / current_price * 100
-            
-            # Validasi konsistensi level dengan aksi
-            if action == 'LONG':
-                if not (analysis['sl'] < entry_low <= entry_high < analysis['tp1'] < analysis['tp2'] < analysis['tp3']):
-                    logger.error("LONG levels invalid after final validation, forcing correction")
-                    analysis['tp1'] = analysis['best_entry'] * 1.03
-                    analysis['tp2'] = analysis['best_entry'] * 1.06
-                    analysis['tp3'] = analysis['best_entry'] * 1.09
-                    analysis['sl'] = analysis['best_entry'] * 0.97
-                    
-            elif action == 'SHORT':
-                if not (analysis['sl'] > entry_high >= entry_low > analysis['tp1'] > analysis['tp2'] > analysis['tp3']):
-                    logger.error("SHORT levels invalid after final validation, forcing correction")
-                    analysis['tp1'] = analysis['best_entry'] * 0.97
-                    analysis['tp2'] = analysis['best_entry'] * 0.94
-                    analysis['tp3'] = analysis['best_entry'] * 0.91
-                    analysis['sl'] = analysis['best_entry'] * 1.03
+            # Store history
+            self._store_analysis_history(analysis)
             
             return analysis
             
         except Exception as e:
-            logger.error(f"Final validation error: {e}")
-            return self._get_default_analysis(symbol)
+            logger.error(f"Analysis error: {e}")
+            return self._get_default_analysis_with_price(current_price, symbol)
 
-    def _get_valid_current_price(self, df: pd.DataFrame) -> float:
-        """Get valid current price dengan multiple fallback strategies"""
+    def _calculate_base_score(self, indicators: Dict[str, float], 
+                             volume: Dict[str, Any], 
+                             trend: Dict[str, Any], 
+                             pattern_score: float) -> float:
+        """Calculate base score from indicators"""
+        score = 0
+        
+        # RSI Score (30% weight)
+        rsi = indicators['rsi_14']
+        if rsi < 30:
+            score += 3
+        elif rsi < 40:
+            score += 2
+        elif rsi > 70:
+            score -= 3
+        elif rsi > 60:
+            score -= 2
+        
+        # MACD Score (25% weight)
+        if indicators['macd_line'] > indicators['macd_signal'] and indicators['macd_histogram'] > 0:
+            score += 2.5
+        elif indicators['macd_line'] < indicators['macd_signal'] and indicators['macd_histogram'] < 0:
+            score -= 2.5
+        
+        # Bollinger Bands Score (20% weight)
+        bb_pos = indicators['bb_position']
+        if bb_pos < 0.2:
+            score += 2
+        elif bb_pos > 0.8:
+            score -= 2
+        
+        # Volume Score (15% weight)
+        score += volume['volume_score'] * 1.5
+        
+        # Trend Score (10% weight)
+        score += trend['trend_score']
+        
+        # Pattern Score
+        score += pattern_score
+        
+        return score
+
+    def _analyze_market_regime(self, df: pd.DataFrame, base_score: float, volatility: float, trend_strength: float) -> MarketRegime:
+        """Determine market regime"""
+        if trend_strength > 0.6:
+            if base_score > 0:
+                return MarketRegime.BULL_TREND
+            elif base_score < 0:
+                return MarketRegime.BEAR_TREND
+        elif volatility > 0.04:
+            return MarketRegime.HIGH_VOLATILITY
+        elif volatility < 0.01:
+            return MarketRegime.LOW_VOLATILITY
+        elif abs(base_score) > 5 and volatility > 0.03:
+            return MarketRegime.BREAKOUT
+        elif trend_strength < 0.3:
+            return MarketRegime.RANGING
+        return MarketRegime.UNKNOWN
+
+    def _find_support_resistance(self, df: pd.DataFrame, window: int = 5) -> Dict[str, List[float]]:
+        """Find support and resistance levels"""
         try:
-            current_close = df['close'].iloc[-1]
-            if current_close > 0 and not pd.isna(current_close):
-                return current_close
+            highs = df['high'].values
+            lows = df['low'].values
             
-            valid_closes = df[df['close'] > 0]['close']
-            if len(valid_closes) > 0:
-                last_valid = valid_closes.iloc[-1]
-                logger.warning(f"Using last valid close price: {last_valid}")
-                return last_valid
+            if len(highs) < window * 2 or len(lows) < window * 2:
+                return {'support': [], 'resistance': []}
             
-            for price_type in ['open', 'high', 'low']:
-                if price_type in df.columns:
-                    price_val = df[price_type].iloc[-1]
-                    if price_val > 0 and not pd.isna(price_val):
-                        logger.warning(f"Using {price_type} price: {price_val}")
-                        return price_val
+            resistance = highs[argrelextrema(highs, np.greater, order=window)[0]].tolist()
+            support = lows[argrelextrema(lows, np.less, order=window)[0]].tolist()
             
-            recent_prices = df['close'].tail(10)
-            valid_recent = recent_prices[recent_prices > 0]
-            if len(valid_recent) > 0:
-                avg_price = valid_recent.mean()
-                logger.warning(f"Using average of recent prices: {avg_price}")
-                return avg_price
+            # Filter duplicates and sort
+            resistance = sorted(list(set(resistance)))[-3:]  # Top 3 recent
+            support = sorted(list(set(support)))[-3:]
             
-            min_price = 0.0001 if self.market_type == "crypto" else 0.01
-            logger.warning(f"All prices invalid, using minimum: {min_price}")
-            return min_price
+            return {'support': support, 'resistance': resistance}
             
         except Exception as e:
-            logger.error(f"Error getting valid price: {e}")
-            return self._estimate_realistic_price("UNKNOWN")
+            logger.error(f"Support/resistance calculation error: {e}")
+            return {'support': [], 'resistance': []}
 
+    def _calculate_atr(self, df: pd.DataFrame) -> float:
+        """Calculate Average True Range"""
+        try:
+            high = df['high'].values
+            low = df['low'].values
+            close = df['close'].values
+            
+            if (high <= 0).any() or (low <= 0).any() or (close <= 0).any():
+                return df['close'].iloc[-1] * 0.02
+            
+            tr = np.zeros(len(high))
+            for i in range(1, len(high)):
+                tr1 = high[i] - low[i]
+                tr2 = abs(high[i] - close[i-1])
+                tr3 = abs(low[i] - close[i-1])
+                tr[i] = max(tr1, tr2, tr3)
+            
+            atr = np.mean(tr[-14:]) if len(tr) >= 14 else np.mean(tr)
+            return atr if atr > 0 else df['close'].iloc[-1] * 0.02
+            
+        except Exception as e:
+            logger.error(f"ATR calculation error: {e}")
+            current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 1.0
+            return current_price * 0.02
+    
     def _calculate_enhanced_indicators(self, df: pd.DataFrame) -> Dict[str, float]:
         """Calculate enhanced technical indicators"""
         indicators = {}
@@ -1695,31 +1344,6 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         d = np.mean(closes[-d_period:])
         
         return k, d
-    
-    def _calculate_atr(self, df: pd.DataFrame) -> float:
-        """Calculate Average True Range"""
-        try:
-            high = df['high'].values
-            low = df['low'].values
-            close = df['close'].values
-            
-            if (high <= 0).any() or (low <= 0).any() or (close <= 0).any():
-                return df['close'].iloc[-1] * 0.02
-            
-            tr = np.zeros(len(high))
-            for i in range(1, len(high)):
-                tr1 = high[i] - low[i]
-                tr2 = abs(high[i] - close[i-1])
-                tr3 = abs(low[i] - close[i-1])
-                tr[i] = max(tr1, tr2, tr3)
-            
-            atr = np.mean(tr[-14:]) if len(tr) >= 14 else np.mean(tr)
-            return atr if atr > 0 else df['close'].iloc[-1] * 0.02
-            
-        except Exception as e:
-            logger.error(f"ATR calculation error: {e}")
-            current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 1.0
-            return current_price * 0.02
     
     def _analyze_volume_advanced(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Advanced volume analysis"""
@@ -2023,7 +1647,8 @@ def test_strategy_with_entry_range():
         'high': np.random.normal(105, 12, 100),
         'low': np.random.normal(95, 12, 100),
         'close': np.random.normal(100, 10, 100),
-        'volume': np.random.normal(1000000, 100000, 100)
+        'volume': np.random.normal(1000000, 100000, 100),
+        'sentiment': np.random.uniform(-1, 1, 100)  # Sample sentiment data
     }
     df = pd.DataFrame(data, index=dates)
     
@@ -2044,7 +1669,7 @@ def test_strategy_with_entry_range():
     print(formatted_output)
     
     # Test custom entry calculation
-    custom_entry = strategy.calculate_custom_entry("BTC/USDT", 100.0, "LONG")
+    custom_entry = strategy.calculate_custom_entry("BTC/USDT", 100.0, "LONG", df)
     print(f"\nCustom Entry Calculation:")
     print(f"Entry Range: {custom_entry['entry_range_low']:.5f} - {custom_entry['entry_range_high']:.5f}")
     print(f"Range Size: {custom_entry['range_size']:.2f}%")
