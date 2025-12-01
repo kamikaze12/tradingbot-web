@@ -17,8 +17,8 @@ cffi==1.17.1
 charset-normalizer==3.4.3
 click==8.2.1
 colorama==0.4.6
-construct==2.10.68
-construct-typing==0.5.2  # DITURUNKAN dari 0.6.2 ke 0.5.2
+construct==2.10.67  # ⬅️ DITURUNKAN ke 2.10.67
+construct-typing==0.5.2
 cryptography==45.0.7
 curl_cffi==0.13.0
 Cython==3.1.3
@@ -68,7 +68,7 @@ six==1.17.0
 smmap==5.0.2
 sniffio==1.3.1
 solana==0.34.3
-solders==0.21.0  # DITURUNKAN dari 0.22.0 ke 0.21.0
+solders==0.21.0
 soupsieve==2.8
 streamlit==1.38.0
 TA-Lib==0.6.7
@@ -79,7 +79,7 @@ typing_extensions==4.15.0
 tzdata==2025.2
 urllib3==2.5.0
 watchdog==4.0.2
-websockets>=9.0,<12.0  # Tetap dengan range yang kompatibel
+websockets>=9.0,<12.0
 yarl==1.20.1
 yfinance==0.2.65
 scikit-learn>=1.3.0
