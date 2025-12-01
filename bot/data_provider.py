@@ -305,7 +305,7 @@ class EnhancedDataProvider(DataProvider, ABC):
             return 100.0
 
 class EnhancedCCXTDataProvider(EnhancedDataProvider):
-    """Enhanced CCXT provider with fallback support"""
+    """Enhanced CCXT provider dengan fallback support"""
     
     def __init__(self, exchange_id='binance', api_key='', secret='', market_type='spot'):
         super().__init__()
@@ -442,6 +442,74 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
             ]
             return major_pairs[:limit]
 
+class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
+    """Enhanced CCXT Futures provider"""
+    
+    def __init__(self, exchange_id='binance', api_key='', secret=''):
+        super().__init__(exchange_id=exchange_id, api_key=api_key, secret=secret, market_type='future')
+        
+    def get_popular_assets(self, limit=100):
+        """Get popular futures assets"""
+        try:
+            logger.info(f"🔄 Getting {limit} popular futures from {self.exchange_id}...")
+            
+            if not self.exchange:
+                logger.warning(f"Exchange {self.exchange_id} not initialized")
+                return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT'][:limit]
+            
+            try:
+                self.exchange.load_markets()
+                markets = self.exchange.markets
+                logger.info(f"📊 Loaded {len(markets)} markets from {self.exchange_id}")
+            except Exception as e:
+                logger.error(f"Failed to load markets: {e}")
+                return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT'][:limit]
+            
+            # Cari futures contracts
+            futures_markets = [
+                symbol for symbol, market in markets.items()
+                if (market.get('future', False) or 
+                    '/USDT:' in symbol or 
+                    ':USDT' in symbol or
+                    'PERP' in symbol)
+            ]
+            
+            logger.info(f"📊 Found {len(futures_markets)} futures markets")
+            
+            # Filter stablecoins
+            excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST', 'FDUSD']
+            filtered_markets = [
+                symbol for symbol in futures_markets 
+                if not any(excluded in symbol for excluded in excluded_coins)
+            ]
+            
+            # Prioritize major coins
+            major_pairs = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT', 
+                          'XRP/USDT:USDT', 'ADA/USDT:USDT', 'SOL/USDT:USDT']
+            
+            # Gabungkan major pairs dengan yang lain
+            all_markets = []
+            for mp in major_pairs:
+                if mp in filtered_markets:
+                    all_markets.append(mp)
+            
+            for symbol in filtered_markets:
+                if symbol not in all_markets:
+                    all_markets.append(symbol)
+            
+            result = all_markets[:limit]
+            logger.info(f"✅ CCXT Futures returning {len(result)} popular futures")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting popular futures from {self.exchange_id}: {str(e)}")
+            major_pairs = [
+                'BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT',
+                'XRP/USDT:USDT', 'ADA/USDT:USDT', 'SOL/USDT:USDT',
+                'DOT/USDT:USDT', 'DOGE/USDT:USDT', 'AVAX/USDT:USDT', 'MATIC/USDT:USDT'
+            ]
+            return major_pairs[:limit]
+
 class EnhancedYFinanceDataProvider(EnhancedDataProvider):
     """Enhanced Yahoo Finance provider"""
     
@@ -521,7 +589,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         return self._safe_api_call(fetch_ticker)
 
     def get_popular_assets(self, limit=100):
-        """Get popular assets based on market type"""
+        """Get popular assets berdasarkan market type"""
         try:
             if self.market_type == "crypto":
                 return self._get_popular_crypto(limit)
@@ -582,7 +650,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         return result
 
     def _get_fallback_assets(self, limit):
-        """Fallback assets when primary method fails"""
+        """Fallback assets ketika primary method gagal"""
         fallback_assets = {
             "crypto": ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD'],
             "forex": ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X'],
@@ -593,6 +661,151 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         assets = fallback_assets.get(self.market_type, [])
         logger.info(f"Using fallback assets for {self.market_type}: {len(assets[:limit])} assets")
         return assets[:limit]
+
+class AlphaVantageProvider(EnhancedDataProvider):
+    """Alpha Vantage data provider"""
+    
+    def __init__(self, api_key='demo'):
+        super().__init__()
+        self.api_key = api_key
+        self.base_url = 'https://www.alphavantage.co/query'
+        
+    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
+        """Get OHLCV data dari Alpha Vantage"""
+        def fetch_av_data():
+            try:
+                # Mapping timeframe ke interval Alpha Vantage
+                interval_map = {
+                    '1m': '1min', '5m': '5min', '15m': '15min',
+                    '30m': '30min', '1h': '60min', '1d': 'daily'
+                }
+                
+                interval = interval_map.get(timeframe, '60min')
+                
+                # API call
+                params = {
+                    'function': 'TIME_SERIES_INTRADAY' if interval != 'daily' else 'TIME_SERIES_DAILY',
+                    'symbol': symbol.replace('/', ''),
+                    'interval': interval,
+                    'apikey': self.api_key,
+                    'outputsize': 'full' if limit > 100 else 'compact'
+                }
+                
+                response = requests.get(self.base_url, params=params)
+                data = response.json()
+                
+                # Parse response
+                if 'Time Series' in data:
+                    time_series = data[f'Time Series ({interval})'] if interval != 'daily' else data['Time Series (Daily)']
+                    
+                    records = []
+                    for timestamp, values in list(time_series.items())[:limit]:
+                        records.append({
+                            'timestamp': pd.to_datetime(timestamp),
+                            'open': float(values['1. open']),
+                            'high': float(values['2. high']),
+                            'low': float(values['3. low']),
+                            'close': float(values['4. close']),
+                            'volume': float(values['5. volume'])
+                        })
+                    
+                    df = pd.DataFrame(records)
+                    df.sort_values('timestamp', inplace=True)
+                    
+                    logger.info(f"📊 Alpha Vantage DATA: {symbol} - {len(df)} bars")
+                    return df
+                else:
+                    raise ValueError(f"No data returned from Alpha Vantage: {data.get('Note', 'Unknown error')}")
+                
+            except Exception as e:
+                logger.error(f"Alpha Vantage error for {symbol}: {str(e)}")
+                raise
+        
+        return self._safe_api_call(fetch_av_data)
+        
+    def get_ticker(self, symbol):
+        """Get ticker data dari Alpha Vantage"""
+        def fetch_ticker():
+            try:
+                params = {
+                    'function': 'GLOBAL_QUOTE',
+                    'symbol': symbol.replace('/', ''),
+                    'apikey': self.api_key
+                }
+                
+                response = requests.get(self.base_url, params=params)
+                data = response.json()
+                
+                if 'Global Quote' in data:
+                    quote = data['Global Quote']
+                    return {
+                        'last': float(quote['05. price']),
+                        'volume': float(quote['06. volume']),
+                        'high': float(quote['03. high']),
+                        'low': float(quote['04. low']),
+                        'open': float(quote['02. open']),
+                        'symbol': symbol
+                    }
+                else:
+                    raise ValueError(f"No quote data from Alpha Vantage")
+                
+            except Exception as e:
+                logger.error(f"Alpha Vantage ticker error: {str(e)}")
+                raise
+        
+        return self._safe_api_call(fetch_ticker)
+
+    def get_popular_assets(self, limit=100):
+        """Get popular assets dari Alpha Vantage"""
+        # Alpha Vantage tidak punya endpoint untuk popular assets
+        # Gunakan hardcoded list
+        popular_assets = [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 
+            'JPM', 'V', 'JNJ', 'WMT', 'PG', 'MA', 'UNH', 'HD', 
+            'BAC', 'DIS', 'CMCSA', 'NFLX', 'ADBE'
+        ]
+        return popular_assets[:limit]
+
+class DataProviderFactory:
+    """Factory untuk membuat data provider"""
+    
+    @staticmethod
+    def create_provider(provider_type, **kwargs):
+        """Create data provider berdasarkan type"""
+        if provider_type == 'ccxt':
+            exchange_id = kwargs.get('exchange_id', 'binance')
+            market_type = kwargs.get('market_type', 'spot')
+            api_key = kwargs.get('api_key', '')
+            secret = kwargs.get('secret', '')
+            
+            if market_type == 'future':
+                return EnhancedCCXTFuturesProvider(
+                    exchange_id=exchange_id,
+                    api_key=api_key,
+                    secret=secret
+                )
+            else:
+                return EnhancedCCXTDataProvider(
+                    exchange_id=exchange_id,
+                    market_type=market_type,
+                    api_key=api_key,
+                    secret=secret
+                )
+                
+        elif provider_type == 'yfinance':
+            market_type = kwargs.get('market_type', 'stock')
+            return EnhancedYFinanceDataProvider(market_type=market_type)
+            
+        elif provider_type == 'alphavantage':
+            api_key = kwargs.get('api_key', 'demo')
+            return AlphaVantageProvider(api_key=api_key)
+            
+        elif provider_type == 'dynamic':
+            market_type = kwargs.get('market_type', 'crypto')
+            return DynamicDataProvider(market_type=market_type)
+            
+        else:
+            raise ValueError(f"Unknown provider type: {provider_type}")
 
 class DynamicDataProvider(EnhancedDataProvider):
     """Dynamic data provider dengan fallback Binance → KuCoin → YFinance"""
@@ -634,7 +847,7 @@ class DynamicDataProvider(EnhancedDataProvider):
                     # Setup providers dengan exchange yang berhasil
                     self.providers = {
                         'crypto_spot': spot_provider,
-                        'crypto_future': EnhancedCCXTDataProvider(exchange_id=exchange_id, market_type='future'),
+                        'crypto_future': EnhancedCCXTFuturesProvider(exchange_id=exchange_id),
                         'forex': EnhancedYFinanceDataProvider(market_type='forex'),
                         'saham_id': EnhancedYFinanceDataProvider(market_type='saham_id'), 
                         'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
@@ -850,7 +1063,6 @@ class DynamicDataProvider(EnhancedDataProvider):
         
         return base_metrics
 
-
 # =============================================
 # DATA PROVIDER MONITOR
 # =============================================
@@ -894,7 +1106,6 @@ class DataProviderMonitor:
                 }
         
         return report
-
 
 # Test function
 def test_dynamic_provider():
