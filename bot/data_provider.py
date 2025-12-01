@@ -850,6 +850,52 @@ class DynamicDataProvider(EnhancedDataProvider):
         
         return base_metrics
 
+
+# =============================================
+# DATA PROVIDER MONITOR
+# =============================================
+
+class DataProviderMonitor:
+    """Monitor kesehatan data providers"""
+    
+    def __init__(self):
+        self.providers = {}
+        self.health_history = {}
+        
+    def register_provider(self, name: str, provider):
+        """Register provider untuk monitoring"""
+        self.providers[name] = provider
+        self.health_history[name] = []
+        logger.info(f"Registered provider: {name}")
+        
+    def get_health_report(self):
+        """Get health report untuk semua providers"""
+        report = {
+            'total_providers': len(self.providers),
+            'providers': {}
+        }
+        
+        for name, provider in self.providers.items():
+            try:
+                # Coba ambil metrics jika tersedia
+                if hasattr(provider, 'get_health_metrics'):
+                    metrics = provider.get_health_metrics()
+                else:
+                    metrics = {'status': 'unknown'}
+                
+                report['providers'][name] = {
+                    'status': 'active',
+                    **metrics
+                }
+            except Exception as e:
+                report['providers'][name] = {
+                    'status': 'error',
+                    'error': str(e)
+                }
+        
+        return report
+
+
 # Test function
 def test_dynamic_provider():
     """Test DynamicDataProvider dengan fallback system"""
