@@ -24,7 +24,11 @@ from enum import Enum
 import concurrent.futures
 from scipy import stats
 
-warnings.filterwarnings("ignore")
+# Suppress torch warnings
+warnings.filterwarnings("ignore", message=".*torch.classes.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 load_dotenv()
 
 # Enhanced logging
@@ -38,7 +42,6 @@ logger = logging.getLogger(__name__)
 try:
     from .strategies import TechnicalAnalysisStrategy
     from .data_provider import (
-        CCXTDataProvider,
         YFinanceDataProvider,
         DataProviderMonitor,
         DynamicDataProvider
@@ -66,12 +69,6 @@ except ImportError as e:
             self.entry_range_pct = kwargs.get('entry_range_pct', 0.02)
         def analyze(self, df): 
             return {'score': 0, 'action': 'NEUTRAL', 'entry_price': 0, 'sl': 0, 'tp': 0}
-    
-    class CCXTDataProvider: 
-        def __init__(self, *args, **kwargs): pass
-        def get_ohlcv(self, *args, **kwargs): return pd.DataFrame()
-        def get_ticker(self, *args, **kwargs): return {'last': 0}
-        def get_popular_assets(self, *args, **kwargs): return []
     
     class YFinanceDataProvider: 
         def __init__(self, *args, **kwargs): 
@@ -1497,20 +1494,41 @@ class MLEnhancedBot:
         self.load_model()
 
     def load_model(self):
-        """Load model dan scaler yang sudah ditraining"""
+        """Load model dan scaler yang sudah ditraining - FIXED"""
         try:
-            if os.path.exists(self.model_path) and os.path.exists(self.scaler_path):
+            # Cek apakah file exists dan valid
+            if (os.path.exists(self.model_path) and 
+                os.path.exists(self.scaler_path) and
+                os.path.getsize(self.model_path) > 1000):  # Minimal file size
+                
+                # Clear any existing model first
+                self.model = None
+                self.scaler = None
+                
+                # Load dengan error handling yang lebih baik
                 self.model = joblib.load(self.model_path)
                 self.scaler = joblib.load(self.scaler_path)
-                self.is_trained = True
-                logger.info("✅ ML model loaded successfully")
-                return True
+                
+                # Validate loaded model
+                if (hasattr(self.model, 'predict') and 
+                    hasattr(self.scaler, 'transform')):
+                    self.is_trained = True
+                    logger.info("✅ ML model loaded successfully")
+                    return True
+                else:
+                    logger.error("❌ Loaded model invalid")
+                    self._initialize_model()
+                    return False
+            else:
+                logger.warning("Model files not found or too small, initializing new model")
+                self._initialize_model()
+                return False
+                
         except Exception as e:
             logger.error(f"❌ Error loading model: {e}")
-        
-        # Initialize new model jika tidak ada
-        self._initialize_model()
-        return False
+            # Initialize new model sebagai fallback
+            self._initialize_model()
+            return False
 
     def save_model(self):
         """Save model dan scaler"""
