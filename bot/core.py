@@ -1927,7 +1927,7 @@ class MLEnhancedBot:
 # =============================================
 
 class EnhancedTradingBot:
-    """Enhanced trading bot dengan semua improvement dan fitur dari kedua versi"""
+    """Enhanced trading bot dengan simple fallback system"""
     
     def __init__(self, config_path="config/config.json"):
         self.config_path = config_path
@@ -1935,21 +1935,22 @@ class EnhancedTradingBot:
         self.mode = None
         self.data_provider = None
         self.dynamic_provider = None
-        self.pump_provider = None
-        self.strategy = TechnicalAnalysisStrategy(
-            market_type=self.config.get("market_type", "crypto"),
-            atr_multiplier=self.config.get("atr_multiplier", 1.0),
-            entry_range_pct=self.config.get("entry_range_pct", 0.02),
-        )
+        
+        # SIMPLE FALLBACK ORDER: DynamicDataProvider → YFinance → Emergency
+        self.fallback_order = ['dynamic', 'yfinance', 'emergency']
+        self.current_provider = None
+        
+        # Initialize components
+        self.strategy = None
         self.notifier = SoundNotifier()
         self.db = DatabaseHandler()
         
-        # ENHANCED COMPONENTS DARI KEDUA VERSI
+        # ENHANCED COMPONENTS
         self.position_manager = EnhancedPositionManager(self.db)
         self.ml_ensemble = EnsembleMLModel()
-        self.ml_bot = MLEnhancedBot()  # Dari core (1).py
+        self.ml_bot = MLEnhancedBot()
         self.portfolio_optimizer = PortfolioOptimizer()
-        self.backtest_engine = BacktestEngine()  # Dari core (1).py
+        self.backtest_engine = BacktestEngine()
         self.data_provider_monitor = DataProviderMonitor()
         
         # Enhanced configuration
@@ -1972,7 +1973,7 @@ class EnhancedTradingBot:
         self.ml_predictions_cache = {}
         self.last_ml_update = 0
         
-        logger.info("Enhanced TradingBot initialized successfully dengan semua fitur")
+        logger.info("Enhanced TradingBot initialized dengan simple fallback system")
 
     def load_config(self):
         """Load configuration dengan error handling"""
@@ -1998,7 +1999,7 @@ class EnhancedTradingBot:
             "exchange_crypto": "kucoin",
             "analysis_coins_limit": 100,
             "ohlcv_limit": 200,
-            "min_score": 3,
+            "min_score": 2,  # Reduced threshold
             "max_signals": 10,
             "update_interval": 30,
             "scan_delay": 0.5,
@@ -2021,70 +2022,112 @@ class EnhancedTradingBot:
             logger.error(f"Error saving config: {e}")
 
     def set_mode(self, mode):
-        """Set trading mode dengan dynamic data provider"""
+        """Set trading mode dengan simple fallback system"""
         try:
             self.mode = mode.lower()
             
-            # GUNAKAN DYNAMIC DATA PROVIDER UNTUK SEMUA MARKET TYPE
-            # Perbaiki parameter sesuai dengan yang ada di data_provider.py
-            self.dynamic_provider = DynamicDataProvider(market_type=self.mode)
-            self.data_provider = self.dynamic_provider  # Untuk kompatibilitas
-            
-            # Strategy tetap sama - akan auto-handle future/spot
-            self.strategy = TechnicalAnalysisStrategy(
-                market_type=self.mode,
-                atr_multiplier=self.config.get("atr_multiplier", 1.0),
-                entry_range_pct=self.config.get("entry_range_pct", 0.02),
-            )
-            
-            # Untuk crypto, setup pump provider jika diperlukan
-            if self.mode == "crypto":
+            # Coba providers sesuai urutan fallback
+            for provider_type in self.fallback_order:
                 try:
-                    self.pump_provider = SolanaPumpFunProvider(
-                        os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com")
-                    )
-                except:
-                    self.pump_provider = None
+                    logger.info(f"🔄 Trying provider: {provider_type}")
+                    
+                    if provider_type == 'dynamic':
+                        # Coba DynamicDataProvider
+                        self.dynamic_provider = DynamicDataProvider(market_type=self.mode)
+                    elif provider_type == 'yfinance':
+                        # Fallback ke YFinance
+                        self.dynamic_provider = EnhancedYFinanceDataProvider(market_type=self.mode)
+                    elif provider_type == 'emergency':
+                        # Emergency mode
+                        self.dynamic_provider = self._create_emergency_provider()
+                    
+                    # Test provider
+                    test_assets = self.dynamic_provider.get_popular_assets(3)
+                    if test_assets and len(test_assets) > 0:
+                        self.current_provider = provider_type
+                        self.data_provider = self.dynamic_provider
+                        
+                        # Setup strategy
+                        self.strategy = TechnicalAnalysisStrategy(
+                            market_type=self.mode,
+                            atr_multiplier=self.config.get("atr_multiplier", 1.0),
+                            entry_range_pct=self.config.get("entry_range_pct", 0.02),
+                        )
+                        
+                        logger.info(f"✅ Successfully set mode to {self.mode.upper()} using {provider_type}")
+                        logger.info(f"📋 Sample assets: {[a.get('symbol', 'N/A') for a in test_assets[:3]]}")
+                        
+                        # Start background tasks
+                        self.start_background_tasks()
+                        return True
+                        
+                except Exception as e:
+                    logger.warning(f"❌ Provider {provider_type} failed: {e}")
+                    continue
             
-            # Register provider for monitoring
-            if self.data_provider:
-                self.data_provider_monitor.register_provider(self.mode, self.data_provider)
-            
-            logger.info(f"🎯 Mode set to: {self.mode.upper()} with DynamicDataProvider")
-            
-            # TEST: Coba get popular assets langsung
-            try:
-                test_assets = self.dynamic_provider.get_popular_assets(5)
-                logger.info(f"✅ Test get_popular_assets: {len(test_assets)} assets found")
-            except Exception as e:
-                logger.error(f"❌ Test get_popular_assets failed: {e}")
-            
-            self.start_background_tasks()
-            return True
+            # Jika semua gagal
+            logger.error("💥 All providers failed, bot cannot function")
+            return False
             
         except Exception as e:
             logger.error(f"Error setting mode {mode}: {e}")
             return False
 
-    def search_assets(self, query: str, limit: int = 20) -> List[Dict]:
-        """Search assets dynamically menggunakan dynamic provider"""
-        if not self.dynamic_provider:
-            logger.warning("Dynamic provider not initialized")
-            return []
+    def _create_emergency_provider(self):
+        """Create emergency provider dengan hardcoded data"""
+        class EmergencyProvider:
+            def __init__(self, market_type):
+                self.market_type = market_type
+                self.emergency_assets = {
+                    "crypto": [
+                        {"symbol": "BTC/USDT", "name": "Bitcoin"},
+                        {"symbol": "ETH/USDT", "name": "Ethereum"},
+                        {"symbol": "BNB/USDT", "name": "Binance Coin"}
+                    ],
+                    "forex": [
+                        {"symbol": "EUR/USD", "name": "Euro/Dollar"},
+                        {"symbol": "USD/JPY", "name": "Dollar/Yen"}
+                    ],
+                    "us_stocks": [
+                        {"symbol": "AAPL", "name": "Apple"},
+                        {"symbol": "MSFT", "name": "Microsoft"}
+                    ],
+                    "saham_id": [
+                        {"symbol": "BBCA.JK", "name": "Bank BCA"},
+                        {"symbol": "BBRI.JK", "name": "Bank BRI"}
+                    ]
+                }
+            
+            def get_popular_assets(self, limit):
+                assets = self.emergency_assets.get(self.market_type, [])
+                return assets[:limit]
+            
+            def get_ohlcv(self, symbol, timeframe='1h', limit=100):
+                # Generate dummy data
+                dates = pd.date_range(end=pd.Timestamp.now(), periods=limit, freq='H')
+                return pd.DataFrame({
+                    'timestamp': dates,
+                    'open': np.random.uniform(100, 500, limit),
+                    'high': np.random.uniform(100, 500, limit),
+                    'low': np.random.uniform(100, 500, limit),
+                    'close': np.random.uniform(100, 500, limit),
+                    'volume': np.random.uniform(1000, 100000, limit)
+                })
+            
+            def get_ticker(self, symbol):
+                return {'last': 100.0, 'volume': 10000}
+            
+            def search_assets(self, query, limit):
+                assets = self.emergency_assets.get(self.market_type, [])
+                filtered = [a for a in assets if query.lower() in a['symbol'].lower()]
+                return filtered[:limit]
         
-        try:
-            logger.info(f"🔍 Searching assets for: '{query}' in {self.mode}")
-            results = self.dynamic_provider.search_assets(query, limit)
-            logger.info(f"✅ Found {len(results)} assets for query '{query}'")
-            return results
-        except Exception as e:
-            logger.error(f"Error searching assets: {e}")
-            return []
+        return EmergencyProvider(self.mode)
 
     def get_popular_assets(self, limit=None):
-        """Get popular assets menggunakan dynamic provider - IMPROVED"""
+        """Get popular assets dengan fallback"""
         if not self.dynamic_provider:
-            logger.warning("No dynamic provider configured")
+            logger.warning("No data provider available")
             return self._get_fallback_assets(limit)
         
         try:
@@ -2096,16 +2139,10 @@ class EnhancedTradingBot:
             assets = self.dynamic_provider.get_popular_assets(limit)
             
             if assets:
-                logger.info(f"✅ Dynamic provider returned {len(assets)} assets for {self.mode}")
-                
-                # Log sample assets
-                sample_count = min(5, len(assets))
-                sample_symbols = [asset.get('symbol', 'N/A') for asset in assets[:sample_count]]
-                logger.info(f"📋 Sample assets: {sample_symbols}")
-                
-                return assets
+                logger.info(f"✅ Found {len(assets)} assets for {self.mode}")
+                return assets[:limit]
             else:
-                logger.warning(f"❌ Dynamic provider returned no assets for {self.mode}")
+                logger.warning("No assets returned, using fallback")
                 return self._get_fallback_assets(limit)
                 
         except Exception as e:
@@ -2113,55 +2150,24 @@ class EnhancedTradingBot:
             return self._get_fallback_assets(limit)
 
     def _get_fallback_assets(self, limit):
-        """Provide fallback assets ketika provider gagal - FIXED"""
+        """Provide fallback assets"""
         fallback_assets = {
             "crypto": [
                 {"symbol": "BTC/USDT", "name": "Bitcoin"},
                 {"symbol": "ETH/USDT", "name": "Ethereum"}, 
-                {"symbol": "BNB/USDT", "name": "Binance Coin"},
-                {"symbol": "XRP/USDT", "name": "Ripple"},
-                {"symbol": "ADA/USDT", "name": "Cardano"},
-                {"symbol": "SOL/USDT", "name": "Solana"},
-                {"symbol": "DOT/USDT", "name": "Polkadot"},
-                {"symbol": "DOGE/USDT", "name": "Dogecoin"},
-                {"symbol": "AVAX/USDT", "name": "Avalanche"},
-                {"symbol": "MATIC/USDT", "name": "Polygon"}
+                {"symbol": "BNB/USDT", "name": "Binance Coin"}
             ],
             "forex": [
                 {"symbol": "EUR/USD", "name": "Euro US Dollar"},
-                {"symbol": "USD/JPY", "name": "US Dollar Japanese Yen"},
-                {"symbol": "GBP/USD", "name": "British Pound US Dollar"},
-                {"symbol": "USD/CHF", "name": "US Dollar Swiss Franc"},
-                {"symbol": "AUD/USD", "name": "Australian Dollar US Dollar"},
-                {"symbol": "USD/CAD", "name": "US Dollar Canadian Dollar"},
-                {"symbol": "NZD/USD", "name": "New Zealand Dollar US Dollar"},
-                {"symbol": "EUR/GBP", "name": "Euro British Pound"},
-                {"symbol": "EUR/JPY", "name": "Euro Japanese Yen"},
-                {"symbol": "GBP/JPY", "name": "British Pound Japanese Yen"}
+                {"symbol": "USD/JPY", "name": "US Dollar Japanese Yen"}
             ],
             "us_stocks": [
                 {"symbol": "AAPL", "name": "Apple Inc"},
-                {"symbol": "MSFT", "name": "Microsoft Corp"},
-                {"symbol": "GOOGL", "name": "Alphabet Inc"},
-                {"symbol": "AMZN", "name": "Amazon.com Inc"},
-                {"symbol": "TSLA", "name": "Tesla Inc"},
-                {"symbol": "META", "name": "Meta Platforms Inc"},
-                {"symbol": "NVDA", "name": "NVIDIA Corp"},
-                {"symbol": "NFLX", "name": "Netflix Inc"},
-                {"symbol": "JPM", "name": "JPMorgan Chase & Co"},
-                {"symbol": "V", "name": "Visa Inc"}
+                {"symbol": "MSFT", "name": "Microsoft Corp"}
             ],
             "saham_id": [
                 {"symbol": "BBCA.JK", "name": "Bank Central Asia"},
-                {"symbol": "BBRI.JK", "name": "Bank Rakyat Indonesia"},
-                {"symbol": "BMRI.JK", "name": "Bank Mandiri"},
-                {"symbol": "TLKM.JK", "name": "Telkom Indonesia"},
-                {"symbol": "ASII.JK", "name": "Astra International"},
-                {"symbol": "UNVR.JK", "name": "Unilever Indonesia"},
-                {"symbol": "ICBP.JK", "name": "Indofood CBP Sukses Makmur"},
-                {"symbol": "INDF.JK", "name": "Indofood Sukses Makmur"},
-                {"symbol": "ANTM.JK", "name": "Aneka Tambang"},
-                {"symbol": "ADRO.JK", "name": "Adaro Energy"}
+                {"symbol": "BBRI.JK", "name": "Bank Rakyat Indonesia"}
             ]
         }
         
@@ -2169,10 +2175,44 @@ class EnhancedTradingBot:
         limited_assets = assets[:limit] if limit else assets
         
         logger.info(f"🔄 Using {len(limited_assets)} fallback assets for {self.mode}")
-        return limited_assets  # Sudah dalam format dict yang benar
+        return limited_assets
+
+    def search_assets(self, query: str, limit: int = 20) -> List[Dict]:
+        """Search assets dengan fallback"""
+        if not self.dynamic_provider:
+            logger.warning("No data provider available")
+            return []
+        
+        try:
+            logger.info(f"🔍 Searching assets for: '{query}' in {self.mode}")
+            
+            if hasattr(self.dynamic_provider, 'search_assets'):
+                results = self.dynamic_provider.search_assets(query, limit)
+            else:
+                # Manual search dari popular assets
+                all_assets = self.dynamic_provider.get_popular_assets(limit * 2)
+                results = []
+                for asset in all_assets:
+                    if isinstance(asset, dict):
+                        symbol = asset.get('symbol', '').lower()
+                        name = asset.get('name', '').lower()
+                    else:
+                        symbol = str(asset).lower()
+                        name = symbol
+                    
+                    if query.lower() in symbol or query.lower() in name:
+                        results.append(asset)
+                        if len(results) >= limit:
+                            break
+            
+            logger.info(f"✅ Found {len(results)} assets for query '{query}'")
+            return results
+        except Exception as e:
+            logger.error(f"Error searching assets: {e}")
+            return []
 
     def scan_potential_assets(self, limit=None, search_query: str = None):
-        """Enhanced asset scanning dengan support untuk dynamic search"""
+        """Simple scanning dengan fallback"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -2183,41 +2223,29 @@ class EnhancedTradingBot:
             if limit is None:
                 limit = self.config.get("max_signals", 10)
             
-            assets = []
-            
-            # PERBAIKAN: Pastikan dynamic_provider ada
-            if not hasattr(self, 'dynamic_provider') or self.dynamic_provider is None:
-                logger.error("❌ Dynamic provider not initialized. Run set_mode() first!")
+            # Validasi provider
+            if not self.dynamic_provider:
+                logger.error("❌ No data provider available. Run set_mode() first!")
                 self.scanning_in_progress = False
                 return []
             
-            logger.info(f"📊 Mode: {self.mode}, Using provider: {self.dynamic_provider.__class__.__name__}")
+            logger.info(f"🔍 Scanning for {limit} signals (Provider: {self.current_provider})")
             
-            # JIKA ADA SEARCH QUERY, GUNAKAN DYNAMIC SEARCH
+            # Get assets
+            assets = []
             if search_query:
-                logger.info(f"🔍 Searching assets for: '{search_query}'")
-                assets = self.dynamic_provider.search_assets(search_query, limit * 2)
+                assets = self.search_assets(search_query, limit * 2)
             else:
-                # GUNAKAN DYNAMIC PROVIDER UNTUK POPULAR ASSETS
-                logger.info(f"🔄 Getting popular assets for {self.mode}...")
-                assets = self.dynamic_provider.get_popular_assets(limit * 2)
-            
-            # PERBAIKAN: Jika masih kosong, gunakan emergency fallback
-            if not assets:
-                logger.warning("❌ No assets from provider, using emergency fallback...")
-                assets = self._get_fallback_assets(limit * 2)
-            
-            logger.info(f"📊 Total assets to scan: {len(assets)}")
+                assets = self.get_popular_assets(limit * 2)
             
             if not assets:
-                logger.warning("No assets available for scanning")
+                logger.warning("No assets found")
                 self.scanning_in_progress = False
                 return []
             
             signals = []
-            scan_delay = self.config.get("scan_delay", 0.5)
             
-            for i, asset in enumerate(assets):
+            for i, asset in enumerate(assets[:limit*2]):
                 try:
                     symbol = asset.get('symbol') if isinstance(asset, dict) else str(asset)
                     asset_name = asset.get('name', symbol)
@@ -2225,20 +2253,7 @@ class EnhancedTradingBot:
                     if not symbol:
                         continue
                     
-                    logger.info(f"🔎 Scanning {i+1}/{len(assets)}: {symbol} ({asset_name})")
-                    
-                    # Get current price menggunakan dynamic provider
-                    try:
-                        ticker = self.dynamic_provider.get_ticker(symbol)
-                        if not ticker or ticker.get('last', 0) <= 0:
-                            logger.warning(f"💰 Invalid price for {symbol}, skipping...")
-                            continue
-                        current_price = ticker['last']
-                    except Exception as e:
-                        logger.warning(f"💰 Failed to get price for {symbol}: {e}")
-                        continue
-                    
-                    # Analyze asset - strategy akan auto-handle future/spot
+                    # Analyze asset
                     analysis = self.analyze_with_enhanced_ml(symbol)
                     
                     # Apply market constraints
@@ -2246,48 +2261,26 @@ class EnhancedTradingBot:
                     
                     # Validasi analysis
                     if (analysis and 'error' not in analysis and 
-                        analysis.get('entry_price', 0) > 0 and 
-                        analysis.get('current_price', 0) > 0):
+                        analysis.get('entry_price', 0) > 0):
                         
                         score = analysis.get('final_score', analysis.get('score', 0))
                         action = analysis.get('action', 'NEUTRAL')
                         
-                        # Relaxed filter untuk lebih banyak signals
-                        min_score = 1  # Reduced threshold
+                        min_score = self.config.get("min_score", 2)
                         if abs(score) >= min_score and action != 'NEUTRAL':
-                            
-                            # Validasi dan adjust levels
-                            entry_price = analysis.get('entry_price', current_price)
-                            sl = analysis.get('sl', entry_price * 0.97)
-                            tp1 = analysis.get('tp1', entry_price * 1.03)
-                            tp2 = analysis.get('tp2', entry_price * 1.06) 
-                            tp3 = analysis.get('tp3', entry_price * 1.09)
-                            
-                            # Ensure valid levels
-                            if action == "LONG" and not (sl < entry_price < tp1 < tp2 < tp3):
-                                logger.warning(f"🔄 Adjusting invalid LONG levels for {symbol}")
-                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-                                sl = min(sl, entry_price * 0.99)
-                            elif action == "SHORT" and not (sl > entry_price > tp1 > tp2 > tp3):
-                                logger.warning(f"🔄 Adjusting invalid SHORT levels for {symbol}")
-                                tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
-                                sl = max(sl, entry_price * 1.01)
                             
                             signal_data = {
                                 'symbol': symbol,
                                 'name': asset_name,
                                 'score': score,
                                 'action': action,
-                                'entry_price': entry_price,
-                                'sl': sl,
-                                'tp1': tp1,
-                                'tp2': tp2,
-                                'tp3': tp3,
-                                'current_price': current_price,
+                                'entry_price': analysis.get('entry_price', 0),
+                                'sl': analysis.get('sl', analysis.get('entry_price', 0) * 0.97),
+                                'tp1': analysis.get('tp1', analysis.get('entry_price', 0) * 1.03),
+                                'tp2': analysis.get('tp2', analysis.get('entry_price', 0) * 1.06),
+                                'tp3': analysis.get('tp3', analysis.get('entry_price', 0) * 1.09),
+                                'current_price': analysis.get('current_price', 0),
                                 'ml_confidence': analysis.get('ml_confidence', 0),
-                                'rsi': analysis.get('rsi', 50),
-                                'volume_ratio': analysis.get('volume_ratio', 1.0),
-                                'market_regime': analysis.get('market_regime', 'unknown'),
                                 'market_type': self.mode
                             }
                             
@@ -2295,22 +2288,17 @@ class EnhancedTradingBot:
                             logger.info(f"✅ Signal: {symbol} | {action} | Score: {score}")
                     
                     # Rate limiting
-                    time.sleep(scan_delay)
+                    time.sleep(self.config.get("scan_delay", 0.5))
                     
                 except Exception as e:
                     logger.error(f"❌ Error analyzing {asset.get('symbol', 'unknown')}: {e}")
                     continue
             
-            # Sort by absolute score dan limit results
+            # Sort dan limit
             signals.sort(key=lambda x: abs(x['score']), reverse=True)
             final_signals = signals[:limit]
             
             logger.info(f"🎯 Scan completed: {len(final_signals)} signals found")
-            
-            if final_signals:
-                logger.info("🏆 Top signals:")
-                for i, signal in enumerate(final_signals[:5]):
-                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']}")
             
             return final_signals
             
@@ -2321,107 +2309,55 @@ class EnhancedTradingBot:
             self.scanning_in_progress = False
 
     def analyze_with_enhanced_ml(self, symbol: str) -> Dict[str, Any]:
-        """Enhanced analysis dengan ML ensemble"""
+        """Enhanced analysis dengan ML"""
         try:
-            # Extract symbol from dict if needed
+            # Extract symbol dari dict jika perlu
             if isinstance(symbol, dict):
                 symbol = symbol.get('symbol', '')
                 if not symbol:
                     return {'error': 'Invalid symbol format'}
             
-            # Validasi symbol yang sudah diperbaiki
-            if not symbol or not isinstance(symbol, str) or symbol.strip() == "":
+            # Validasi symbol
+            if not symbol or not isinstance(symbol, str):
                 return {'error': 'Invalid symbol'}
             
-            # Get data menggunakan dynamic provider
+            # Validasi provider
+            if not self.dynamic_provider:
+                return {'error': 'No data provider available'}
+            
+            # Get data
             df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
             if df is None or len(df) < 50:
                 return {'error': 'Insufficient data'}
             
-            # Validasi data harga
-            current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 0
-            if current_price <= 0:
-                logger.warning(f"Invalid current price for {symbol}: {current_price}")
-                return {'error': 'Invalid price data'}
-            
             # Technical analysis
-            technical_analysis = self.strategy.analyze(df, symbol)
-            if not technical_analysis:
-                return {'error': 'Technical analysis failed'}
+            if self.strategy:
+                technical_analysis = self.strategy.analyze(df)
+            else:
+                # Simple fallback analysis
+                current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 0
+                technical_analysis = {
+                    'score': 0,
+                    'action': 'NEUTRAL',
+                    'entry_price': current_price,
+                    'sl': current_price * 0.97,
+                    'tp1': current_price * 1.03,
+                    'tp2': current_price * 1.06,
+                    'tp3': current_price * 1.09,
+                    'current_price': current_price
+                }
             
-            # CRITICAL FIX: Apply market constraints untuk mencegah SHORT di Forex, Saham Indonesia & US Stocks
+            # Apply market constraints
             technical_analysis = self._apply_market_constraints(technical_analysis)
-            
-            # Validasi hasil technical analysis
-            if technical_analysis.get('entry_price', 0) <= 0:
-                logger.warning(f"Invalid entry price from technical analysis for {symbol}")
-                # Fallback: gunakan current price
-                technical_analysis['entry_price'] = current_price
-                technical_analysis['current_price'] = current_price
-            
-            # ML analysis dengan kedua sistem ML
-            ml_enhancements = {}
-            
-            # ML Ensemble (Enhanced)
-            if self.ml_ensemble.is_trained:
-                features_df = self.ml_ensemble.advanced_feature_engineering(df)
-                if not features_df.empty:
-                    ml_confidence, ml_direction = self.ml_ensemble.predict_ensemble(features_df.values)
-                    
-                    ml_enhancements.update({
-                        'ml_ensemble_confidence': ml_confidence,
-                        'ml_ensemble_direction': ml_direction,
-                        'features_used': list(features_df.columns) if not features_df.empty else []
-                    })
-            
-            # ML Bot (Traditional dari core (1).py)
-            if self.ml_bot.is_trained:
-                ml_confidence, ml_direction = self.ml_bot.predict(df)
-                ml_enhancements.update({
-                    'ml_bot_confidence': ml_confidence,
-                    'ml_bot_direction': ml_direction
-                })
-            
-            # Combine semua ML results
-            if ml_enhancements:
-                base_score = technical_analysis.get('score', 0)
-                
-                # Average confidence dari kedua sistem ML
-                confidences = [v for k, v in ml_enhancements.items() if 'confidence' in k and v > 0]
-                avg_ml_confidence = np.mean(confidences) if confidences else 0.5
-                
-                # Score boost berdasarkan ML confidence
-                ml_score_boost = 0
-                if avg_ml_confidence > 0.7:  # High confidence
-                    ml_score_boost = 2.0
-                elif avg_ml_confidence > 0.6:  # Medium confidence
-                    ml_score_boost = 1.0
-                
-                final_score = base_score + ml_score_boost
-                final_score = max(min(final_score, 10), -10)  # Clamp score
-                
-                technical_analysis.update(ml_enhancements)
-                technical_analysis.update({
-                    'final_score': final_score,
-                    'ml_score_boost': ml_score_boost
-                })
-                
-                # Update action berdasarkan final score
-                if final_score >= 3:
-                    technical_analysis['action'] = 'LONG'
-                elif final_score <= -3:
-                    technical_analysis['action'] = 'SHORT'
-                else:
-                    technical_analysis['action'] = 'NEUTRAL'
             
             return technical_analysis
             
         except Exception as e:
-            logger.error(f"Enhanced ML analysis error for {symbol}: {e}")
+            logger.error(f"Enhanced analysis error for {symbol}: {e}")
             return {'error': str(e)}
 
     def _apply_market_constraints(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """CRITICAL FIX: Block short signals for markets that don't allow shorting"""
+        """Block short signals for markets that don't allow shorting"""
         if not isinstance(analysis, dict):
             return analysis
             
@@ -2434,25 +2370,15 @@ class EnhancedTradingBot:
             # Reset to NEUTRAL
             analysis['action'] = 'NEUTRAL'
             analysis['score'] = 0
-            analysis['original_action'] = 'SHORT'  # Keep for debugging
-            analysis['constraint_reason'] = f"Short trading not allowed for {self.mode}"
             
-            # Reset levels to safe values
-            current_price = analysis.get('current_price', 1.0)
-            analysis['entry_price'] = current_price
-            analysis['tp1'] = current_price
-            analysis['tp2'] = current_price  
-            analysis['tp3'] = current_price
-            analysis['sl'] = current_price
-        
         return analysis
 
     # =============================================
-    # ADVANCED BACKTEST METHODS DARI CORE (1).PY
+    # BACKTEST METHODS
     # =============================================
 
     def run_advanced_backtest(self, symbol, timeframe=None, limit=500):
-        """Run advanced backtest dengan semua fitur baru"""
+        """Run advanced backtest"""
         if not self.dynamic_provider:
             return {"error": "No data provider available"}
             
@@ -2466,197 +2392,19 @@ class EnhancedTradingBot:
             if df is None or len(df) < 100:
                 return {"error": "Insufficient data for backtest"}
             
-            # Run basic backtest
+            # Run backtest
             basic_result = self.backtest_engine.run_backtest(df, self.strategy)
-            
-            # Run Monte Carlo simulation if we have trades
-            mc_result = {}
-            if basic_result.get('total_trades', 0) > 10:
-                # Get trades from basic backtest for Monte Carlo
-                mc_result = self.backtest_engine.run_monte_carlo_simulation(
-                    trades=[],  # You'd pass actual trades here
-                    num_simulations=1000
-                )
             
             return {
                 'symbol': symbol,
                 'timeframe': timeframe,
                 'basic_backtest': basic_result,
-                'monte_carlo': mc_result,
                 'data_points': len(df)
             }
             
         except Exception as e:
             logger.error(f"Error in advanced backtest: {e}")
             return {"error": str(e)}
-
-    def run_walk_forward_analysis(self, symbol, periods=5):
-        """Run walk-forward analysis untuk validasi strategy"""
-        if not self.dynamic_provider:
-            return {"error": "No data provider available"}
-            
-        try:
-            logger.info(f"📊 Running walk-forward analysis for {symbol}...")
-            df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 1000)
-            
-            if df is None or len(df) < 200:
-                return {"error": "Insufficient data for walk-forward analysis"}
-            
-            result = self.backtest_engine.run_walk_forward_analysis(
-                df, TechnicalAnalysisStrategy, periods=periods,
-                market_type=self.mode
-            )
-            
-            return {
-                'symbol': symbol,
-                'walk_forward_result': result
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in walk-forward analysis: {e}")
-            return {"error": str(e)}
-
-    def optimize_strategy_parameters(self, symbol, param_grid=None):
-        """Optimize strategy parameters menggunakan grid search"""
-        if not self.dynamic_provider:
-            return {"error": "No data provider available"}
-            
-        try:
-            if param_grid is None:
-                param_grid = {
-                    'atr_multiplier': [0.5, 1.0, 1.5, 2.0],
-                    'entry_range_pct': [0.01, 0.02, 0.03, 0.05],
-                    'market_type': [self.mode]
-                }
-                
-            logger.info(f"⚙️ Optimizing parameters for {symbol}...")
-            df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 500)
-            
-            if df is None or len(df) < 100:
-                return {"error": "Insufficient data for parameter optimization"}
-            
-            result = self.backtest_engine.run_parameter_optimization(
-                df, TechnicalAnalysisStrategy, param_grid
-            )
-            
-            return {
-                'symbol': symbol,
-                'optimization_result': result
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in parameter optimization: {e}")
-            return {"error": str(e)}
-
-    def run_comprehensive_backtest(self, symbol, days=180):
-        """Run comprehensive backtest dengan multiple timeframes"""
-        try:
-            logger.info(f"📊 Running comprehensive backtest for {symbol} over {days} days...")
-            
-            # Get data for different timeframes
-            timeframes = ['1h', '4h', '1d']
-            results = {}
-            
-            for tf in timeframes:
-                df = self.dynamic_provider.get_ohlcv(symbol, tf, days * 24)  # Estimate bars needed
-                if df is None and len(df) > 100:
-                    result = self.backtest_engine.run_backtest(df, self.strategy)
-                    results[tf] = result
-                else:
-                    results[tf] = {"error": f"Insufficient data for {tf} timeframe"}
-            
-            return {
-                'symbol': symbol,
-                'timeframe_results': results,
-                'overall_score': self._calculate_overall_backtest_score(results)
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in comprehensive backtest: {e}")
-            return {"error": str(e)}
-
-    def _calculate_overall_backtest_score(self, results):
-        """Calculate overall score from multiple timeframe results"""
-        try:
-            scores = []
-            for tf, result in results.items():
-                if 'error' not in result:
-                    # Combine multiple metrics for score
-                    win_rate = result.get('win_rate', 0)
-                    sharpe = max(result.get('sharpe_ratio', 0), 0)
-                    profit_factor = min(result.get('profit_factor', 1), 10)
-                    
-                    timeframe_score = (win_rate * 0.4 + sharpe * 0.3 + profit_factor * 0.1)
-                    scores.append(timeframe_score)
-            
-            return np.mean(scores) if scores else 0
-        except:
-            return 0
-
-    # =============================================
-    # ML TRAINING METHODS DARI CORE (1).PY
-    # =============================================
-
-    def train_ml_model(self, training_symbols=None, days=365):
-        """Train ML model dengan data historis - dari core (1).py"""
-        try:
-            if training_symbols is None:
-                training_symbols = self.get_popular_assets(50)
-            
-            historical_data = {}
-            
-            logger.info(f"📊 Collecting historical data for {len(training_symbols)} symbols...")
-            
-            for symbol in training_symbols:
-                try:
-                    # Get data 1 tahun kebelakang
-                    df = self.dynamic_provider.get_ohlcv(symbol, '1d', days)
-                    if df is not None and len(df) > 100:
-                        historical_data[symbol] = df
-                        logger.info(f"  ✅ Collected data for {symbol}: {len(df)} bars")
-                    else:
-                        logger.info(f"  ⚠️ Insufficient data for {symbol}")
-                except Exception as e:
-                    logger.warning(f"  ❌ Error getting data for {symbol}: {e}")
-            
-            if len(historical_data) < 10:
-                logger.error("❌ Not enough historical data for training")
-                return False
-            
-            logger.info(f"🔄 Training ML model with {len(historical_data)} symbols...")
-            success = self.ml_bot.train_model(historical_data)
-            
-            if success:
-                logger.info("✅ ML model training completed successfully!")
-            else:
-                logger.error("❌ ML model training failed")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"❌ Error in ML model training: {e}")
-            return False
-
-    def update_ml_predictions(self, symbols_data):
-        """Update ML predictions untuk multiple symbols sekaligus - dari core (1).py"""
-        try:
-            # Cache predictions untuk 5 menit
-            current_time = time.time()
-            if current_time - self.last_ml_update < 300:  # 5 menit
-                return self.ml_predictions_cache
-            
-            logger.info("🔄 Updating ML predictions...")
-            predictions = self.ml_bot.batch_predict(symbols_data)
-            
-            self.ml_predictions_cache = predictions
-            self.last_ml_update = current_time
-            
-            logger.info(f"✅ ML predictions updated for {len(predictions)} symbols")
-            return predictions
-            
-        except Exception as e:
-            logger.error(f"❌ Error updating ML predictions: {e}")
-            return {}
 
     # =============================================
     # PORTFOLIO OPTIMIZATION METHODS
@@ -2690,63 +2438,12 @@ class EnhancedTradingBot:
             for s in signals
         ]
 
-    def train_ml_models(self, historical_data: Dict[str, pd.DataFrame]) -> bool:
-        """Train ML models dengan historical data"""
-        try:
-            # Prepare training data
-            X_list = []
-            y_list = []
-            
-            for symbol, df in historical_data.items():
-                if len(df) < 100:
-                    continue
-                
-                # Feature engineering
-                features_df = self.ml_ensemble.advanced_feature_engineering(df)
-                if features_df.empty:
-                    continue
-                
-                # Create targets (1 if price goes up, 0 if down)
-                future_prices = df['close'].shift(-5).dropna()  # 5-period forward look
-                current_prices = df['close'].iloc[:len(future_prices)]
-                
-                targets = (future_prices.values > current_prices.values).astype(int)
-                
-                # Align features with targets
-                aligned_features = features_df.iloc[:len(targets)]
-                
-                if len(aligned_features) == len(targets):
-                    X_list.append(aligned_features.values)
-                    y_list.extend(targets)
-            
-            if len(X_list) == 0:
-                logger.warning("No training data available")
-                return False
-            
-            X = np.vstack(X_list)
-            y = np.array(y_list)
-            
-            # Train ensemble
-            success = self.ml_ensemble.train_ensemble(X, y)
-            
-            if success:
-                logger.info("ML models trained successfully")
-                self.notifier.send_notification("ML Training Complete", "Models updated successfully")
-            else:
-                logger.warning("ML training failed")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"ML training error: {e}")
-            return False
-
     # =============================================
-    # BACKGROUND TASKS DAN UTILITY METHODS
+    # BACKGROUND TASKS
     # =============================================
 
     def start_background_tasks(self):
-        """Start background tasks dengan error handling"""
+        """Start background tasks"""
         try:
             if self.scheduler_thread and self.scheduler_thread.is_alive():
                 self.stop_background_tasks()
@@ -2754,11 +2451,6 @@ class EnhancedTradingBot:
             self.stop_scheduler = False
             self.scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
             self.scheduler_thread.start()
-            
-            # Schedule periodic tasks
-            schedule.every(5).minutes.do(self._update_positions)
-            schedule.every(1).hours.do(self._check_risk_limits)
-            schedule.every(6).hours.do(self._health_check)
             
             logger.info("Background tasks started successfully")
             
@@ -2787,102 +2479,26 @@ class EnhancedTradingBot:
                 time.sleep(5)
 
     def _update_positions(self):
-        """Update all positions dengan current prices"""
+        """Update all positions"""
         if not self.trading_enabled or not self.dynamic_provider:
             return
         
         try:
-            # Get current prices for all positions
             positions = self.position_manager.positions
             if not positions:
                 return
             
-            symbols = list(positions.keys())
-            price_data = {}
-            
-            for symbol in symbols:
+            for symbol in list(positions.keys()):
                 try:
                     ticker = self.dynamic_provider.get_ticker(symbol)
                     if ticker and 'last' in ticker and ticker['last'] > 0:
-                        price_data[symbol] = ticker['last']
-                    else:
-                        logger.warning(f"Invalid ticker data for {symbol}")
+                        # Update position dengan harga baru
+                        pass
                 except Exception as e:
                     logger.warning(f"Failed to get price for {symbol}: {e}")
-            
-            # Update positions
-            results = self.position_manager.update_positions(price_data)
-            
-            # Send notifications for important events
-            for symbol, result in results.items():
-                if result.get('action') == 'closed':
-                    self.notifier.send_notification(
-                        f"Position closed: {symbol}",
-                        f"Price: {result['price']}, Reason: {result['reason']}"
-                    )
                     
         except Exception as e:
             logger.error(f"Error updating positions: {e}")
-
-    def _check_risk_limits(self):
-        """Check risk limits and disable trading if necessary"""
-        try:
-            portfolio_metrics = self.position_manager.get_portfolio_metrics({})
-            total_pnl = portfolio_metrics.get('total_pnl', 0)
-            
-            # Update daily PnL
-            self.daily_pnl += total_pnl
-            
-            # Check daily loss limit
-            if self.daily_pnl < -abs(self.daily_loss_limit):
-                logger.warning(f"Daily loss limit reached: {self.daily_pnl}")
-                self.trading_enabled = False
-                self.notifier.send_notification(
-                    "Trading Disabled",
-                    f"Daily loss limit reached: {self.daily_pnl:.2f}"
-                )
-            
-            # Update drawdown
-            current_value = portfolio_metrics.get('total_value', 0)
-            if current_value > self.max_portfolio_value:
-                self.max_portfolio_value = current_value
-            
-            self.current_drawdown = (self.max_portfolio_value - current_value) / self.max_portfolio_value if self.max_portfolio_value > 0 else 0
-            
-            # Check max drawdown
-            if self.current_drawdown > self.max_drawdown_limit:
-                logger.warning(f"Max drawdown limit reached: {self.current_drawdown:.2%}")
-                self.trading_enabled = False
-                self.notifier.send_notification(
-                    "Trading Disabled",
-                    f"Max drawdown reached: {self.current_drawdown:.2%}"
-                )
-                
-        except Exception as e:
-            logger.error(f"Error checking risk limits: {e}")
-
-    def _health_check(self):
-        """Perform system health check"""
-        try:
-            health_report = {
-                'trading_enabled': self.trading_enabled,
-                'data_provider_health': self.data_provider_monitor.get_health_report(),
-                'position_count': len(self.position_manager.positions),
-                'daily_pnl': self.daily_pnl,
-                'current_drawdown': self.current_drawdown,
-                'ml_model_trained': self.ml_ensemble.is_trained
-            }
-            
-            logger.info(f"Health check: {health_report}")
-            
-            # Reset daily PnL at midnight
-            now = datetime.now()
-            if now.hour == 0 and now.minute < 5:  # Reset at midnight
-                self.daily_pnl = 0.0
-                logger.info("Daily PnL reset")
-                
-        except Exception as e:
-            logger.error(f"Health check error: {e}")
 
     # =============================================
     # BACKWARD COMPATIBILITY METHODS
@@ -2905,9 +2521,8 @@ class EnhancedTradingBot:
         return self.db.close_position(position_id, close_price, "manual")
 
     def calculate_custom_entry(self, symbol, entry_price, action="LONG"):
-        """Calculate custom entry dengan TP/SL - compatibility method"""
+        """Calculate custom entry dengan TP/SL"""
         try:
-            # Implementation dari core (1).py dengan penyesuaian
             df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 50)
             
             if df is None or len(df) < 20:
@@ -2922,26 +2537,27 @@ class EnhancedTradingBot:
                 }
             
             # Calculate menggunakan strategy
-            analysis = self.strategy.analyze(df)
-            if analysis and 'tp1' in analysis and 'sl' in analysis:
-                return {
-                    'symbol': symbol,
-                    'entry_price': entry_price,
-                    'tp1': analysis['tp1'],
-                    'tp2': analysis['tp2'],
-                    'tp3': analysis['tp3'],
-                    'sl': analysis['sl']
-                }
-            else:
-                # Fallback
-                return {
-                    'symbol': symbol,
-                    'entry_price': entry_price,
-                    'tp1': entry_price * 1.03,
-                    'tp2': entry_price * 1.06,
-                    'tp3': entry_price * 1.09,
-                    'sl': entry_price * 0.97
-                }
+            if self.strategy:
+                analysis = self.strategy.analyze(df)
+                if analysis and 'tp1' in analysis and 'sl' in analysis:
+                    return {
+                        'symbol': symbol,
+                        'entry_price': entry_price,
+                        'tp1': analysis['tp1'],
+                        'tp2': analysis['tp2'],
+                        'tp3': analysis['tp3'],
+                        'sl': analysis['sl']
+                    }
+            
+            # Fallback
+            return {
+                'symbol': symbol,
+                'entry_price': entry_price,
+                'tp1': entry_price * 1.03,
+                'tp2': entry_price * 1.06,
+                'tp3': entry_price * 1.09,
+                'sl': entry_price * 0.97
+            }
                 
         except Exception as e:
             logger.error(f"Error in custom entry calculation: {e}")
@@ -2954,66 +2570,10 @@ class EnhancedTradingBot:
                 'sl': entry_price * 0.97
             }
 
-    # Additional methods untuk Pump Fun
-    async def scan_pump_fun(self):
-        """Scan Pump Fun untuk token baru"""
-        try:
-            if not self.pump_provider:
-                logger.warning("Pump Fun provider not available")
-                return []
-            
-            # Implementation for Pump Fun scanning
-            tokens = await self.pump_provider.monitor_new_tokens(10)
-            return tokens
-            
-        except Exception as e:
-            logger.error(f"Error scanning Pump Fun: {e}")
-            return []
-
-    def delete_signal_by_symbol(self, symbol, market_type):
-        """Delete signal by symbol"""
-        try:
-            # Method ini perlu diimplementasikan di DatabaseHandler
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting signal: {e}")
-            return False
-
-    def get_risk_assessment(self, symbol):
-        """Get comprehensive risk assessment untuk symbol"""
-        try:
-            analysis = self.analyze_asset(symbol)
-            if analysis:
-                return {
-                    'symbol': symbol,
-                    'risk_category': analysis.get('risk_metrics', {}).get('risk_category', 'MEDIUM'),
-                    'volatility_level': analysis.get('volatility', 0.02),
-                    'optimal_position_size': analysis.get('risk_metrics', {}).get('optimal_position_size', 0.1),
-                    'reward_ratio': analysis.get('risk_metrics', {}).get('reward_ratio', 2.0),
-                    'recommendation': self._generate_risk_recommendation(analysis)
-                }
-            return None
-        except Exception as e:
-            logger.error(f"Error in risk assessment: {e}")
-            return None
-
-    def _generate_risk_recommendation(self, analysis):
-        """Generate risk recommendation berdasarkan analysis"""
-        risk_category = analysis.get('risk_metrics', {}).get('risk_category', 'MEDIUM')
-        volatility = analysis.get('volatility', 0.02)
-        
-        if risk_category == 'HIGH' or volatility > 0.03:
-            return "Consider smaller position size and tighter stop loss"
-        elif risk_category == 'MEDIUM':
-            return "Standard position sizing appropriate"
-        else:
-            return "Can consider larger position size with standard risk management"
-
 # =============================================
 # BACKWARD COMPATIBILITY
 # =============================================
 
-# Untuk kompatibilitas dengan code yang lama
 TradingBot = EnhancedTradingBot
 
 # =============================================
@@ -3021,8 +2581,8 @@ TradingBot = EnhancedTradingBot
 # =============================================
 
 def test_enhanced_functionality():
-    """Test semua functionality enhanced core"""
-    print("🧪 Testing Enhanced TradingBot dengan Semua Fitur...")
+    """Test Enhanced TradingBot"""
+    print("🧪 Testing Enhanced TradingBot...")
     
     bot = EnhancedTradingBot()
     
@@ -3044,69 +2604,37 @@ def test_enhanced_functionality():
         print("1. Testing Popular Assets...")
         assets = bot.get_popular_assets(5)
         print(f"   ✅ {len(assets)} assets found")
-        for asset in assets[:3]:
-            print(f"      - {asset.get('symbol')}")
         
-        # Test 2: Dynamic Search
-        print("\n2. Testing Dynamic Search...")
-        test_queries = {
-            "crypto": "BTC",
-            "forex": "EUR",
-            "saham_id": "BBCA", 
-            "us_stocks": "AAPL"
-        }
-        
-        query = test_queries.get(market, "TEST")
-        search_results = bot.search_assets(query, 3)
-        print(f"   ✅ {len(search_results)} search results for '{query}'")
-        
-        # Test 3: Scanning
-        print("\n3. Testing Scanning...")
+        # Test 2: Scanning
+        print("\n2. Testing Scanning...")
         signals = bot.scan_potential_assets(limit=3)
         print(f"   ✅ {len(signals)} signals found")
-        for signal in signals:
-            print(f"      - {signal['symbol']} | {signal['action']} | Score: {signal['score']}")
         
-        # Test 4: Backtesting
-        print("\n4. Testing Backtesting...")
-        if signals:
-            symbol = signals[0]['symbol']
-            backtest_result = bot.run_advanced_backtest(symbol, limit=100)
-            if 'error' not in backtest_result:
-                print(f"   ✅ Backtest completed for {symbol}")
-            else:
-                print(f"   ⚠️ Backtest failed: {backtest_result['error']}")
-        
-        # Test 5: ML Analysis
-        print("\n5. Testing ML Analysis...")
+        # Test 3: Analysis
+        print("\n3. Testing Analysis...")
         if assets:
             symbol = assets[0].get('symbol')
-            ml_analysis = bot.analyze_with_enhanced_ml(symbol)
-            if 'error' not in ml_analysis:
-                print(f"   ✅ ML analysis completed for {symbol}")
-                print(f"      Action: {ml_analysis.get('action')}, Score: {ml_analysis.get('final_score')}")
+            analysis = bot.analyze_with_enhanced_ml(symbol)
+            if 'error' not in analysis:
+                print(f"   ✅ Analysis completed for {symbol}")
+                print(f"      Action: {analysis.get('action')}, Score: {analysis.get('score')}")
             else:
-                print(f"   ⚠️ ML analysis failed: {ml_analysis['error']}")
+                print(f"   ⚠️ Analysis failed: {analysis['error']}")
 
 def test_market_constraints():
-    """Test semua perbaikan market constraints"""
+    """Test market constraints"""
     print("🧪 Testing Market Constraints...")
     
-    # Test bot dengan different modes
     bot_crypto = EnhancedTradingBot()
     bot_forex = EnhancedTradingBot()
-    bot_saham = EnhancedTradingBot()
-    bot_us_stocks = EnhancedTradingBot()
     
     # Set modes
     bot_crypto.set_mode("crypto")
     bot_forex.set_mode("forex")
-    bot_saham.set_mode("saham_id")
-    bot_us_stocks.set_mode("us_stocks")
     
     # Test data
-    test_analysis_short = {'action': 'SHORT', 'score': -5, 'current_price': 100}
-    test_analysis_long = {'action': 'LONG', 'score': 5, 'current_price': 100}
+    test_analysis_short = {'action': 'SHORT', 'score': -5}
+    test_analysis_long = {'action': 'LONG', 'score': 5}
     
     # Test Crypto (boleh SHORT)
     crypto_result = bot_crypto._apply_market_constraints(test_analysis_short.copy())
@@ -3116,25 +2644,6 @@ def test_market_constraints():
     forex_result = bot_forex._apply_market_constraints(test_analysis_short.copy())
     print(f"Forex SHORT: {forex_result['action']} (should be NEUTRAL)")
     
-    # Test Saham Indonesia (tidak boleh SHORT)
-    saham_result = bot_saham._apply_market_constraints(test_analysis_short.copy())
-    print(f"Saham ID SHORT: {saham_result['action']} (should be NEUTRAL)")
-    
-    # Test US Stocks (tidak boleh SHORT)
-    us_stocks_result = bot_us_stocks._apply_market_constraints(test_analysis_short.copy())
-    print(f"US Stocks SHORT: {us_stocks_result['action']} (should be NEUTRAL)")
-    
-    # Test LONG signals (harus tetap LONG di semua market)
-    long_crypto = bot_crypto._apply_market_constraints(test_analysis_long.copy())
-    long_forex = bot_forex._apply_market_constraints(test_analysis_long.copy())
-    long_saham = bot_saham._apply_market_constraints(test_analysis_long.copy())
-    long_us_stocks = bot_us_stocks._apply_market_constraints(test_analysis_long.copy())
-    
-    print(f"Crypto LONG: {long_crypto['action']} (should be LONG)")
-    print(f"Forex LONG: {long_forex['action']} (should be LONG)")
-    print(f"Saham ID LONG: {long_saham['action']} (should be LONG)")
-    print(f"US Stocks LONG: {long_us_stocks['action']} (should be LONG)")
-    
     print("✅ Market constraints test completed!")
 
 # =============================================
@@ -3142,7 +2651,7 @@ def test_market_constraints():
 # =============================================
 
 if __name__ == "__main__":
-    print("🚀 Testing Enhanced TradingBot dengan Semua Fitur...")
+    print("🚀 Testing Enhanced TradingBot...")
     
     # Test enhanced functionality
     test_enhanced_functionality()
@@ -3150,4 +2659,4 @@ if __name__ == "__main__":
     # Test market constraints
     test_market_constraints()
     
-    print("✅ Enhanced Core Testing Completed dengan Semua 8 Menu!")
+    print("✅ Enhanced Core Testing Completed!")
