@@ -372,7 +372,11 @@ class EnhancedDataProvider(DataProvider, ABC):
         self.error_count = 0
         self.last_request_time = None
         # Sentiment analysis pipeline using FinBERT
-        self.sentiment_pipeline = pipeline('sentiment-analysis', model='ProsusAI/finbert')
+        try:
+            self.sentiment_pipeline = pipeline('sentiment-analysis', model='ProsusAI/finbert')
+        except:
+            self.sentiment_pipeline = None
+            logger.warning("FinBERT sentiment analysis not available")
         
     def _safe_api_call(self, func, *args, **kwargs):
         """Execute API call with circuit breaker and retry logic"""
@@ -507,6 +511,9 @@ class EnhancedDataProvider(DataProvider, ABC):
 
     def analyze_market_sentiment(self, symbol, timeframe='1d', news_limit=20):
         """Analisis sentimen berita untuk symbol menggunakan FinBERT."""
+        if not self.sentiment_pipeline:
+            return {'average_sentiment': 0.0, 'details': []}
+            
         news = self.fetch_market_news(symbol, news_limit)
         if not news:
             return {'average_sentiment': 0.0, 'details': []}  # Neutral fallback
@@ -533,8 +540,8 @@ class DynamicDataProvider(EnhancedDataProvider):
         
         # Initialize semua provider yang mungkin dibutuhkan
         self.providers = {
-            'crypto_spot': EnhancedCCXTDataProvider(exchange_id='kucoin', market_type='spot'),
-            'crypto_future': EnhancedCCXTFuturesProvider(exchange_id='kucoinfutures'),
+            'crypto_spot': EnhancedCCXTDataProvider(exchange_id='binance', market_type='spot'),
+            'crypto_future': EnhancedCCXTFuturesProvider(exchange_id='binance'),
             'forex': EnhancedYFinanceDataProvider(market_type='forex'),
             'saham_id': EnhancedYFinanceDataProvider(market_type='saham_id'), 
             'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
@@ -969,220 +976,13 @@ class DynamicDataProvider(EnhancedDataProvider):
         return base_metrics
 
 # =============================================
-# EXISTING PROVIDERS (Keep from your original code)
+# ENHANCED CCXT PROVIDERS
 # =============================================
-
-class AlphaVantageProvider(EnhancedDataProvider):
-    def __init__(self, api_key=None):
-        super().__init__()
-        self.api_key = api_key or os.getenv('ALPHA_VANTAGE_KEY')
-        if not self.api_key:
-            logger.warning("Alpha Vantage API key not found.")
-            self.api_key = None
-        self.base_url = "https://www.alphavantage.co/query"
-
-    def _convert_symbol(self, symbol, market_type='crypto'):
-        if '/' in symbol:
-            base, quote = symbol.split('/')
-        elif '=X' in symbol:
-            base = symbol.split('=')[0]
-            return f"{base[:3]}/{base[3:]}"
-        elif '.JK' in symbol:
-            return symbol
-        else:
-            base = symbol.upper()
-        if market_type == 'forex':
-            return f"{base[:3]}/{base[3:]}"
-        return base
-
-    def get_ohlcv(self, symbol, timeframe='1d', limit=200):
-        """Enhanced OHLCV with caching and validation - RELAXED"""
-        # Check cache first
-        cached_data = self._get_cached_data(symbol, timeframe, limit)
-        if cached_data is not None:
-            logger.info(f"Returning cached data for {symbol}")
-            return cached_data
-
-        if not self.api_key:
-            return None
-        
-        def fetch_data():
-            try:
-                symbol_av = self._convert_symbol(symbol)
-                market_type = 'crypto' if 'crypto' in symbol.lower() else 'forex'
-                
-                if '/' in symbol_av:
-                    function = "FX_DAILY"
-                else:
-                    function = "DIGITAL_CURRENCY_DAILY" if market_type == 'crypto' else "TIME_SERIES_DAILY"
-                
-                params = {
-                    "function": function,
-                    "symbol": symbol_av,
-                    "apikey": self.api_key,
-                    "outputsize": "full" if limit > 100 else "compact"
-                }
-                
-                if function == "FX_DAILY":
-                    params["from_symbol"], params["to_symbol"] = symbol_av.split('/')
-                elif function == "DIGITAL_CURRENCY_DAILY":
-                    params["market"] = "USD"
-                
-                response = requests.get(self.base_url, params=params, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-                
-                time_series_key = next((k for k in data.keys() if "Time Series" in k), None)
-                if time_series_key:
-                    ohlcv_data = data[time_series_key]
-                    df = pd.DataFrame.from_dict(ohlcv_data, orient='index')
-                    
-                    # Convert string values to float
-                    for col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-                    
-                    df['timestamp'] = pd.to_datetime(df.index)
-                    
-                    # Rename columns appropriately
-                    column_mapping = {
-                        '1. open': 'open',
-                        '2. high': 'high', 
-                        '3. low': 'low',
-                        '4. close': 'close',
-                        '5. volume': 'volume'
-                    }
-                    
-                    # Find the actual column names in the dataframe
-                    actual_columns = {}
-                    for expected_col in column_mapping.keys():
-                        for actual_col in df.columns:
-                            if expected_col in actual_col:
-                                actual_columns[expected_col] = actual_col
-                                break
-                    
-                    # Create new dataframe with standardized column names
-                    result_df = pd.DataFrame()
-                    result_df['timestamp'] = df['timestamp']
-                    
-                    for expected_col, standardized_name in column_mapping.items():
-                        if expected_col in actual_columns:
-                            result_df[standardized_name] = df[actual_columns[expected_col]]
-                    
-                    # If volume column is missing, add it with zeros
-                    if 'volume' not in result_df.columns:
-                        result_df['volume'] = 0
-                    
-                    # Sort and limit
-                    result_df = result_df.sort_values('timestamp').tail(limit)
-                    
-                    # RELAXED: Validasi dan cleaning yang lebih toleran
-                    is_valid, issues = self.validator.validate_ohlcv_data(result_df)
-                    if not is_valid:
-                        logger.warning(f"Data validation issues for {symbol}: {issues}")
-                        result_df = self.validator.clean_ohlcv_data(result_df)
-                    
-                    # RELAXED: Pastikan hasil akhir valid dengan standar lebih rendah
-                    if result_df.empty or len(result_df) < 3:
-                        raise ValueError("Data remains invalid after cleaning")
-                    
-                    return result_df
-                return None
-                
-            except Exception as e:
-                logger.error(f"AlphaVantage API error: {str(e)}")
-                raise
-
-        result = self._safe_api_call(fetch_data)
-        
-        # Jika masih gagal, gunakan data dummy yang realistis
-        if result is None or result.empty or len(result) < 3:
-            logger.warning(f"AlphaVantage failed for {symbol}, using realistic dummy data")
-            result = self._generate_realistic_dummy_data(symbol, limit)
-        
-        # Cache the result
-        self._set_cached_data(symbol, timeframe, limit, result)
-        
-        return result
-
-    def get_ticker(self, symbol):
-        """Enhanced ticker with error handling"""
-        if not self.api_key:
-            return None
-        
-        def fetch_ticker():
-            try:
-                symbol_av = self._convert_symbol(symbol)
-                function = "CURRENCY_EXCHANGE_RATE" if '/' in symbol_av else "GLOBAL_QUOTE"
-                params = {
-                    "function": function,
-                    "symbol": symbol_av,
-                    "apikey": self.api_key
-                }
-                if function == "CURRENCY_EXCHANGE_RATE":
-                    params["from_currency"], params["to_currency"] = symbol_av.split('/')
-                
-                response = requests.get(self.base_url, params=params, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-                
-                if "Realtime Currency Exchange Rate" in data:
-                    rate = data["Realtime Currency Exchange Rate"]
-                    return {'last': float(rate['5. Exchange Rate']), 'volume': 0}
-                elif "Global Quote" in data:
-                    quote = data["Global Quote"]
-                    return {'last': float(quote['05. price']), 'volume': float(quote.get('06. volume', 0))}
-                return None
-                
-            except Exception as e:
-                logger.error(f"AlphaVantage ticker error: {str(e)}")
-                raise
-
-        result = self._safe_api_call(fetch_ticker)
-        
-        # Fallback ke harga realistis jika gagal
-        if not result or result.get('last', 0) <= 0:
-            estimated_price = self._estimate_realistic_price(symbol)
-            logger.warning(f"AlphaVantage ticker failed for {symbol}, using estimated price: {estimated_price}")
-            return {
-                'last': estimated_price,
-                'volume': 100000
-            }
-        
-        return result
-
-    def get_popular_assets(self, limit=100):
-        """Get popular assets from Alpha Vantage"""
-        try:
-            # Alpha Vantage doesn't have a direct popular assets endpoint
-            # Return major forex pairs and stocks
-            assets = []
-            
-            # Major forex pairs
-            forex_pairs = ['EUR/USD', 'USD/JPY', 'GBP/USD', 'AUD/USD', 'USD/CAD']
-            assets.extend(forex_pairs)
-            
-            # Major stocks
-            stocks = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA']
-            assets.extend(stocks)
-            
-            # Major cryptocurrencies
-            cryptos = ['BTC', 'ETH', 'BNB', 'XRP', 'ADA']
-            assets.extend([f"{crypto}/USD" for crypto in cryptos])
-            
-            logger.info(f"AlphaVantage returning {len(assets[:limit])} popular assets")
-            return assets[:limit]
-            
-        except Exception as e:
-            logger.error(f"Error getting popular assets from Alpha Vantage: {str(e)}")
-            # Fallback to basic assets
-            fallback_assets = ['EUR/USD', 'USD/JPY', 'GBP/USD', 'AAPL', 'MSFT', 'BTC/USD', 'ETH/USD']
-            return fallback_assets[:limit]
-    pass
 
 class EnhancedCCXTDataProvider(EnhancedDataProvider):
     """Enhanced CCXT provider with better error handling and fallbacks - RELAXED VERSION"""
     
-    def __init__(self, exchange_id='kucoin', api_key='', secret='', market_type='spot'):
+    def __init__(self, exchange_id='binance', api_key='', secret='', market_type='spot'):
         super().__init__()
         
         self.exchange_id = exchange_id
@@ -1392,22 +1192,39 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
         }
 
     def get_popular_assets(self, limit=100):
-        """Get popular crypto assets from the exchange"""
+        """Get popular crypto assets from the exchange - FIXED VERSION"""
         try:
             if not self.exchange:
-                logger.warning(f"Exchange {self.exchange_id} not initialized, using fallback assets")
+                logger.warning(f"Exchange {self.exchange_id} not initialized")
                 return ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT'][:limit]
             
-            markets = self.exchange.load_markets()
+            # Load markets dengan error handling
+            try:
+                self.exchange.load_markets()
+                markets = self.exchange.markets
+                logger.info(f"📊 Loaded {len(markets)} markets from {self.exchange_id}")
+            except Exception as e:
+                logger.error(f"Failed to load markets: {e}")
+                return ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT'][:limit]
             
             # Filter based on market type
             if self.market_type == 'future':
                 # Filter for futures markets
-                target_markets = [symbol for symbol in markets 
-                                if markets[symbol].get('future', False) or ':USDT' in symbol]
+                target_markets = [
+                    symbol for symbol, market in markets.items()
+                    if (market.get('future', False) or 
+                        ':USDT' in symbol or 
+                        'PERP' in symbol or
+                        '/USDT:' in symbol)
+                ]
             else:
                 # Filter for spot markets (USDT pairs)
-                target_markets = [symbol for symbol in markets if symbol.endswith('/USDT')]
+                target_markets = [
+                    symbol for symbol, market in markets.items()
+                    if symbol.endswith('/USDT') and market.get('spot', True)
+                ]
+            
+            logger.info(f"📊 Found {len(target_markets)} target markets for {self.market_type}")
             
             # Exclude stablecoins and problematic pairs
             excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST', 'FDUSD']
@@ -1416,21 +1233,26 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 if not any(excluded in symbol for excluded in excluded_coins)
             ]
             
+            logger.info(f"📊 After filtering: {len(filtered_markets)} markets")
+            
             # Sort by volume if available
             try:
-                tickers = self.exchange.fetch_tickers()
+                # Ambil sample untuk volume check (jangan fetch semua tickers)
+                sample_markets = filtered_markets[:50]  # Check first 50 saja
+                tickers = self.exchange.fetch_tickers(sample_markets)
+                
                 filtered_markets.sort(
                     key=lambda x: tickers[x]['quoteVolume'] if x in tickers else 0, 
                     reverse=True
                 )
-                logger.info(f"Sorted {len(filtered_markets)} {self.market_type} assets by volume")
+                logger.info("✅ Sorted by volume")
             except Exception as e:
                 logger.warning(f"Could not sort by volume: {str(e)}")
-                # Fallback: use market cap ranking or alphabetical
+                # Fallback: use market cap ranking atau alphabetical
                 filtered_markets.sort()
             
             result = filtered_markets[:limit]
-            logger.info(f"CCXT returning {len(result)} popular {self.market_type} assets from {self.exchange_id}")
+            logger.info(f"✅ CCXT returning {len(result)} popular {self.market_type} assets from {self.exchange_id}")
             return result
             
         except Exception as e:
@@ -1445,32 +1267,32 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
             return major_pairs[:limit]
 
 # =============================================
-# ENHANCED FUTURES PROVIDER WITH WEB SCRAPING
+# ENHANCED FUTURES PROVIDER WITH WEB SCRAPING - FIXED
 # =============================================
 
 class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
-    """Enhanced CCXT provider specifically for Futures trading dengan WEB SCRAPING"""
+    """Enhanced CCXT provider specifically for Futures trading dengan WEB SCRAPING FIXED"""
     
-    def __init__(self, exchange_id='kucoinfutures', api_key='', secret=''):
+    def __init__(self, exchange_id='binance', api_key='', secret=''):
         super().__init__(exchange_id=exchange_id, api_key=api_key, secret=secret, market_type='future')
     
     def get_popular_assets(self, limit=200):
-        """Get popular futures dari MULTI SOURCE: web scraping + API"""
+        """Get popular futures dari MULTI SOURCE: web scraping + API - FIXED"""
         all_assets = []
         
         try:
-            # 1. DARI WEB SCRAPING (CoinGecko Derivatives)
+            # 1. DARI WEB SCRAPING (CoinGecko Derivatives) - FIXED
             scraping_assets = self._scrape_coingecko_futures(limit)
             if scraping_assets:
                 all_assets.extend(scraping_assets)
                 logger.info(f"✅ Web scraping found {len(scraping_assets)} futures assets")
             
-            # 2. DARI KUCOIN API (real trading data)
+            # 2. DARI EXCHANGE API (real trading data)
             if len(all_assets) < limit:
-                api_assets = self._get_kucoin_futures_api(limit - len(all_assets))
+                api_assets = self._get_exchange_futures_api(limit - len(all_assets))
                 if api_assets:
                     all_assets.extend(api_assets)
-                    logger.info(f"✅ KuCoin API found {len(api_assets)} futures assets")
+                    logger.info(f"✅ Exchange API found {len(api_assets)} futures assets")
             
             # 3. Jika masih kurang, tambahkan dari extended list
             if len(all_assets) < limit:
@@ -1497,64 +1319,140 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
             return self._get_extended_futures_assets(limit)
     
     def _scrape_coingecko_futures(self, limit=150):
-        """Web scraping dari CoinGecko derivatives page"""
+        """Web scraping dari CoinGecko derivatives page - FIXED & WORKING VERSION"""
         try:
             import requests
             from bs4 import BeautifulSoup
+            import random
             
             url = "https://www.coingecko.com/en/derivatives"
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Cache-Control': 'max-age=0',
             }
             
             logger.info("🔍 Scraping futures data from CoinGecko...")
-            response = requests.get(url, headers=headers, timeout=15)
+            
+            # Gunakan session dengan retry
+            session = requests.Session()
+            session.headers.update(headers)
+            
+            # Add random delay untuk avoid blocking
+            time.sleep(random.uniform(2, 4))
+            
+            response = session.get(url, timeout=20)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
             assets = []
             
-            # Cari table derivatives
-            table = soup.find('table', {'data-target': 'derivatives.table'})
-            if not table:
-                # Fallback: cari table biasa
-                table = soup.find('table')
+            logger.info(f"✅ CoinGecko page loaded: {len(response.content)} bytes")
             
-            if table:
+            # METHOD 1: Cari table derivatives dengan berbagai selector
+            tables = soup.find_all('table')
+            logger.info(f"📊 Found {len(tables)} tables on page")
+            
+            for i, table in enumerate(tables):
+                logger.info(f"🔍 Checking table {i+1} with {len(table.find_all('tr'))} rows")
+                
+                # Coba extract data dari table ini
                 rows = table.find_all('tr')[1:limit+1]  # Skip header
                 
-                for i, row in enumerate(rows):
+                for j, row in enumerate(rows):
                     try:
-                        cells = row.find_all('td')
+                        cells = row.find_all(['td', 'th'])
                         if len(cells) >= 2:
-                            # Ambil symbol dari cell pertama
+                            # Extract symbol dan name
                             symbol_cell = cells[0].get_text(strip=True)
-                            name_cell = cells[1].get_text(strip=True)
+                            name_cell = cells[1].get_text(strip=True) if len(cells) > 1 else symbol_cell
                             
-                            # Extract symbol (biasanya uppercase)
-                            symbol = symbol_cell.upper().split('/')[0] if '/' in symbol_cell else symbol_cell.upper()
+                            # Clean dan validate
+                            symbol = ' '.join(symbol_cell.split()).upper()
+                            if not symbol or len(symbol) < 2:
+                                continue
+                                
+                            # Skip header rows
+                            if symbol in ['SYMBOL', 'PAIR', 'NAME', 'INSTRUMENT', '']:
+                                continue
                             
-                            # Format ke futures symbol standard
-                            futures_symbol = f"{symbol}/USDT:USDT"
+                            # Format ke futures symbol
+                            if '/' in symbol:
+                                # Jika sudah ada pair, tambahkan :USDT
+                                futures_symbol = f"{symbol}:USDT"
+                            else:
+                                # Jika hanya base currency, tambahkan /USDT:USDT
+                                futures_symbol = f"{symbol}/USDT:USDT"
                             
                             assets.append({
                                 'symbol': futures_symbol,
-                                'name': name_cell,
+                                'name': name_cell[:50],  # Truncate long names
                                 'source': 'coingecko_scraping'
                             })
+                            
                     except Exception as e:
-                        logger.warning(f"Error parsing row {i}: {e}")
+                        logger.debug(f"  Row {j} error: {e}")
                         continue
+                
+                # Jika berhasil extract dari table ini, stop
+                if assets:
+                    logger.info(f"✅ Successfully extracted {len(assets)} assets from table {i+1}")
+                    break
             
-            logger.info(f"✅ Scraped {len(assets)} futures from CoinGecko")
-            return assets
+            # METHOD 2: Alternative parsing - cari elements dengan class tertentu
+            if not assets:
+                logger.info("🔄 Trying alternative parsing...")
+                
+                # Cari elements yang mengandung cryptocurrency names
+                crypto_elements = soup.find_all(['span', 'div', 'a'], class_=re.compile(r'coin|symbol|pair', re.I))
+                
+                for elem in crypto_elements[:limit*2]:
+                    text = elem.get_text(strip=True)
+                    if text and len(text) <= 10 and text.isalpha():
+                        symbol = text.upper()
+                        futures_symbol = f"{symbol}/USDT:USDT"
+                        
+                        assets.append({
+                            'symbol': futures_symbol,
+                            'name': symbol,
+                            'source': 'coingecko_alternative'
+                        })
+            
+            # METHOD 3: Fallback - gunakan extended list
+            if not assets:
+                logger.warning("❌ Web scraping failed to extract data")
+                return self._get_extended_futures_assets(limit)
+            
+            # Remove duplicates
+            seen = set()
+            unique_assets = []
+            for asset in assets:
+                if asset['symbol'] not in seen:
+                    seen.add(asset['symbol'])
+                    unique_assets.append(asset)
+            
+            logger.info(f"✅ Final scraped assets: {len(unique_assets)}")
+            
+            # Log samples
+            for asset in unique_assets[:5]:
+                logger.info(f"  Sample: {asset['symbol']} - {asset['name']}")
+            
+            return unique_assets[:limit]
             
         except Exception as e:
-            logger.error(f"Web scraping error: {e}")
-            return []
+            logger.error(f"❌ Web scraping error: {e}")
+            # Fallback ke extended list
+            return self._get_extended_futures_assets(limit)
     
-    def _get_kucoin_futures_api(self, limit=100):
-        """Get futures dari KuCoin API"""
+    def _get_exchange_futures_api(self, limit=100):
+        """Get futures dari Exchange API"""
         try:
             if not self.exchange:
                 logger.warning("Exchange not initialized, skipping API call")
@@ -1562,8 +1460,11 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
                 
             markets = self.exchange.load_markets()
             futures_markets = [
-                symbol for symbol in markets 
-                if markets[symbol].get('future', False) or ':USDT' in symbol or 'PERP' in symbol
+                symbol for symbol, market in markets.items()
+                if (market.get('future', False) or 
+                    ':USDT' in symbol or 
+                    'PERP' in symbol or
+                    '/USDT:' in symbol)
             ]
             
             # Exclude stablecoins
@@ -1576,13 +1477,13 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
             assets = [{
                 'symbol': sym, 
                 'name': sym,
-                'source': 'kucoin_api'
+                'source': 'exchange_api'
             } for sym in filtered_markets[:limit]]
             
             return assets
             
         except Exception as e:
-            logger.error(f"KuCoin API error: {e}")
+            logger.error(f"Exchange API error: {e}")
             return []
     
     def _get_extended_futures_assets(self, limit=200):
@@ -1645,7 +1546,7 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
                 seen.add(asset)
                 unique_assets.append({
                     'symbol': asset,
-                    'name': asset,
+                    'name': asset.replace('/USDT:USDT', ''),
                     'source': 'extended_list'
                 })
         
@@ -1696,6 +1597,10 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
                 raise
         
         return self._safe_api_call(fetch_open_interest)
+
+# =============================================
+# ENHANCED YFINANCE PROVIDER
+# =============================================
 
 class EnhancedYFinanceDataProvider(EnhancedDataProvider):
     """Enhanced Yahoo Finance provider with better error handling - RELAXED VERSION"""
@@ -1922,24 +1827,232 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         logger.info(f"YFinance returning {len(result)} popular US stocks")
         return result
 
-    def _get_popular_international_stocks(self, limit):
-        """Get popular international stocks - KEPT FOR BACKWARD COMPATIBILITY"""
-        return self._get_popular_us_stocks(limit)
-
     def _get_fallback_assets(self, limit):
-        """Fallback assets when primary method fails - UPDATED FOR US STOCKS"""
+        """Fallback assets when primary method fails"""
         fallback_assets = {
             "crypto": ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD'],
             "forex": ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X'],
             "saham_id": ['BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK'],
-            "stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA'],
             "us_stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX']
         }
         
         assets = fallback_assets.get(self.market_type, [])
         logger.info(f"Using fallback assets for {self.market_type}: {len(assets[:limit])} assets")
         return assets[:limit]
-    pass
+
+# =============================================
+# ALPHA VANTAGE PROVIDER
+# =============================================
+
+class AlphaVantageProvider(EnhancedDataProvider):
+    def __init__(self, api_key=None):
+        super().__init__()
+        self.api_key = api_key or os.getenv('ALPHA_VANTAGE_KEY')
+        if not self.api_key:
+            logger.warning("Alpha Vantage API key not found.")
+            self.api_key = None
+        self.base_url = "https://www.alphavantage.co/query"
+
+    def _convert_symbol(self, symbol, market_type='crypto'):
+        if '/' in symbol:
+            base, quote = symbol.split('/')
+        elif '=X' in symbol:
+            base = symbol.split('=')[0]
+            return f"{base[:3]}/{base[3:]}"
+        elif '.JK' in symbol:
+            return symbol
+        else:
+            base = symbol.upper()
+        if market_type == 'forex':
+            return f"{base[:3]}/{base[3:]}"
+        return base
+
+    def get_ohlcv(self, symbol, timeframe='1d', limit=200):
+        """Enhanced OHLCV with caching and validation - RELAXED"""
+        # Check cache first
+        cached_data = self._get_cached_data(symbol, timeframe, limit)
+        if cached_data is not None:
+            logger.info(f"Returning cached data for {symbol}")
+            return cached_data
+
+        if not self.api_key:
+            return None
+        
+        def fetch_data():
+            try:
+                symbol_av = self._convert_symbol(symbol)
+                market_type = 'crypto' if 'crypto' in symbol.lower() else 'forex'
+                
+                if '/' in symbol_av:
+                    function = "FX_DAILY"
+                else:
+                    function = "DIGITAL_CURRENCY_DAILY" if market_type == 'crypto' else "TIME_SERIES_DAILY"
+                
+                params = {
+                    "function": function,
+                    "symbol": symbol_av,
+                    "apikey": self.api_key,
+                    "outputsize": "full" if limit > 100 else "compact"
+                }
+                
+                if function == "FX_DAILY":
+                    params["from_symbol"], params["to_symbol"] = symbol_av.split('/')
+                elif function == "DIGITAL_CURRENCY_DAILY":
+                    params["market"] = "USD"
+                
+                response = requests.get(self.base_url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                time_series_key = next((k for k in data.keys() if "Time Series" in k), None)
+                if time_series_key:
+                    ohlcv_data = data[time_series_key]
+                    df = pd.DataFrame.from_dict(ohlcv_data, orient='index')
+                    
+                    # Convert string values to float
+                    for col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    
+                    df['timestamp'] = pd.to_datetime(df.index)
+                    
+                    # Rename columns appropriately
+                    column_mapping = {
+                        '1. open': 'open',
+                        '2. high': 'high', 
+                        '3. low': 'low',
+                        '4. close': 'close',
+                        '5. volume': 'volume'
+                    }
+                    
+                    # Find the actual column names in the dataframe
+                    actual_columns = {}
+                    for expected_col in column_mapping.keys():
+                        for actual_col in df.columns:
+                            if expected_col in actual_col:
+                                actual_columns[expected_col] = actual_col
+                                break
+                    
+                    # Create new dataframe with standardized column names
+                    result_df = pd.DataFrame()
+                    result_df['timestamp'] = df['timestamp']
+                    
+                    for expected_col, standardized_name in column_mapping.items():
+                        if expected_col in actual_columns:
+                            result_df[standardized_name] = df[actual_columns[expected_col]]
+                    
+                    # If volume column is missing, add it with zeros
+                    if 'volume' not in result_df.columns:
+                        result_df['volume'] = 0
+                    
+                    # Sort and limit
+                    result_df = result_df.sort_values('timestamp').tail(limit)
+                    
+                    # RELAXED: Validasi dan cleaning yang lebih toleran
+                    is_valid, issues = self.validator.validate_ohlcv_data(result_df)
+                    if not is_valid:
+                        logger.warning(f"Data validation issues for {symbol}: {issues}")
+                        result_df = self.validator.clean_ohlcv_data(result_df)
+                    
+                    # RELAXED: Pastikan hasil akhir valid dengan standar lebih rendah
+                    if result_df.empty or len(result_df) < 3:
+                        raise ValueError("Data remains invalid after cleaning")
+                    
+                    return result_df
+                return None
+                
+            except Exception as e:
+                logger.error(f"AlphaVantage API error: {str(e)}")
+                raise
+
+        result = self._safe_api_call(fetch_data)
+        
+        # Jika masih gagal, gunakan data dummy yang realistis
+        if result is None or result.empty or len(result) < 3:
+            logger.warning(f"AlphaVantage failed for {symbol}, using realistic dummy data")
+            result = self._generate_realistic_dummy_data(symbol, limit)
+        
+        # Cache the result
+        self._set_cached_data(symbol, timeframe, limit, result)
+        
+        return result
+
+    def get_ticker(self, symbol):
+        """Enhanced ticker with error handling"""
+        if not self.api_key:
+            return None
+        
+        def fetch_ticker():
+            try:
+                symbol_av = self._convert_symbol(symbol)
+                function = "CURRENCY_EXCHANGE_RATE" if '/' in symbol_av else "GLOBAL_QUOTE"
+                params = {
+                    "function": function,
+                    "symbol": symbol_av,
+                    "apikey": self.api_key
+                }
+                if function == "CURRENCY_EXCHANGE_RATE":
+                    params["from_currency"], params["to_currency"] = symbol_av.split('/')
+                
+                response = requests.get(self.base_url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                if "Realtime Currency Exchange Rate" in data:
+                    rate = data["Realtime Currency Exchange Rate"]
+                    return {'last': float(rate['5. Exchange Rate']), 'volume': 0}
+                elif "Global Quote" in data:
+                    quote = data["Global Quote"]
+                    return {'last': float(quote['05. price']), 'volume': float(quote.get('06. volume', 0))}
+                return None
+                
+            except Exception as e:
+                logger.error(f"AlphaVantage ticker error: {str(e)}")
+                raise
+
+        result = self._safe_api_call(fetch_ticker)
+        
+        # Fallback ke harga realistis jika gagal
+        if not result or result.get('last', 0) <= 0:
+            estimated_price = self._estimate_realistic_price(symbol)
+            logger.warning(f"AlphaVantage ticker failed for {symbol}, using estimated price: {estimated_price}")
+            return {
+                'last': estimated_price,
+                'volume': 100000
+            }
+        
+        return result
+
+    def get_popular_assets(self, limit=100):
+        """Get popular assets from Alpha Vantage"""
+        try:
+            # Alpha Vantage doesn't have a direct popular assets endpoint
+            # Return major forex pairs and stocks
+            assets = []
+            
+            # Major forex pairs
+            forex_pairs = ['EUR/USD', 'USD/JPY', 'GBP/USD', 'AUD/USD', 'USD/CAD']
+            assets.extend(forex_pairs)
+            
+            # Major stocks
+            stocks = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA']
+            assets.extend(stocks)
+            
+            # Major cryptocurrencies
+            cryptos = ['BTC', 'ETH', 'BNB', 'XRP', 'ADA']
+            assets.extend([f"{crypto}/USD" for crypto in cryptos])
+            
+            logger.info(f"AlphaVantage returning {len(assets[:limit])} popular assets")
+            return assets[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error getting popular assets from Alpha Vantage: {str(e)}")
+            # Fallback to basic assets
+            fallback_assets = ['EUR/USD', 'USD/JPY', 'GBP/USD', 'AAPL', 'MSFT', 'BTC/USD', 'ETH/USD']
+            return fallback_assets[:limit]
+
+# =============================================
+# OTHER PROVIDERS (DexScreener, Solana)
+# =============================================
 
 class EnhancedDexScreenerProvider(DataProvider):
     """Enhanced DexScreener with error handling"""
@@ -1995,8 +2108,6 @@ class EnhancedDexScreenerProvider(DataProvider):
                 raise
         
         return self.retry_mechanism.execute_with_retry(fetch_popular)
-    pass
-
 
 class EnhancedSolanaPumpFunProvider(DataProvider):
     def __init__(self, rpc_url=None):
@@ -2033,22 +2144,6 @@ class EnhancedSolanaPumpFunProvider(DataProvider):
         """Get popular Solana tokens"""
         # This would need actual implementation
         return []
-
-# =============================================
-# BACKWARD COMPATIBILITY WRAPPERS
-# =============================================
-
-class CCXTDataProvider(EnhancedCCXTDataProvider):
-    """Backward compatibility wrapper"""
-    pass
-
-class CCXTFuturesProvider(EnhancedCCXTFuturesProvider):
-    """Backward compatibility wrapper"""
-    pass
-
-class YFinanceDataProvider(EnhancedYFinanceDataProvider):
-    """Backward compatibility wrapper"""
-    pass
 
 # =============================================
 # FACTORY AND MONITORING
@@ -2107,7 +2202,7 @@ class DataProviderMonitor:
         return np.mean(scores) if scores else 1.0
 
 # =============================================
-# TESTING
+# TESTING FUNCTIONALITY
 # =============================================
 
 def test_enhanced_futures_provider():
