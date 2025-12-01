@@ -17,6 +17,7 @@ import numpy as np
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
+from transformers import pipeline  # For FinBERT sentiment analysis
 
 # Enhanced logging
 logging.basicConfig(level=logging.INFO)
@@ -370,6 +371,8 @@ class EnhancedDataProvider(DataProvider, ABC):
         self.request_count = 0
         self.error_count = 0
         self.last_request_time = None
+        # Sentiment analysis pipeline using FinBERT
+        self.sentiment_pipeline = pipeline('sentiment-analysis', model='ProsusAI/finbert')
         
     def _safe_api_call(self, func, *args, **kwargs):
         """Execute API call with circuit breaker and retry logic"""
@@ -488,6 +491,35 @@ class EnhancedDataProvider(DataProvider, ABC):
         else:
             return 100.0  # Stocks
 
+    # New methods for sentiment analysis
+    def fetch_market_news(self, symbol, limit=10):
+        """Fetch berita terkait symbol dari sumber seperti Yahoo Finance."""
+        try:
+            url = f"https://finance.yahoo.com/quote/{symbol}/news"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            headlines = [h.text.strip() for h in soup.find_all('h3', class_='Mb(5px)')][:limit]
+            return headlines
+        except Exception as e:
+            logger.error(f"Error fetching news for {symbol}: {e}")
+            return []  # Fallback to empty
+
+    def analyze_market_sentiment(self, symbol, timeframe='1d', news_limit=20):
+        """Analisis sentimen berita untuk symbol menggunakan FinBERT."""
+        news = self.fetch_market_news(symbol, news_limit)
+        if not news:
+            return {'average_sentiment': 0.0, 'details': []}  # Neutral fallback
+        
+        sentiments = []
+        for headline in news:
+            result = self.sentiment_pipeline(headline)[0]
+            score = result['score'] if result['label'] == 'positive' else -result['score'] if result['label'] == 'negative' else 0
+            sentiments.append({'headline': headline, 'score': score, 'label': result['label']})
+        
+        avg_score = sum(s['score'] for s in sentiments) / len(sentiments) if sentiments else 0.0
+        return {'average_sentiment': avg_score, 'details': sentiments}
+
 # =============================================
 # DYNAMIC DATA PROVIDER - NEW & COMPLETE
 # =============================================
@@ -558,7 +590,7 @@ class DynamicDataProvider(EnhancedDataProvider):
         return 'crypto_spot'
 
     def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 200):
-        """Get OHLCV data dengan auto-detection symbol type"""
+        """Get OHLCV data dengan auto-detection symbol type and sentiment integration"""
         try:
             # Deteksi tipe symbol
             symbol_type = self._detect_symbol_type(symbol)
@@ -573,6 +605,12 @@ class DynamicDataProvider(EnhancedDataProvider):
             
             # Get data dari provider yang sesuai
             data = provider.get_ohlcv(symbol, timeframe, limit)
+            
+            # Add sentiment analysis
+            sentiment = self.analyze_market_sentiment(symbol)
+            if data is not None:
+                data = data.copy()  # Avoid modifying original
+                data['sentiment'] = sentiment['average_sentiment']  # Add as column or metadata; here as column for simplicity
             
             # Cache hasil yang valid
             if data is not None and len(data) > 0:
