@@ -647,13 +647,35 @@ class DynamicDataProvider(EnhancedDataProvider):
             return self.default_provider.get_ticker(symbol)
 
     def get_popular_assets(self, limit: int = 100):
-        """Get popular assets untuk market type yang aktif"""
+        """Get popular assets untuk market type yang aktif - FIXED"""
         try:
             logger.info(f"📊 Getting {limit} popular assets for {self.market_type}")
             
+            # Pastikan default provider ada
+            if not hasattr(self, 'default_provider') or self.default_provider is None:
+                logger.error("Default provider not initialized")
+                return self._get_fallback_assets(limit)
+            
             assets = self.default_provider.get_popular_assets(limit)
             
-            # Format konsisten: selalu return list of dict dengan 'symbol' dan 'name'
+            # Jika tidak ada assets, coba provider lain
+            if not assets:
+                logger.warning("Default provider returned no assets, trying all providers...")
+                for provider_name, provider in self.providers.items():
+                    try:
+                        assets = provider.get_popular_assets(limit)
+                        if assets:
+                            logger.info(f"✅ Got assets from {provider_name}")
+                            break
+                    except Exception as e:
+                        logger.warning(f"Provider {provider_name} failed: {e}")
+            
+            # Jika masih tidak ada, gunakan emergency fallback
+            if not assets:
+                logger.warning("All providers failed, using emergency fallback")
+                return self._get_fallback_assets(limit)
+            
+            # Format konsisten
             formatted_assets = []
             for asset in assets:
                 if isinstance(asset, dict):
@@ -922,40 +944,46 @@ class DynamicDataProvider(EnhancedDataProvider):
         }]
 
     def _get_fallback_assets(self, limit: int):
-        """Fallback assets ketika provider gagal"""
-        fallback_assets = {
+        """Emergency fallback assets - FIXED"""
+        logger.warning("🔄 Using emergency fallback assets")
+        
+        emergency_assets = {
             "crypto": [
                 {"symbol": "BTC/USDT", "name": "Bitcoin"},
-                {"symbol": "ETH/USDT", "name": "Ethereum"}, 
+                {"symbol": "ETH/USDT", "name": "Ethereum"},
                 {"symbol": "BNB/USDT", "name": "Binance Coin"},
                 {"symbol": "XRP/USDT", "name": "Ripple"},
-                {"symbol": "ADA/USDT", "name": "Cardano"}
+                {"symbol": "ADA/USDT", "name": "Cardano"},
+                {"symbol": "SOL/USDT", "name": "Solana"},
+                {"symbol": "DOT/USDT", "name": "Polkadot"},
+                {"symbol": "DOGE/USDT", "name": "Dogecoin"},
+                {"symbol": "AVAX/USDT", "name": "Avalanche"},
+                {"symbol": "MATIC/USDT", "name": "Polygon"}
             ],
             "forex": [
-                {"symbol": "EUR/USD", "name": "Euro US Dollar"},
-                {"symbol": "USD/JPY", "name": "US Dollar Japanese Yen"},
-                {"symbol": "GBP/USD", "name": "British Pound US Dollar"},
-                {"symbol": "USD/CHF", "name": "US Dollar Swiss Franc"},
-                {"symbol": "AUD/USD", "name": "Australian Dollar US Dollar"}
+                {"symbol": "EUR/USD", "name": "Euro/Dollar"},
+                {"symbol": "USD/JPY", "name": "Dollar/Yen"},
+                {"symbol": "GBP/USD", "name": "Pound/Dollar"},
+                {"symbol": "USD/CHF", "name": "Dollar/Franc"},
+                {"symbol": "AUD/USD", "name": "Aussie/Dollar"}
             ],
             "us_stocks": [
                 {"symbol": "AAPL", "name": "Apple Inc"},
-                {"symbol": "MSFT", "name": "Microsoft Corp"},
-                {"symbol": "GOOGL", "name": "Alphabet Inc"},
-                {"symbol": "AMZN", "name": "Amazon.com Inc"},
-                {"symbol": "TSLA", "name": "Tesla Inc"}
+                {"symbol": "MSFT", "name": "Microsoft"},
+                {"symbol": "GOOGL", "name": "Google"},
+                {"symbol": "AMZN", "name": "Amazon"},
+                {"symbol": "TSLA", "name": "Tesla"}
             ],
             "saham_id": [
-                {"symbol": "BBCA.JK", "name": "Bank Central Asia"},
-                {"symbol": "BBRI.JK", "name": "Bank Rakyat Indonesia"},
+                {"symbol": "BBCA.JK", "name": "Bank BCA"},
+                {"symbol": "BBRI.JK", "name": "Bank BRI"},
                 {"symbol": "BMRI.JK", "name": "Bank Mandiri"},
                 {"symbol": "TLKM.JK", "name": "Telkom Indonesia"},
                 {"symbol": "ASII.JK", "name": "Astra International"}
             ]
         }
         
-        assets = fallback_assets.get(self.market_type, [])
-        logger.info(f"Using {len(assets)} fallback assets for {self.market_type}")
+        assets = emergency_assets.get(self.market_type, [])
         return assets[:limit]
 
     def get_health_metrics(self) -> Dict:
@@ -1194,8 +1222,11 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
     def get_popular_assets(self, limit=100):
         """Get popular crypto assets from the exchange - FIXED VERSION"""
         try:
+            logger.info(f"🔄 Getting {limit} popular assets from {self.exchange_id}...")
+            
             if not self.exchange:
                 logger.warning(f"Exchange {self.exchange_id} not initialized")
+                # Return hardcoded popular pairs
                 return ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT'][:limit]
             
             # Load markets dengan error handling
@@ -1260,9 +1291,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
             # Fallback to major cryptocurrencies
             major_pairs = [
                 'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
-                'SOL/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
-                'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'XLM/USDT', 'BCH/USDT',
-                'ETC/USDT', 'FIL/USDT', 'THETA/USDT', 'EOS/USDT', 'XTZ/USDT'
+                'SOL/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT'
             ]
             return major_pairs[:limit]
 
