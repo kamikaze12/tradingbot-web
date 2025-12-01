@@ -42,22 +42,28 @@ logger = logging.getLogger(__name__)
 try:
     from .strategies import TechnicalAnalysisStrategy
     from .data_provider import (
-        YFinanceDataProvider,
+        EnhancedYFinanceDataProvider,
         DataProviderMonitor,
-        DynamicDataProvider
+        DynamicDataProvider,
+        EnhancedCCXTDataProvider,
+        EnhancedCCXTFuturesProvider,
+        AlphaVantageProvider,
+        DataProviderFactory
     )
     from .notifier import SoundNotifier
     from database.db_handler import DatabaseHandler
     
     # Handle optional imports
     try:
-        from .data_provider import SolanaPumpFunProvider, DataProviderFactory
+        from .data_provider import SolanaPumpFunProvider
     except ImportError:
         class SolanaPumpFunProvider: 
             def __init__(self, *args, **kwargs): pass
-        class DataProviderFactory:
-            @staticmethod
-            def create_provider(*args, **kwargs): return None
+    try:
+        from .data_provider import EnhancedDexScreenerProvider
+    except ImportError:
+        class EnhancedDexScreenerProvider:
+            def __init__(self, *args, **kwargs): pass
         
 except ImportError as e:
     logger.warning(f"Import error: {e}, using fallback imports")
@@ -70,7 +76,7 @@ except ImportError as e:
         def analyze(self, df): 
             return {'score': 0, 'action': 'NEUTRAL', 'entry_price': 0, 'sl': 0, 'tp': 0}
     
-    class YFinanceDataProvider: 
+    class EnhancedYFinanceDataProvider: 
         def __init__(self, *args, **kwargs): 
             self.market_type = kwargs.get('market_type', 'stock')
         def get_ohlcv(self, *args, **kwargs): return pd.DataFrame()
@@ -85,7 +91,13 @@ except ImportError as e:
         def get_popular_assets(self, *args, **kwargs): return []
         def search_assets(self, *args, **kwargs): return []
     
-    class SolanaPumpFunProvider:
+    class EnhancedCCXTDataProvider:
+        def __init__(self, *args, **kwargs): pass
+    
+    class EnhancedCCXTFuturesProvider:
+        def __init__(self, *args, **kwargs): pass
+    
+    class AlphaVantageProvider:
         def __init__(self, *args, **kwargs): pass
     
     class DataProviderFactory:
@@ -108,6 +120,12 @@ except ImportError as e:
         def close_position(self, *args, **kwargs): return True
         def update_position_current_price(self, *args, **kwargs): pass
         def get_trade_history(self, *args, **kwargs): return []
+    
+    class SolanaPumpFunProvider:
+        def __init__(self, *args, **kwargs): pass
+    
+    class EnhancedDexScreenerProvider:
+        def __init__(self, *args, **kwargs): pass
 
 # =============================================
 # ENHANCED BACKTEST ENGINE DARI CORE (1).PY
@@ -2008,6 +2026,7 @@ class EnhancedTradingBot:
             self.mode = mode.lower()
             
             # GUNAKAN DYNAMIC DATA PROVIDER UNTUK SEMUA MARKET TYPE
+            # Perbaiki parameter sesuai dengan yang ada di data_provider.py
             self.dynamic_provider = DynamicDataProvider(market_type=self.mode)
             self.data_provider = self.dynamic_provider  # Untuk kompatibilitas
             
@@ -2032,6 +2051,14 @@ class EnhancedTradingBot:
                 self.data_provider_monitor.register_provider(self.mode, self.data_provider)
             
             logger.info(f"🎯 Mode set to: {self.mode.upper()} with DynamicDataProvider")
+            
+            # TEST: Coba get popular assets langsung
+            try:
+                test_assets = self.dynamic_provider.get_popular_assets(5)
+                logger.info(f"✅ Test get_popular_assets: {len(test_assets)} assets found")
+            except Exception as e:
+                logger.error(f"❌ Test get_popular_assets failed: {e}")
+            
             self.start_background_tasks()
             return True
             
@@ -2086,35 +2113,55 @@ class EnhancedTradingBot:
             return self._get_fallback_assets(limit)
 
     def _get_fallback_assets(self, limit):
-        """Provide fallback assets ketika provider gagal"""
+        """Provide fallback assets ketika provider gagal - FIXED"""
         fallback_assets = {
             "crypto": [
                 {"symbol": "BTC/USDT", "name": "Bitcoin"},
                 {"symbol": "ETH/USDT", "name": "Ethereum"}, 
                 {"symbol": "BNB/USDT", "name": "Binance Coin"},
                 {"symbol": "XRP/USDT", "name": "Ripple"},
-                {"symbol": "ADA/USDT", "name": "Cardano"}
+                {"symbol": "ADA/USDT", "name": "Cardano"},
+                {"symbol": "SOL/USDT", "name": "Solana"},
+                {"symbol": "DOT/USDT", "name": "Polkadot"},
+                {"symbol": "DOGE/USDT", "name": "Dogecoin"},
+                {"symbol": "AVAX/USDT", "name": "Avalanche"},
+                {"symbol": "MATIC/USDT", "name": "Polygon"}
             ],
             "forex": [
                 {"symbol": "EUR/USD", "name": "Euro US Dollar"},
                 {"symbol": "USD/JPY", "name": "US Dollar Japanese Yen"},
                 {"symbol": "GBP/USD", "name": "British Pound US Dollar"},
                 {"symbol": "USD/CHF", "name": "US Dollar Swiss Franc"},
-                {"symbol": "AUD/USD", "name": "Australian Dollar US Dollar"}
+                {"symbol": "AUD/USD", "name": "Australian Dollar US Dollar"},
+                {"symbol": "USD/CAD", "name": "US Dollar Canadian Dollar"},
+                {"symbol": "NZD/USD", "name": "New Zealand Dollar US Dollar"},
+                {"symbol": "EUR/GBP", "name": "Euro British Pound"},
+                {"symbol": "EUR/JPY", "name": "Euro Japanese Yen"},
+                {"symbol": "GBP/JPY", "name": "British Pound Japanese Yen"}
             ],
             "us_stocks": [
                 {"symbol": "AAPL", "name": "Apple Inc"},
                 {"symbol": "MSFT", "name": "Microsoft Corp"},
                 {"symbol": "GOOGL", "name": "Alphabet Inc"},
                 {"symbol": "AMZN", "name": "Amazon.com Inc"},
-                {"symbol": "TSLA", "name": "Tesla Inc"}
+                {"symbol": "TSLA", "name": "Tesla Inc"},
+                {"symbol": "META", "name": "Meta Platforms Inc"},
+                {"symbol": "NVDA", "name": "NVIDIA Corp"},
+                {"symbol": "NFLX", "name": "Netflix Inc"},
+                {"symbol": "JPM", "name": "JPMorgan Chase & Co"},
+                {"symbol": "V", "name": "Visa Inc"}
             ],
             "saham_id": [
                 {"symbol": "BBCA.JK", "name": "Bank Central Asia"},
                 {"symbol": "BBRI.JK", "name": "Bank Rakyat Indonesia"},
                 {"symbol": "BMRI.JK", "name": "Bank Mandiri"},
                 {"symbol": "TLKM.JK", "name": "Telkom Indonesia"},
-                {"symbol": "ASII.JK", "name": "Astra International"}
+                {"symbol": "ASII.JK", "name": "Astra International"},
+                {"symbol": "UNVR.JK", "name": "Unilever Indonesia"},
+                {"symbol": "ICBP.JK", "name": "Indofood CBP Sukses Makmur"},
+                {"symbol": "INDF.JK", "name": "Indofood Sukses Makmur"},
+                {"symbol": "ANTM.JK", "name": "Aneka Tambang"},
+                {"symbol": "ADRO.JK", "name": "Adaro Energy"}
             ]
         }
         
@@ -2122,7 +2169,7 @@ class EnhancedTradingBot:
         limited_assets = assets[:limit] if limit else assets
         
         logger.info(f"🔄 Using {len(limited_assets)} fallback assets for {self.mode}")
-        return [{"symbol": asset} for asset in limited_assets]
+        return limited_assets  # Sudah dalam format dict yang benar
 
     def scan_potential_assets(self, limit=None, search_query: str = None):
         """Enhanced asset scanning dengan support untuk dynamic search"""
@@ -2138,18 +2185,33 @@ class EnhancedTradingBot:
             
             assets = []
             
+            # PERBAIKAN: Pastikan dynamic_provider ada
+            if not hasattr(self, 'dynamic_provider') or self.dynamic_provider is None:
+                logger.error("❌ Dynamic provider not initialized. Run set_mode() first!")
+                self.scanning_in_progress = False
+                return []
+            
+            logger.info(f"📊 Mode: {self.mode}, Using provider: {self.dynamic_provider.__class__.__name__}")
+            
             # JIKA ADA SEARCH QUERY, GUNAKAN DYNAMIC SEARCH
             if search_query:
                 logger.info(f"🔍 Searching assets for: '{search_query}'")
-                assets = self.search_assets(search_query, limit * 2)
+                assets = self.dynamic_provider.search_assets(search_query, limit * 2)
             else:
                 # GUNAKAN DYNAMIC PROVIDER UNTUK POPULAR ASSETS
+                logger.info(f"🔄 Getting popular assets for {self.mode}...")
                 assets = self.dynamic_provider.get_popular_assets(limit * 2)
+            
+            # PERBAIKAN: Jika masih kosong, gunakan emergency fallback
+            if not assets:
+                logger.warning("❌ No assets from provider, using emergency fallback...")
+                assets = self._get_fallback_assets(limit * 2)
             
             logger.info(f"📊 Total assets to scan: {len(assets)}")
             
             if not assets:
                 logger.warning("No assets available for scanning")
+                self.scanning_in_progress = False
                 return []
             
             signals = []
