@@ -808,7 +808,7 @@ class DataProviderFactory:
             raise ValueError(f"Unknown provider type: {provider_type}")
 
 class DynamicDataProvider(EnhancedDataProvider):
-    """Dynamic data provider dengan fallback Binance → KuCoin → YFinance"""
+    """Dynamic data provider dengan fallback yang benar"""
     
     def __init__(self, market_type="crypto"):
         super().__init__()
@@ -821,13 +821,13 @@ class DynamicDataProvider(EnhancedDataProvider):
         # Initialize semua provider yang mungkin dibutuhkan
         self.providers = {}
         
-        # Coba setup CCXT provider dengan fallback
+        # Coba setup CCXT provider dengan fallback yang benar
         self._setup_providers_with_fallback()
         
-        logger.info(f"DynamicDataProvider initialized for {market_type} market with fallback: {self.exchange_list}")
+        logger.info(f"DynamicDataProvider initialized for {market_type} market")
 
     def _setup_providers_with_fallback(self):
-        """Setup providers dengan sistem fallback"""
+        """Setup providers dengan sistem fallback yang benar"""
         successful_exchange = None
         
         # Coba satu per satu exchange
@@ -835,33 +835,46 @@ class DynamicDataProvider(EnhancedDataProvider):
             try:
                 logger.info(f"🔄 Trying to connect to {exchange_id}...")
                 
-                # Coba spot
+                # Coba spot dengan timeout pendek
                 spot_provider = EnhancedCCXTDataProvider(exchange_id=exchange_id, market_type='spot')
                 
-                # Test connection
-                test_assets = spot_provider.get_popular_assets(3)
-                if test_assets and len(test_assets) > 0:
-                    successful_exchange = exchange_id
-                    logger.info(f"✅ Successfully connected to {exchange_id}")
-                    
-                    # Setup providers dengan exchange yang berhasil
-                    self.providers = {
-                        'crypto_spot': spot_provider,
-                        'crypto_future': EnhancedCCXTFuturesProvider(exchange_id=exchange_id),
-                        'forex': EnhancedYFinanceDataProvider(market_type='forex'),
-                        'saham_id': EnhancedYFinanceDataProvider(market_type='saham_id'), 
-                        'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
-                        'stocks': EnhancedYFinanceDataProvider(market_type='us_stocks')
-                    }
-                    break
+                # **FIXED: Test koneksi yang sebenarnya, bukan hanya get_popular_assets**
+                # Coba load markets untuk test koneksi
+                if spot_provider.exchange is not None:
+                    try:
+                        # Test dengan fetch ticker untuk BTC/USDT (timeout 5 detik)
+                        test_ticker = spot_provider.get_ticker("BTC/USDT")
+                        if test_ticker and test_ticker.get('last', 0) > 0:
+                            successful_exchange = exchange_id
+                            logger.info(f"✅ Successfully connected to {exchange_id}")
+                            
+                            # Setup providers dengan exchange yang berhasil
+                            self.providers = {
+                                'crypto_spot': spot_provider,
+                                'crypto_future': EnhancedCCXTFuturesProvider(exchange_id=exchange_id),
+                                'forex': EnhancedYFinanceDataProvider(market_type='forex'),
+                                'saham_id': EnhancedYFinanceDataProvider(market_type='saham_id'), 
+                                'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
+                                'stocks': EnhancedYFinanceDataProvider(market_type='us_stocks')
+                            }
+                            break
+                        else:
+                            logger.warning(f"❌ {exchange_id} test failed: Invalid ticker data")
+                    except Exception as test_e:
+                        logger.warning(f"❌ {exchange_id} test failed: {test_e}")
+                else:
+                    logger.warning(f"❌ {exchange_id} exchange not initialized")
                     
             except Exception as e:
-                logger.warning(f"❌ Failed to connect to {exchange_id}: {e}")
+                logger.warning(f"❌ Failed to initialize {exchange_id}: {e}")
                 continue
         
-        # Jika semua exchange gagal, gunakan YFinance untuk crypto
+        # **FIXED: Jika semua exchange gagal, langsung gunakan YFinance**
         if not successful_exchange:
-            logger.warning("⚠️ All exchanges failed, using YFinance for crypto...")
+            logger.warning("⚠️ All exchanges failed, using YFinance as fallback...")
+            successful_exchange = "yfinance"
+            
+            # Setup semua provider dengan YFinance
             self.providers = {
                 'crypto_spot': EnhancedYFinanceDataProvider(market_type='crypto'),
                 'crypto_future': EnhancedYFinanceDataProvider(market_type='crypto'),
@@ -870,10 +883,13 @@ class DynamicDataProvider(EnhancedDataProvider):
                 'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
                 'stocks': EnhancedYFinanceDataProvider(market_type='us_stocks')
             }
-            successful_exchange = "yfinance"
         
         self.default_provider = self._get_default_provider(self.market_type)
         logger.info(f"🎯 Using {successful_exchange} as data source")
+        
+        # Log provider status
+        for provider_name, provider in self.providers.items():
+            logger.info(f"   {provider_name}: {provider.__class__.__name__}")
 
     def _get_default_provider(self, market_type):
         """Get default provider berdasarkan market type"""
@@ -938,6 +954,19 @@ class DynamicDataProvider(EnhancedDataProvider):
             if cached_data is not None:
                 return cached_data
             
+            # **FIXED: Jika provider adalah CCXT dan exchange None, langsung fallback ke YFinance**
+            if (isinstance(provider, (EnhancedCCXTDataProvider, EnhancedCCXTFuturesProvider)) 
+                and hasattr(provider, 'exchange') 
+                and provider.exchange is None):
+                
+                logger.warning(f"⚠️ {provider.__class__.__name__} exchange is None, falling back to YFinance")
+                # Cari YFinance provider yang sesuai
+                if symbol_type == 'crypto_spot' or symbol_type == 'crypto_future':
+                    fallback_provider = self.providers.get('crypto_spot', self.default_provider)
+                    if isinstance(fallback_provider, EnhancedYFinanceDataProvider):
+                        provider = fallback_provider
+                        logger.info(f"   Using YFinance for {symbol}")
+            
             # Get data dari provider yang sesuai
             data = provider.get_ohlcv(symbol, timeframe, limit)
             
@@ -961,6 +990,19 @@ class DynamicDataProvider(EnhancedDataProvider):
             
             logger.info(f"🔍 Getting ticker for {symbol} (detected as {symbol_type}) using {provider.__class__.__name__}")
             
+            # **FIXED: Jika provider adalah CCXT dan exchange None, langsung fallback ke YFinance**
+            if (isinstance(provider, (EnhancedCCXTDataProvider, EnhancedCCXTFuturesProvider)) 
+                and hasattr(provider, 'exchange') 
+                and provider.exchange is None):
+                
+                logger.warning(f"⚠️ {provider.__class__.__name__} exchange is None, falling back to YFinance")
+                # Cari YFinance provider yang sesuai
+                if symbol_type == 'crypto_spot' or symbol_type == 'crypto_future':
+                    fallback_provider = self.providers.get('crypto_spot', self.default_provider)
+                    if isinstance(fallback_provider, EnhancedYFinanceDataProvider):
+                        provider = fallback_provider
+                        logger.info(f"   Using YFinance for {symbol}")
+            
             return provider.get_ticker(symbol)
             
         except Exception as e:
@@ -977,7 +1019,7 @@ class DynamicDataProvider(EnhancedDataProvider):
                 logger.error("Default provider not initialized")
                 return self._get_fallback_assets(limit)
             
-            # Coba ambil dari provider utama
+            # **FIXED: Gunakan default provider yang sudah dipilih (YFinance jika semua gagal)**
             assets = self.default_provider.get_popular_assets(limit)
             
             # Jika gagal atau kosong, coba provider lain
@@ -989,7 +1031,14 @@ class DynamicDataProvider(EnhancedDataProvider):
                     for provider_name in ['crypto_spot', 'crypto_future']:
                         if provider_name in self.providers:
                             try:
-                                assets = self.providers[provider_name].get_popular_assets(limit)
+                                provider = self.providers[provider_name]
+                                # Skip CCXT provider yang exchange-nya None
+                                if (isinstance(provider, (EnhancedCCXTDataProvider, EnhancedCCXTFuturesProvider)) 
+                                    and hasattr(provider, 'exchange') 
+                                    and provider.exchange is None):
+                                    continue
+                                    
+                                assets = provider.get_popular_assets(limit)
                                 if assets:
                                     logger.info(f"✅ Got assets from {provider_name}")
                                     break
@@ -1060,6 +1109,17 @@ class DynamicDataProvider(EnhancedDataProvider):
         base_metrics['providers'] = provider_metrics
         base_metrics['market_type'] = self.market_type
         base_metrics['default_provider'] = self.default_provider.__class__.__name__
+        
+        # Tambah info apakah menggunakan CCXT atau YFinance
+        using_ccxt = False
+        for provider in self.providers.values():
+            if isinstance(provider, (EnhancedCCXTDataProvider, EnhancedCCXTFuturesProvider)):
+                if hasattr(provider, 'exchange') and provider.exchange is not None:
+                    using_ccxt = True
+                    break
+        
+        base_metrics['using_ccxt'] = using_ccxt
+        base_metrics['using_yfinance'] = not using_ccxt
         
         return base_metrics
 
