@@ -999,7 +999,7 @@ class EnsembleMLModel:
             self.model_weights[model_type] = 1.0  # Initial equal weights
     
     def advanced_feature_engineering(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Advanced feature engineering dengan technical indicators"""
+        """Advanced feature engineering dengan technical indicators - FIXED ATR"""
         if df is None or len(df) < 50:
             return pd.DataFrame()
         
@@ -1042,6 +1042,11 @@ class EnsembleMLModel:
         # Volatility features
         if len(prices) >= 20:
             features['atr'] = self._calculate_atr(df) if len(df) >= 14 else 0.02
+            
+            # ✅ PERBAIKAN: Pastikan ATR minimal 0.1% dari harga
+            if features['atr'] <= 0:
+                features['atr'] = prices[-1] * 0.001  # Minimal 0.1% dari harga terkini
+                
             returns = np.diff(prices) / prices[:-1]
             features['volatility'] = np.std(returns) * np.sqrt(252) if len(returns) > 1 else 0.02
         
@@ -1126,8 +1131,12 @@ class EnsembleMLModel:
         return obv
     
     def _calculate_atr(self, df, period=14):
-        """Calculate ATR"""
+        """Calculate ATR dengan fallback yang lebih baik"""
         try:
+            if len(df) < period:
+                # Jika data kurang, return default 2% dari harga
+                return df['close'].iloc[-1] * 0.02 if len(df) > 0 else 0.02
+                
             high = df['high'].values
             low = df['low'].values
             close = df['close'].values
@@ -1139,9 +1148,16 @@ class EnsembleMLModel:
                 tr3 = abs(low[i] - close[i-1])
                 tr[i] = max(tr1, tr2, tr3)
             
-            return np.mean(tr[-period:]) if len(tr) >= period else np.mean(tr)
+            atr_value = np.mean(tr[-period:]) if len(tr) >= period else np.mean(tr)
+            
+            # ✅ PERBAIKAN: Pastikan ATR tidak 0
+            if atr_value <= 0:
+                atr_value = df['close'].iloc[-1] * 0.01  # Fallback 1% dari harga
+                
+            return atr_value
         except:
-            return 0.02
+            # Fallback ke 2% dari harga terkini
+            return df['close'].iloc[-1] * 0.02 if len(df) > 0 else 0.02
     
     def _calculate_williams_r(self, df, period=14):
         """Calculate Williams %R"""
