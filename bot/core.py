@@ -1974,12 +1974,12 @@ class EnhancedTradingBot:
             "atr_multiplier": 1.0,
             "entry_range_pct": 0.02,
             "exchange_crypto": "kucoin",
-            "analysis_coins_limit": 150,  # DITINGKATKAN dari 100 ke 150
+            "analysis_coins_limit": 150,
             "ohlcv_limit": 200,
             "min_score": 2,
-            "max_signals": 25,  # DITINGKATKAN dari 10 ke 25
+            "max_signals": 25,
             "update_interval": 30,
-            "scan_delay": 0.3,  # DIPERCEPAT sedikit
+            "scan_delay": 0.3,
             "market_type": "crypto",
             "risk_per_trade": 0.01,
             "max_drawdown_limit": 0.1,
@@ -1987,7 +1987,7 @@ class EnhancedTradingBot:
             "enable_ml": True,
             "enable_trailing_stop": True,
             "partial_tp_enabled": True,
-            "trading_mode": "spot"  # Default trading mode
+            "trading_mode": "spot"
         }
     
     def save_config(self):
@@ -2064,7 +2064,6 @@ class EnhancedTradingBot:
             logger.info(f"🎯 Setting mode to: {self.mode.upper()}")
             
             # SELALU gunakan DynamicDataProvider sebagai default
-            # Karena DynamicDataProvider sudah punya fallback internal (CCXT → YFinance)
             logger.info("🔄 Initializing DynamicDataProvider...")
             
             try:
@@ -2220,7 +2219,7 @@ class EnhancedTradingBot:
             return []
 
     def scan_potential_assets(self, limit=None, search_query: str = None, asset_type: str = None):
-        """Scan untuk potential signals - FIXED VERSION"""
+        """Scan untuk potential signals - FIXED VERSION untuk saham Indonesia"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -2260,6 +2259,7 @@ class EnhancedTradingBot:
                 return []
             
             logger.info(f"📊 Scanning {len(assets)} {asset_type} assets...")
+            logger.info(f"📋 Sample assets: {[a['symbol'] for a in assets[:5]]}")
             
             signals = []
             scan_delay = self.config.get("scan_delay", 0.3)
@@ -2272,31 +2272,45 @@ class EnhancedTradingBot:
                     if not symbol:
                         continue
                     
-                    logger.debug(f"  Analyzing {i+1}/{len(assets)}: {symbol}")
+                    logger.info(f"  [{i+1}/{len(assets)}] Analyzing: {symbol}")
                     
-                    # **PERBAIKAN: Validasi symbol berdasarkan market_type**
-                    if self.mode == 'saham_id' and not (symbol.endswith('.JK') or '/USD' in symbol):
-                        logger.debug(f"    ⚠️ Skipping {symbol} - not Indonesian stock format")
-                        continue
+                    # **PERBAIKAN: Validasi symbol khusus untuk saham Indonesia**
+                    if self.mode == 'saham_id':
+                        # Hanya terima simbol yang berakhiran .JK untuk saham Indonesia
+                        if not symbol.endswith('.JK'):
+                            logger.info(f"    ⚠️ Skipping {symbol} - not Indonesian stock format (.JK)")
+                            continue
+                        logger.info(f"    ✅ Accepted Indonesian stock: {symbol}")
+                    else:
+                        # Untuk market lain, gunakan filter yang sesuai
+                        if self.mode == 'forex' and '/' not in symbol:
+                            logger.info(f"    ⚠️ Skipping {symbol} - not forex format (XXX/YYY)")
+                            continue
+                        elif self.mode == 'us_stocks' and not (symbol.endswith('.US') or '.' not in symbol):
+                            logger.info(f"    ⚠️ Skipping {symbol} - not US stock format")
+                            continue
                     
                     # Get current price
                     ticker = self.dynamic_provider.get_ticker(symbol)
                     if not ticker or ticker.get('last', 0) <= 0:
-                        logger.debug(f"    ⚠️ Invalid price for {symbol}")
+                        logger.info(f"    ⚠️ Invalid price for {symbol}: {ticker}")
                         continue
                     
                     current_price = ticker['last']
+                    logger.info(f"    Current price: {current_price}")
                     
                     # Get OHLCV data untuk analysis
                     df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
                     if df is None or len(df) < 50:
-                        logger.debug(f"    ⚠️ Insufficient data for {symbol}")
+                        logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df else 0} bars")
                         continue
+                    
+                    logger.info(f"    📊 OHLCV data: {len(df)} bars, price range: {df['close'].min():.2f}-{df['close'].max():.2f}")
                     
                     # Analyze dengan strategy
                     analysis = self.strategy.analyze(df)
                     if not analysis:
-                        logger.debug(f"    ⚠️ No analysis for {symbol}")
+                        logger.info(f"    ⚠️ No analysis for {symbol}")
                         continue
                     
                     # Apply market constraints
@@ -2338,9 +2352,9 @@ class EnhancedTradingBot:
                     # Rate limiting
                     if scan_delay > 0:
                         time.sleep(scan_delay)
-                    
+                
                 except Exception as e:
-                    logger.debug(f"❌ Error analyzing {asset.get('symbol', 'unknown')}: {e}")
+                    logger.error(f"❌ Error analyzing {asset.get('symbol', 'unknown')}: {str(e)[:100]}")
                     continue
             
             logger.info(f"🎯 Scan completed: {len(signals)} signals found")
@@ -2348,8 +2362,8 @@ class EnhancedTradingBot:
             # **PERBAIKAN: Sort signals by score absolute value (terbaik ke terburuk)**
             if signals:
                 signals.sort(key=lambda x: abs(x['score']), reverse=True)
-                logger.info("🏆 Top 10 signals:")
-                for i, signal in enumerate(signals[:10]):
+                logger.info("🏆 Top signals:")
+                for i, signal in enumerate(signals[:min(10, len(signals))]):
                     logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']}")
             else:
                 logger.info("ℹ️ No signals found with current criteria")
