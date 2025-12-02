@@ -391,13 +391,13 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
         return self._safe_api_call(fetch_ticker)
 
     def get_popular_assets(self, limit=100):
-        """Get popular crypto assets"""
+        """Get popular crypto assets dengan prioritas volume & trend"""
         try:
             logger.info(f"🔄 Getting {limit} popular assets from {self.exchange_id}...")
             
             if not self.exchange:
                 logger.warning(f"Exchange {self.exchange_id} not initialized")
-                return ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT'][:limit]
+                return self._get_fallback_major_coins(limit)
             
             try:
                 self.exchange.load_markets()
@@ -405,7 +405,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 logger.info(f"📊 Loaded {len(markets)} markets from {self.exchange_id}")
             except Exception as e:
                 logger.error(f"Failed to load markets: {e}")
-                return ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT'][:limit]
+                return self._get_fallback_major_coins(limit)
             
             if self.market_type == 'future':
                 target_markets = [
@@ -429,18 +429,67 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 if not any(excluded in symbol for excluded in excluded_coins)
             ]
             
-            filtered_markets.sort()
-            result = filtered_markets[:limit]
-            logger.info(f"✅ CCXT returning {len(result)} popular {self.market_type} assets")
-            return result
+            # **PERBAIKAN: Ambil data volume untuk sorting**
+            assets_with_volume = []
+            
+            # Ambil sample dari filtered_markets untuk cek volume (max 50 untuk performance)
+            sample_size = min(50, len(filtered_markets))
+            markets_to_check = filtered_markets[:sample_size]
+            
+            for symbol in markets_to_check:
+                try:
+                    ticker = self.exchange.fetch_ticker(symbol)
+                    volume = ticker.get('quoteVolume', 0) or ticker.get('baseVolume', 0)
+                    assets_with_volume.append((symbol, volume))
+                except:
+                    assets_with_volume.append((symbol, 0))
+                    continue
+            
+            # Sort berdasarkan volume (descending)
+            assets_with_volume.sort(key=lambda x: x[1], reverse=True)
+            
+            # **PERBAIKAN: Prioritaskan coin utama (hardcoded)**
+            major_coins = [
+                'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
+                'SOL/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
+                'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'XLM/USDT', 'BCH/USDT'
+            ]
+            
+            # Gabungkan: major coins dulu, lalu berdasarkan volume
+            result = []
+            
+            # Tambahkan major coins yang ada di market
+            for coin in major_coins:
+                if coin in filtered_markets and coin not in result:
+                    result.append(coin)
+            
+            # Tambahkan sisanya berdasarkan volume
+            for symbol, _ in assets_with_volume:
+                if symbol not in result and len(result) < limit:
+                    result.append(symbol)
+            
+            # Jika masih kurang, tambahkan dari filtered_markets
+            if len(result) < limit:
+                for symbol in filtered_markets:
+                    if symbol not in result and len(result) < limit:
+                        result.append(symbol)
+            
+            logger.info(f"✅ CCXT returning {len(result)} popular {self.market_type} assets (prioritized by volume)")
+            logger.info(f"   Top 5: {result[:5]}")
+            return result[:limit]
             
         except Exception as e:
             logger.error(f"Error getting popular assets from {self.exchange_id}: {str(e)}")
-            major_pairs = [
-                'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
-                'SOL/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT'
-            ]
-            return major_pairs[:limit]
+            return self._get_fallback_major_coins(limit)
+
+    def _get_fallback_major_coins(self, limit):
+        """Fallback major coins"""
+        major_pairs = [
+            'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
+            'SOL/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
+            'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'XLM/USDT', 'BCH/USDT'
+        ]
+        return major_pairs[:limit]
 
 class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
     """Enhanced CCXT Futures provider"""
@@ -449,13 +498,13 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
         super().__init__(exchange_id=exchange_id, api_key=api_key, secret=secret, market_type='future')
         
     def get_popular_assets(self, limit=100):
-        """Get popular futures assets"""
+        """Get popular futures assets dengan prioritas major coins"""
         try:
             logger.info(f"🔄 Getting {limit} popular futures from {self.exchange_id}...")
             
             if not self.exchange:
                 logger.warning(f"Exchange {self.exchange_id} not initialized")
-                return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT'][:limit]
+                return self._get_fallback_futures_coins(limit)
             
             try:
                 self.exchange.load_markets()
@@ -463,7 +512,7 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
                 logger.info(f"📊 Loaded {len(markets)} markets from {self.exchange_id}")
             except Exception as e:
                 logger.error(f"Failed to load markets: {e}")
-                return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT'][:limit]
+                return self._get_fallback_futures_coins(limit)
             
             # Cari futures contracts
             futures_markets = [
@@ -483,32 +532,54 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
                 if not any(excluded in symbol for excluded in excluded_coins)
             ]
             
-            # Prioritize major coins
-            major_pairs = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT', 
-                          'XRP/USDT:USDT', 'ADA/USDT:USDT', 'SOL/USDT:USDT']
+            # **PERBAIKAN: Prioritize major futures coins**
+            major_futures = [
+                'BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT', 
+                'XRP/USDT:USDT', 'ADA/USDT:USDT', 'SOL/USDT:USDT',
+                'DOT/USDT:USDT', 'DOGE/USDT:USDT', 'AVAX/USDT:USDT', 'MATIC/USDT:USDT',
+                'LTC/USDT:USDT', 'LINK/USDT:USDT', 'ATOM/USDT:USDT', 'XLM/USDT:USDT'
+            ]
             
-            # Gabungkan major pairs dengan yang lain
-            all_markets = []
-            for mp in major_pairs:
-                if mp in filtered_markets:
-                    all_markets.append(mp)
+            # **PERBAIKAN: Gabungkan dengan logika yang lebih baik**
+            result = []
             
+            # 1. Tambahkan major futures yang tersedia
+            for futures_coin in major_futures:
+                # Cari format yang tepat di filtered_markets
+                for symbol in filtered_markets:
+                    if futures_coin in symbol and symbol not in result:
+                        result.append(symbol)
+                        break
+            
+            # 2. Tambahkan futures lain (yang belum ada di result)
             for symbol in filtered_markets:
-                if symbol not in all_markets:
-                    all_markets.append(symbol)
+                if symbol not in result and len(result) < limit:
+                    result.append(symbol)
             
-            result = all_markets[:limit]
-            logger.info(f"✅ CCXT Futures returning {len(result)} popular futures")
-            return result
+            # 3. Jika masih kurang, tambahkan format alternatif
+            if len(result) < limit:
+                # Coba cari dengan pattern yang lebih umum
+                for symbol in filtered_markets:
+                    if any(coin.split('/')[0] in symbol for coin in major_futures):
+                        if symbol not in result and len(result) < limit:
+                            result.append(symbol)
+            
+            logger.info(f"✅ CCXT Futures returning {len(result)} popular FUTURES assets")
+            logger.info(f"   Top 5: {result[:5]}")
+            return result[:limit]
             
         except Exception as e:
             logger.error(f"Error getting popular futures from {self.exchange_id}: {str(e)}")
-            major_pairs = [
-                'BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT',
-                'XRP/USDT:USDT', 'ADA/USDT:USDT', 'SOL/USDT:USDT',
-                'DOT/USDT:USDT', 'DOGE/USDT:USDT', 'AVAX/USDT:USDT', 'MATIC/USDT:USDT'
-            ]
-            return major_pairs[:limit]
+            return self._get_fallback_futures_coins(limit)
+
+    def _get_fallback_futures_coins(self, limit):
+        """Fallback futures coins"""
+        major_pairs = [
+            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT',
+            'XRP/USDT:USDT', 'ADA/USDT:USDT', 'SOL/USDT:USDT',
+            'DOT/USDT:USDT', 'DOGE/USDT:USDT', 'AVAX/USDT:USDT', 'MATIC/USDT:USDT'
+        ]
+        return major_pairs[:limit]
 
 class EnhancedYFinanceDataProvider(EnhancedDataProvider):
     """Enhanced Yahoo Finance provider"""
@@ -1010,51 +1081,52 @@ class DynamicDataProvider(EnhancedDataProvider):
             # Fallback ke default provider
             return self.default_provider.get_ticker(symbol)
 
-    def get_popular_assets(self, limit: int = 100):
-        """Get popular assets dengan fallback yang lebih baik"""
+    def get_popular_assets(self, limit: int = 100, asset_type: str = None):
+        """Get popular assets dengan opsi pilih spot/future"""
         try:
-            logger.info(f"📊 Getting {limit} popular assets for {self.market_type}")
+            # Jika ada parameter asset_type, gunakan provider yang sesuai
+            if asset_type:
+                if asset_type.lower() in ['futures', 'future'] and 'crypto_future' in self.providers:
+                    provider = self.providers['crypto_future']
+                    logger.info(f"📊 Getting {limit} {asset_type} assets from {provider.__class__.__name__}")
+                elif asset_type.lower() in ['spot', 'spots'] and 'crypto_spot' in self.providers:
+                    provider = self.providers['crypto_spot']
+                    logger.info(f"📊 Getting {limit} {asset_type} assets from {provider.__class__.__name__}")
+                else:
+                    provider = self.default_provider
+                    logger.info(f"📊 Getting {limit} assets from default provider ({provider.__class__.__name__})")
+            else:
+                # Default: gunakan berdasarkan market_type
+                provider = self.default_provider
+                logger.info(f"📊 Getting {limit} {self.market_type} assets from default provider")
             
-            if not hasattr(self, 'default_provider') or self.default_provider is None:
-                logger.error("Default provider not initialized")
-                return self._get_fallback_assets(limit)
+            # Get assets dari provider yang sesuai
+            assets = provider.get_popular_assets(limit)
             
-            # **FIXED: Gunakan default provider yang sudah dipilih (YFinance jika semua gagal)**
-            assets = self.default_provider.get_popular_assets(limit)
+            # Filter berdasarkan asset_type jika diperlukan (untuk safety)
+            if asset_type and asset_type.lower() in ['futures', 'future']:
+                # Pastikan yang diambil benar futures
+                filtered_assets = []
+                for asset in assets:
+                    if any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES']):
+                        filtered_assets.append(asset)
+                assets = filtered_assets[:limit] if filtered_assets else assets[:limit]
+            elif asset_type and asset_type.lower() in ['spot', 'spots']:
+                # Pastikan yang diambil benar spot
+                filtered_assets = []
+                for asset in assets:
+                    if not any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES']):
+                        filtered_assets.append(asset)
+                assets = filtered_assets[:limit] if filtered_assets else assets[:limit]
             
-            # Jika gagal atau kosong, coba provider lain
-            if not assets:
-                logger.warning("Default provider returned no assets, trying fallback...")
-                
-                # Untuk crypto, coba semua crypto providers
-                if self.market_type == "crypto":
-                    for provider_name in ['crypto_spot', 'crypto_future']:
-                        if provider_name in self.providers:
-                            try:
-                                provider = self.providers[provider_name]
-                                # Skip CCXT provider yang exchange-nya None
-                                if (isinstance(provider, (EnhancedCCXTDataProvider, EnhancedCCXTFuturesProvider)) 
-                                    and hasattr(provider, 'exchange') 
-                                    and provider.exchange is None):
-                                    continue
-                                    
-                                assets = provider.get_popular_assets(limit)
-                                if assets:
-                                    logger.info(f"✅ Got assets from {provider_name}")
-                                    break
-                            except Exception as e:
-                                logger.warning(f"Provider {provider_name} failed: {e}")
-            
-            # Jika masih kosong, gunakan emergency fallback
-            if not assets:
-                logger.warning("🔄 Using emergency fallback assets")
-                return self._get_fallback_assets(limit)
-            
-            logger.info(f"✅ Found {len(assets)} popular assets for {self.market_type}")
+            logger.info(f"✅ Found {len(assets)} {asset_type or self.market_type} assets")
+            if assets:
+                logger.info(f"   Sample: {assets[:3]}")
             return assets[:limit]
             
         except Exception as e:
             logger.error(f"Error getting popular assets: {e}")
+            # Fallback ke emergency assets
             return self._get_fallback_assets(limit)
 
     def _get_fallback_assets(self, limit: int):
@@ -1175,10 +1247,18 @@ def test_dynamic_provider():
     # Test untuk crypto
     provider = DynamicDataProvider(market_type="crypto")
     
-    # Test popular assets
-    assets = provider.get_popular_assets(10)
-    print(f"✅ Popular assets: {len(assets)} found")
-    for asset in assets[:5]:
+    # Test popular assets SPOT
+    print("\n📊 Testing SPOT assets:")
+    spot_assets = provider.get_popular_assets(10, asset_type='spot')
+    print(f"✅ Popular SPOT assets: {len(spot_assets)} found")
+    for asset in spot_assets[:5]:
+        print(f"   - {asset}")
+    
+    # Test popular assets FUTURES
+    print("\n📊 Testing FUTURES assets:")
+    futures_assets = provider.get_popular_assets(10, asset_type='futures')
+    print(f"✅ Popular FUTURES assets: {len(futures_assets)} found")
+    for asset in futures_assets[:5]:
         print(f"   - {asset}")
     
     # Test OHLCV untuk BTC
