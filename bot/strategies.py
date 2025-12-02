@@ -995,7 +995,31 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         self.risk_engine = DynamicRiskEngine()
         self.analysis_history = []
         self.min_pattern_confidence = 0.6
-        
+    
+    def _get_valid_current_price(self, df: pd.DataFrame) -> float:
+        """Get valid current price from DataFrame with validation"""
+        try:
+            if df is None or df.empty:
+                logger.warning("Empty DataFrame in _get_valid_current_price")
+                return 0.0
+            
+            if 'close' not in df.columns:
+                logger.warning("DataFrame has no 'close' column")
+                return 0.0
+            
+            current_price = df['close'].iloc[-1]
+            
+            # Validate price
+            if pd.isna(current_price) or current_price <= 0:
+                logger.warning(f"Invalid current price: {current_price}")
+                return 0.0
+            
+            return float(current_price)
+            
+        except Exception as e:
+            logger.error(f"Error in _get_valid_current_price: {e}")
+            return 0.0
+
     def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
         """Analyze market data with enhanced features and entry range"""
         try:
@@ -1589,6 +1613,27 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'range_size': default_entry['range_size']
         })
         return analysis
+
+    def _final_validation(self, analysis: Dict[str, Any], symbol: str = None) -> Dict[str, Any]:
+        """Final validation and cleanup of analysis data"""
+        try:
+            # Ensure all numeric values are valid
+            for key in ['current_price', 'entry_range_low', 'entry_range_high', 
+                       'best_entry', 'tp1', 'tp2', 'tp3', 'sl', 'atr', 'score']:
+                if key in analysis:
+                    if pd.isna(analysis[key]) or not isinstance(analysis[key], (int, float)):
+                        analysis[key] = 0.0
+                    analysis[key] = float(analysis[key])
+            
+            # Ensure action is valid
+            if analysis['action'] not in ['LONG', 'SHORT', 'NEUTRAL']:
+                analysis['action'] = 'NEUTRAL'
+            
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"Final validation error: {e}")
+            return self._get_default_analysis(symbol)
 
 # =============================================
 # DYNAMIC RISK ENGINE
