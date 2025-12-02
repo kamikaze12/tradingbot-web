@@ -498,7 +498,7 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
         super().__init__(exchange_id=exchange_id, api_key=api_key, secret=secret, market_type='future')
         
     def get_popular_assets(self, limit=100):
-        """Get popular futures assets dengan prioritas major coins"""
+        """Get popular futures assets dengan prioritas major coins - ENHANCED"""
         try:
             logger.info(f"🔄 Getting {limit} popular futures from {self.exchange_id}...")
             
@@ -514,14 +514,19 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
                 logger.error(f"Failed to load markets: {e}")
                 return self._get_fallback_futures_coins(limit)
             
-            # Cari futures contracts
-            futures_markets = [
-                symbol for symbol, market in markets.items()
+            # Cari futures contracts dengan berbagai format
+            futures_markets = []
+            for symbol, market in markets.items():
+                # Check berbagai format futures
                 if (market.get('future', False) or 
                     '/USDT:' in symbol or 
                     ':USDT' in symbol or
-                    'PERP' in symbol)
-            ]
+                    'PERP' in symbol or
+                    '-USDT' in symbol or
+                    '/USDT-PERP' in symbol or
+                    '/USD:' in symbol or
+                    'FUTURES' in symbol.upper()):
+                    futures_markets.append(symbol)
             
             logger.info(f"📊 Found {len(futures_markets)} futures markets")
             
@@ -529,40 +534,64 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
             excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST', 'FDUSD']
             filtered_markets = [
                 symbol for symbol in futures_markets 
-                if not any(excluded in symbol for excluded in excluded_coins)
+                if not any(excluded in symbol.upper() for excluded in excluded_coins)
             ]
             
-            # **PERBAIKAN: Prioritize major futures coins**
-            major_futures = [
-                'BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT', 
-                'XRP/USDT:USDT', 'ADA/USDT:USDT', 'SOL/USDT:USDT',
-                'DOT/USDT:USDT', 'DOGE/USDT:USDT', 'AVAX/USDT:USDT', 'MATIC/USDT:USDT',
-                'LTC/USDT:USDT', 'LINK/USDT:USDT', 'ATOM/USDT:USDT', 'XLM/USDT:USDT'
+            # **PERBAIKAN: Prioritize major futures coins dengan berbagai format**
+            major_futures_patterns = [
+                'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 
+                'XRP/USDT', 'ADA/USDT', 'SOL/USDT',
+                'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
+                'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'XLM/USDT',
+                'BCH/USDT', 'ETC/USDT', 'FIL/USDT', 'THETA/USDT',
+                'EOS/USDT', 'XTZ/USDT', 'ALGO/USDT', 'XMR/USDT',
+                'ZEC/USDT', 'DASH/USDT', 'WAVES/USDT', 'COMP/USDT',
+                'AAVE/USDT', 'SNX/USDT', 'UNI/USDT', 'CRV/USDT'
             ]
             
             # **PERBAIKAN: Gabungkan dengan logika yang lebih baik**
             result = []
             
-            # 1. Tambahkan major futures yang tersedia
-            for futures_coin in major_futures:
-                # Cari format yang tepat di filtered_markets
+            # 1. Tambahkan major futures yang tersedia (format apapun)
+            for futures_coin in major_futures_patterns:
+                # Cari semua format yang mungkin
                 for symbol in filtered_markets:
-                    if futures_coin in symbol and symbol not in result:
-                        result.append(symbol)
-                        break
-            
-            # 2. Tambahkan futures lain (yang belum ada di result)
-            for symbol in filtered_markets:
-                if symbol not in result and len(result) < limit:
-                    result.append(symbol)
-            
-            # 3. Jika masih kurang, tambahkan format alternatif
-            if len(result) < limit:
-                # Coba cari dengan pattern yang lebih umum
-                for symbol in filtered_markets:
-                    if any(coin.split('/')[0] in symbol for coin in major_futures):
-                        if symbol not in result and len(result) < limit:
+                    base_coin = futures_coin.split('/')[0]
+                    if base_coin in symbol and symbol not in result:
+                        # Pastikan ini futures (ada tanda futures)
+                        if any(marker in symbol for marker in [':', 'PERP', '-USDT', 'FUTURES']):
                             result.append(symbol)
+                            break
+            
+            # 2. Jika masih kurang, tambahkan futures lain berdasarkan volume
+            if len(result) < limit:
+                remaining_markets = [s for s in filtered_markets if s not in result]
+                
+                # Coba ambil volume untuk sorting
+                assets_with_volume = []
+                sample_size = min(30, len(remaining_markets))
+                
+                for symbol in remaining_markets[:sample_size]:
+                    try:
+                        ticker = self.exchange.fetch_ticker(symbol)
+                        volume = ticker.get('quoteVolume', 0) or ticker.get('baseVolume', 0)
+                        assets_with_volume.append((symbol, volume))
+                    except:
+                        assets_with_volume.append((symbol, 0))
+                        continue
+                
+                # Sort by volume
+                assets_with_volume.sort(key=lambda x: x[1], reverse=True)
+                
+                for symbol, _ in assets_with_volume:
+                    if symbol not in result and len(result) < limit:
+                        result.append(symbol)
+            
+            # 3. Jika masih kurang, tambahkan secara acak
+            if len(result) < limit:
+                for symbol in filtered_markets:
+                    if symbol not in result and len(result) < limit:
+                        result.append(symbol)
             
             logger.info(f"✅ CCXT Futures returning {len(result)} popular FUTURES assets")
             logger.info(f"   Top 5: {result[:5]}")
@@ -573,11 +602,14 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
             return self._get_fallback_futures_coins(limit)
 
     def _get_fallback_futures_coins(self, limit):
-        """Fallback futures coins"""
+        """Fallback futures coins - ENHANCED"""
         major_pairs = [
             'BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT',
             'XRP/USDT:USDT', 'ADA/USDT:USDT', 'SOL/USDT:USDT',
-            'DOT/USDT:USDT', 'DOGE/USDT:USDT', 'AVAX/USDT:USDT', 'MATIC/USDT:USDT'
+            'DOT/USDT:USDT', 'DOGE/USDT:USDT', 'AVAX/USDT:USDT', 'MATIC/USDT:USDT',
+            'LTC/USDT:USDT', 'LINK/USDT:USDT', 'ATOM/USDT:USDT', 'XLM/USDT:USDT',
+            'BCH/USDT:USDT', 'ETC/USDT:USDT', 'FIL/USDT:USDT', 'THETA/USDT:USDT',
+            'EOS/USDT:USDT', 'XTZ/USDT:USDT', 'ALGO/USDT:USDT', 'XMR/USDT:USDT'
         ]
         return major_pairs[:limit]
 
@@ -660,7 +692,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         return self._safe_api_call(fetch_ticker)
 
     def get_popular_assets(self, limit=100):
-        """Get popular assets berdasarkan market type"""
+        """Get popular assets berdasarkan market type - FIXED VERSION"""
         try:
             if self.market_type == "crypto":
                 return self._get_popular_crypto(limit)
@@ -679,54 +711,284 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
             return self._get_fallback_assets(limit)
 
     def _get_popular_crypto(self, limit):
-        """Get popular cryptocurrencies"""
+        """Get popular cryptocurrencies - ENHANCED"""
         crypto_pairs = [
             'BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD',
             'SOL-USD', 'DOT-USD', 'DOGE-USD', 'AVAX-USD', 'MATIC-USD',
             'LTC-USD', 'LINK-USD', 'ATOM-USD', 'XLM-USD', 'BCH-USD',
-            'ETC-USD', 'FIL-USD', 'THETA-USD', 'EOS-USD', 'XTZ-USD'
+            'ETC-USD', 'FIL-USD', 'THETA-USD', 'EOS-USD', 'XTZ-USD',
+            'ALGO-USD', 'XMR-USD', 'ZEC-USD', 'DASH-USD', 'WAVES-USD',
+            'COMP-USD', 'AAVE-USD', 'SNX-USD', 'UNI-USD', 'CRV-USD',
+            'MKR-USD', 'SUSHI-USD', 'YFI-USD', 'RUNE-USD', 'NEAR-USD',
+            'FTM-USD', 'ONE-USD', 'VET-USD', 'TRX-USD', 'SHIB-USD',
+            'LEO-USD', 'CRO-USD', 'FTT-USD', 'HT-USD', 'KCS-USD',
+            'BTT-USD', 'HNT-USD', 'GRT-USD', 'CHZ-USD', 'ENJ-USD',
+            'BAT-USD', 'MANA-USD', 'SAND-USD', 'AXS-USD', 'GALA-USD'
         ]
         result = crypto_pairs[:limit]
-        logger.info(f"YFinance returning {len(result)} popular crypto assets")
-        return result
+        logger.info(f"📈 YFinance returning {len(result)} popular crypto assets")
+        
+        # Format sebagai list of dict untuk konsistensi
+        formatted_result = []
+        for symbol in result:
+            formatted_result.append({
+                'symbol': symbol,
+                'name': symbol.replace('-USD', '')
+            })
+        
+        return formatted_result
 
     def _get_popular_forex(self, limit):
-        """Get popular forex pairs"""
+        """Get popular forex pairs - ENHANCED"""
         forex_pairs = [
             'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X',
-            'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X'
+            'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+            'AUDJPY=X', 'EURCAD=X', 'EURCHF=X', 'EURAUD=X', 'GBPCHF=X',
+            'AUDCAD=X', 'AUDNZD=X', 'NZDCAD=X', 'USDHKD=X', 'USDSGD=X',
+            'USDINR=X', 'USDCNY=X', 'USDMXN=X', 'USDBRL=X', 'USDRUB=X'
         ]
         result = forex_pairs[:limit]
-        logger.info(f"YFinance returning {len(result)} popular forex pairs")
-        return result
+        logger.info(f"📈 YFinance returning {len(result)} popular forex pairs")
+        
+        formatted_result = []
+        for symbol in result:
+            pair = symbol.replace('=X', '')
+            formatted_result.append({
+                'symbol': symbol,
+                'name': pair
+            })
+        
+        return formatted_result
 
     def _get_popular_indonesian_stocks(self, limit):
-        """Get popular Indonesian stocks"""
-        id_stocks = [
-            'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'BNGA.JK',
-            'TLKM.JK', 'ASII.JK', 'UNVR.JK', 'ICBP.JK', 'INDF.JK'
-        ]
-        result = id_stocks[:limit]
-        logger.info(f"YFinance returning {len(result)} popular Indonesian stocks")
-        return result
+        """Get popular Indonesian stocks - ENHANCED VERSION"""
+        try:
+            # Daftar lengkap saham bluechip dan liquid di IDX
+            id_stocks = [
+                'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'BNGA.JK',
+                'TLKM.JK', 'ASII.JK', 'UNVR.JK', 'ICBP.JK', 'INDF.JK',
+                'WIKA.JK', 'PGAS.JK', 'ANTM.JK', 'ADRO.JK', 'AKRA.JK',
+                'ASSA.JK', 'AALI.JK', 'ADHI.JK', 'AMRT.JK', 'APLN.JK',
+                'ARTO.JK', 'ASRI.JK', 'ASRM.JK', 'AUTO.JK', 'BAPA.JK',
+                'BATA.JK', 'BEST.JK', 'BJBR.JK', 'BJTM.JK', 'BKSL.JK',
+                'BTPN.JK', 'BYAN.JK', 'CPIN.JK', 'CTRA.JK', 'DMAS.JK',
+                'ERAA.JK', 'EXCL.JK', 'GGRM.JK', 'HMSP.JK', 'INCO.JK',
+                'INDY.JK', 'INKP.JK', 'ITMG.JK', 'JPFA.JK', 'JSMR.JK',
+                'KAEF.JK', 'KLBF.JK', 'LPKR.JK', 'LPPF.JK', 'MAPI.JK',
+                'MDKA.JK', 'MEDC.JK', 'MIKA.JK', 'MNCN.JK', 'MYOR.JK',
+                'PGEO.JK', 'PTBA.JK', 'PTPP.JK', 'PWON.JK', 'SIDO.JK',
+                'SMGR.JK', 'SRIL.JK', 'SSMS.JK', 'TINS.JK', 'TKIM.JK',
+                'TLKM.JK', 'TOWR.JK', 'TPIA.JK', 'UNTR.JK', 'WEGE.JK',
+                'WSKT.JK', 'WTON.JK', 'ACES.JK', 'ADMG.JK', 'AGRO.JK',
+                'AKSI.JK', 'ALMI.JK', 'AMFG.JK', 'APIC.JK', 'ARNA.JK',
+                'ASBI.JK', 'ASDM.JK', 'ASGR.JK', 'ASJT.JK', 'ASPI.JK',
+                'ATIC.JK', 'AUTO.JK', 'BABP.JK', 'BACA.JK', 'BAJA.JK',
+                'BALI.JK', 'BATA.JK', 'BAYU.JK', 'BCIC.JK', 'BCIP.JK',
+                'BDMN.JK', 'BEEF.JK', 'BEKS.JK', 'BESS.JK', 'BINA.JK',
+                'BIPI.JK', 'BISI.JK', 'BJBR.JK', 'BJTM.JK', 'BKDP.JK',
+                'BKSL.JK', 'BLTA.JK', 'BLTZ.JK', 'BMAS.JK', 'BMRI.JK',
+                'BMSR.JK', 'BMTR.JK', 'BNBA.JK', 'BNBR.JK', 'BNGA.JK',
+                'BNII.JK', 'BNLI.JK', 'BOGA.JK', 'BOLT.JK', 'BOSS.JK',
+                'BPFI.JK', 'BPII.JK', 'BPTR.JK', 'BRAM.JK', 'BRIS.JK',
+                'BRMS.JK', 'BRPT.JK', 'BSDE.JK', 'BSIM.JK', 'BSSR.JK',
+                'BSWD.JK', 'BTEL.JK', 'BTON.JK', 'BUDI.JK', 'BUKA.JK',
+                'BUKK.JK', 'BUMI.JK', 'BUVA.JK', 'BVIC.JK', 'CAMP.JK',
+                'CANI.JK', 'CARE.JK', 'CARS.JK', 'CASA.JK', 'CASH.JK',
+                'CASS.JK', 'CBMF.JK', 'CCSI.JK', 'CEKA.JK', 'CENT.JK',
+                'CFIN.JK', 'CINT.JK', 'CITA.JK', 'CITY.JK', 'CLAY.JK',
+                'CLEO.JK', 'CLPI.JK', 'CMNP.JK', 'CMRY.JK', 'CMSN.JK',
+                'CNKO.JK', 'CNTX.JK', 'COCO.JK', 'COWL.JK', 'CPRI.JK',
+                'CSAP.JK', 'CSIS.JK', 'CSMI.JK', 'CSRA.JK', 'CTBN.JK',
+                'CTTH.JK', 'DART.JK', 'DAYA.JK', 'DCII.JK', 'DEAL.JK',
+                'DEFI.JK', 'DEWA.JK', 'DFAM.JK', 'DGIK.JK', 'DIGI.JK',
+                'DILD.JK', 'DIVA.JK', 'DKFT.JK', 'DLTA.JK', 'DMND.JK',
+                'DMMX.JK', 'DNET.JK', 'DOID.JK', 'DPUM.JK', 'DSFI.JK',
+                'DSNG.JK', 'DSSA.JK', 'DUCK.JK', 'DUTI.JK', 'DVLA.JK',
+                'DWGL.JK', 'EAST.JK', 'ECII.JK', 'EDGE.JK', 'EKAD.JK',
+                'ELSA.JK', 'ELTY.JK', 'EMDE.JK', 'EMTK.JK', 'ENRG.JK',
+                'ENVY.JK', 'EPAC.JK', 'EPMT.JK', 'ERAA.JK', 'ERTX.JK',
+                'ESSA.JK', 'ESTA.JK', 'ESTI.JK', 'ETWA.JK', 'EXCL.JK',
+                'FAST.JK', 'FASW.JK', 'FIRE.JK', 'FISH.JK', 'FITT.JK',
+                'FMII.JK', 'FORU.JK', 'FORZ.JK', 'FPNI.JK', 'FREN.JK',
+                'FUJI.JK', 'GAMA.JK', 'GDST.JK', 'GDYR.JK', 'GEMA.JK',
+                'GEMS.JK', 'GGRM.JK', 'GJTL.JK', 'GLOB.JK', 'GMFI.JK',
+                'GOLD.JK', 'GOLL.JK', 'GOOD.JK', 'GPRA.JK', 'GRHA.JK',
+                'GSMF.JK', 'GTBO.JK', 'GTSI.JK', 'GWSA.JK', 'GZCO.JK',
+                'HADE.JK', 'HDFA.JK', 'HDTX.JK', 'HEAL.JK', 'HELI.JK',
+                'HERO.JK', 'HEXA.JK', 'HITS.JK', 'HKMU.JK', 'HMSP.JK',
+                'HOKI.JK', 'HOME.JK', 'HOMI.JK', 'HOPE.JK', 'HOTL.JK',
+                'HRME.JK', 'HRTA.JK', 'IATA.JK', 'IBFN.JK', 'IBST.JK',
+                'ICBP.JK', 'ICON.JK', 'IDPR.JK', 'IFII.JK', 'IFSH.JK',
+                'IGAR.JK', 'IIKP.JK', 'IKAI.JK', 'IKAN.JK', 'IKBI.JK',
+                'IMAS.JK', 'IMJS.JK', 'INAF.JK', 'INAI.JK', 'INCF.JK',
+                'INCI.JK', 'INCO.JK', 'INDF.JK', 'INDO.JK', 'INDR.JK',
+                'INDS.JK', 'INDX.JK', 'INDY.JK', 'INKP.JK', 'INPC.JK',
+                'INPP.JK', 'INPS.JK', 'INRU.JK', 'INTA.JK', 'INTD.JK',
+                'INTP.JK', 'IPCC.JK', 'IPCM.JK', 'IPOL.JK', 'IPTV.JK',
+                'IRRA.JK', 'ISAT.JK', 'ISSP.JK', 'ITIC.JK', 'ITMA.JK',
+                'ITMG.JK', 'JAST.JK', 'JAWA.JK', 'JAYA.JK', 'JECC.JK',
+                'JGLE.JK', 'JIHD.JK', 'JKSW.JK', 'JKTM.JK', 'JMAS.JK',
+                'JPFA.JK', 'JRPT.JK', 'JSMR.JK', 'JSPT.JK', 'JTPE.JK',
+                'KAEF.JK', 'KARW.JK', 'KAYU.JK', 'KBAG.JK', 'KBLI.JK',
+                'KBLM.JK', 'KBLV.JK', 'KBRI.JK', 'KDSI.JK', 'KEEN.JK',
+                'KEJU.JK', 'KICI.JK', 'KIAS.JK', 'KINO.JK', 'KIOS.JK',
+                'KJEN.JK', 'KKGI.JK', 'KLBF.JK', 'KMDS.JK', 'KMTR.JK',
+                'KOBX.JK', 'KOIN.JK', 'KONI.JK', 'KOTA.JK', 'KPAL.JK',
+                'KPAS.JK', 'KPIG.JK', 'KRAH.JK', 'KRAS.JK', 'KREN.JK',
+                'KUAS.JK', 'LABA.JK', 'LAND.JK', 'LAPD.JK', 'LCGP.JK',
+                'LCKM.JK', 'LEAD.JK', 'LIFE.JK', 'LINK.JK', 'LION.JK',
+                'LMAS.JK', 'LMPI.JK', 'LMSH.JK', 'LPCK.JK', 'LPGI.JK',
+                'LPIN.JK', 'LPKR.JK', 'LPLI.JK', 'LPPF.JK', 'LPPS.JK',
+                'LRNA.JK', 'LSIP.JK', 'LTLS.JK', 'LUCK.JK', 'LUCY.JK',
+                'MABA.JK', 'MAGP.JK', 'MAIN.JK', 'MAMI.JK', 'MAPA.JK',
+                'MAPB.JK', 'MAPI.JK', 'MASA.JK', 'MAYA.JK', 'MBAP.JK',
+                'MBSS.JK', 'MBTO.JK', 'MCAS.JK', 'MCOL.JK', 'MCOR.JK',
+                'MDIA.JK', 'MDKA.JK', 'MDKI.JK', 'MDLN.JK', 'MDRN.JK',
+                'MEDC.JK', 'MEGA.JK', 'MERK.JK', 'META.JK', 'MFMI.JK',
+                'MGNA.JK', 'MICE.JK', 'MIDI.JK', 'MIKA.JK', 'MINA.JK',
+                'MIRA.JK', 'MITI.JK', 'MKNT.JK', 'MKPI.JK', 'MLBI.JK',
+                'MLIA.JK', 'MLPL.JK', 'MLPT.JK', 'MMLP.JK', 'MNCN.JK',
+                'MOLI.JK', 'MPMX.JK', 'MPOW.JK', 'MPPA.JK', 'MRAT.JK',
+                'MREI.JK', 'MSIN.JK', 'MSKY.JK', 'MTDL.JK', 'MTFN.JK',
+                'MTLA.JK', 'MTPS.JK', 'MTRA.JK', 'MTSM.JK', 'MTWI.JK',
+                'MYOH.JK', 'MYOR.JK', 'MYRX.JK', 'MYTX.JK', 'NANO.JK',
+                'NASA.JK', 'NATO.JK', 'NELY.JK', 'NFCX.JK', 'NICK.JK',
+                'NICL.JK', 'NIKL.JK', 'NIPS.JK', 'NIRO.JK', 'NISP.JK',
+                'NOBU.JK', 'NRCA.JK', 'NUSA.JK', 'NZIA.JK', 'OASA.JK',
+                'OBMD.JK', 'OCAP.JK', 'OILS.JK', 'OKAS.JK', 'OMRE.JK',
+                'OPMS.JK', 'PADI.JK', 'PALM.JK', 'PAMG.JK', 'PANI.JK',
+                'PANR.JK', 'PANS.JK', 'PBID.JK', 'PBRX.JK', 'PBSA.JK',
+                'PCAR.JK', 'PDES.JK', 'PEGE.JK', 'PEHA.JK', 'PGAS.JK',
+                'PGEO.JK', 'PGLI.JK', 'PICO.JK', 'PJAA.JK', 'PKPK.JK',
+                'PLAS.JK', 'PLIN.JK', 'PMJS.JK', 'PMMP.JK', 'PNBN.JK',
+                'PNBS.JK', 'PNGO.JK', 'PNLF.JK', 'PNSE.JK', 'POLA.JK',
+                'POLI.JK', 'POLL.JK', 'POLU.JK', 'POLY.JK', 'POWR.JK',
+                'PPRE.JK', 'PPRO.JK', 'PRAS.JK', 'PRDA.JK', 'PRIM.JK',
+                'PSAB.JK', 'PSDN.JK', 'PSGO.JK', 'PSKT.JK', 'PSSI.JK',
+                'PTBA.JK', 'PTDU.JK', 'PTIS.JK', 'PTPP.JK', 'PTPW.JK',
+                'PTRO.JK', 'PTSN.JK', 'PTSP.JK', 'PUDP.JK', 'PURA.JK',
+                'PURE.JK', 'PURI.JK', 'PWON.JK', 'PYFA.JK', 'PZZA.JK',
+                'RAJA.JK', 'RALS.JK', 'RANC.JK', 'RBMS.JK', 'RDTX.JK',
+                'REAL.JK', 'RELI.JK', 'RICY.JK', 'RIGS.JK', 'RIMO.JK',
+                'RISE.JK', 'RMBA.JK', 'ROCK.JK', 'RODA.JK', 'ROTI.JK',
+                'RSGK.JK', 'RUIS.JK', 'RUNS.JK', 'SAFE.JK', 'SAME.JK',
+                'SAMF.JK', 'SAPX.JK', 'SATU.JK', 'SBAT.JK', 'SCCO.JK',
+                'SCMA.JK', 'SCNP.JK', 'SCPI.JK', 'SDMU.JK', 'SDPC.JK',
+                'SDRA.JK', 'SEMA.JK', 'SFAN.JK', 'SGER.JK', 'SGRO.JK',
+                'SHID.JK', 'SHIP.JK', 'SIDO.JK', 'SILO.JK', 'SIMA.JK',
+                'SIMP.JK', 'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK',
+                'SKYB.JK', 'SLIS.JK', 'SMAR.JK', 'SMBR.JK', 'SMCB.JK',
+                'SMDR.JK', 'SMGR.JK', 'SMKL.JK', 'SMMA.JK', 'SMMT.JK',
+                'SMRA.JK', 'SMRU.JK', 'SMSM.JK', 'SNLK.JK', 'SOCI.JK',
+                'SOFA.JK', 'SOHO.JK', 'SONA.JK', 'SOSS.JK', 'SOTS.JK',
+                'SPMA.JK', 'SPOT.JK', 'SPTO.JK', 'SQMI.JK', 'SRAJ.JK',
+                'SRIL.JK', 'SRSN.JK', 'SRTG.JK', 'SSIA.JK', 'SSMS.JK',
+                'SSTM.JK', 'STAR.JK', 'STTP.JK', 'SUDI.JK', 'SUGI.JK',
+                'SULI.JK', 'SUPR.JK', 'SURY.JK', 'SWAT.JK', 'TALF.JK',
+                'TAMA.JK', 'TAMU.JK', 'TAPG.JK', 'TARA.JK', 'TAXI.JK',
+                'TBIG.JK', 'TBLA.JK', 'TBMS.JK', 'TCID.JK', 'TCPI.JK',
+                'TDPM.JK', 'TEBE.JK', 'TECH.JK', 'TELE.JK', 'TFAS.JK',
+                'TFCO.JK', 'TINS.JK', 'TIRA.JK', 'TIRT.JK', 'TKIM.JK',
+                'TLKM.JK', 'TMAS.JK', 'TMPO.JK', 'TMPP.JK', 'TNCA.JK',
+                'TOBA.JK', 'TOPS.JK', 'TOTL.JK', 'TOWR.JK', 'TOYS.JK',
+                'TPEN.JK', 'TPIA.JK', 'TPMA.JK', 'TRAM.JK', 'TRIL.JK',
+                'TRIM.JK', 'TRIN.JK', 'TRIO.JK', 'TRIS.JK', 'TRST.JK',
+                'TRUK.JK', 'TRUS.JK', 'TSPC.JK', 'TUGU.JK', 'TURI.JK',
+                'UANG.JK', 'UCID.JK', 'UFOE.JK', 'ULTJ.JK', 'UNIC.JK',
+                'UNIQ.JK', 'UNIT.JK', 'UNSP.JK', 'UNTR.JK', 'UNVR.JK',
+                'URBN.JK', 'VICI.JK', 'VINS.JK', 'VIVA.JK', 'VOKS.JK',
+                'VRNA.JK', 'WAPO.JK', 'WEGE.JK', 'WEHA.JK', 'WICO.JK',
+                'WIFI.JK', 'WIIM.JK', 'WIKA.JK', 'WINS.JK', 'WMPP.JK',
+                'WMUU.JK', 'WOOD.JK', 'WOWS.JK', 'WSBP.JK', 'WSKT.JK',
+                'WSON.JK', 'WTON.JK', 'YELO.JK', 'YPAS.JK', 'YULE.JK',
+                'ZBRA.JK', 'ZONE.JK', 'ZYRX.JK'
+            ]
+            
+            # Ambil sesuai limit
+            result = id_stocks[:limit]
+            logger.info(f"📈 YFinance returning {len(result)} popular Indonesian stocks")
+            
+            # Format sebagai list of dict untuk konsistensi
+            formatted_result = []
+            for symbol in result:
+                formatted_result.append({
+                    'symbol': symbol,
+                    'name': symbol.replace('.JK', '')
+                })
+            
+            return formatted_result
+        except Exception as e:
+            logger.error(f"Error getting Indonesian stocks: {e}")
+            # Fallback minimal
+            fallback = [
+                {'symbol': 'BBCA.JK', 'name': 'Bank BCA'},
+                {'symbol': 'BBRI.JK', 'name': 'Bank BRI'},
+                {'symbol': 'BMRI.JK', 'name': 'Bank Mandiri'},
+                {'symbol': 'TLKM.JK', 'name': 'Telkom Indonesia'},
+                {'symbol': 'ASII.JK', 'name': 'Astra International'}
+            ]
+            return fallback[:limit]
 
     def _get_popular_us_stocks(self, limit):
-        """Get popular US stocks"""
+        """Get popular US stocks - ENHANCED"""
         us_stocks = [
             'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX',
-            'BRK-B', 'JNJ', 'JPM', 'V', 'PG', 'UNH', 'HD', 'DIS', 'PYPL'
+            'BRK-B', 'JNJ', 'JPM', 'V', 'PG', 'UNH', 'HD', 'DIS', 'PYPL',
+            'BAC', 'MA', 'ADBE', 'CMCSA', 'XOM', 'PFE', 'CSCO', 'PEP',
+            'ABT', 'TMO', 'AVGO', 'COST', 'CVX', 'MRK', 'WMT', 'ABBV',
+            'ACN', 'CRM', 'MCD', 'NKE', 'LIN', 'AMD', 'PM', 'TXN',
+            'HON', 'INTC', 'IBM', 'GS', 'CAT', 'BA', 'MMM', 'GE',
+            'F', 'GM', 'T', 'VZ', 'LMT', 'RTX', 'NOC', 'GD',
+            'SPY', 'QQQ', 'DIA', 'IWM', 'VTI', 'VOO', 'IVV', 'GLD',
+            'SLV', 'TLT', 'HYG', 'LQD', 'EMB', 'BND', 'AGG', 'TIP',
+            'DBC', 'USO', 'UNG', 'GLDM', 'IAU', 'SIVR', 'PHYS', 'PSLV',
+            'BITO', 'GBTC', 'ETHE', 'MSTR', 'COIN', 'RIOT', 'MARA', 'HUT',
+            'CLSK', 'BTBT', 'BITF', 'ARBK', 'CIFR', 'SDIG', 'IREN', 'CIFR',
+            'WULF', 'HIVE', 'HUT', 'RIOT', 'MARA', 'CLSK', 'BTBT', 'BITF'
         ]
         result = us_stocks[:limit]
-        logger.info(f"YFinance returning {len(result)} popular US stocks")
-        return result
+        logger.info(f"📈 YFinance returning {len(result)} popular US stocks")
+        
+        formatted_result = []
+        for symbol in result:
+            formatted_result.append({
+                'symbol': symbol,
+                'name': symbol
+            })
+        
+        return formatted_result
 
     def _get_fallback_assets(self, limit):
         """Fallback assets ketika primary method gagal"""
         fallback_assets = {
-            "crypto": ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD'],
-            "forex": ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X'],
-            "saham_id": ['BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK'],
-            "us_stocks": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']
+            "crypto": [
+                {'symbol': 'BTC-USD', 'name': 'Bitcoin'},
+                {'symbol': 'ETH-USD', 'name': 'Ethereum'},
+                {'symbol': 'BNB-USD', 'name': 'Binance Coin'},
+                {'symbol': 'XRP-USD', 'name': 'Ripple'},
+                {'symbol': 'ADA-USD', 'name': 'Cardano'}
+            ],
+            "forex": [
+                {'symbol': 'EURUSD=X', 'name': 'Euro/Dollar'},
+                {'symbol': 'USDJPY=X', 'name': 'Dollar/Yen'},
+                {'symbol': 'GBPUSD=X', 'name': 'Pound/Dollar'},
+                {'symbol': 'AUDUSD=X', 'name': 'Aussie/Dollar'},
+                {'symbol': 'USDCAD=X', 'name': 'Dollar/Canadian'}
+            ],
+            "saham_id": [
+                {'symbol': 'BBCA.JK', 'name': 'Bank BCA'},
+                {'symbol': 'BBRI.JK', 'name': 'Bank BRI'},
+                {'symbol': 'BMRI.JK', 'name': 'Bank Mandiri'},
+                {'symbol': 'TLKM.JK', 'name': 'Telkom Indonesia'},
+                {'symbol': 'ASII.JK', 'name': 'Astra International'}
+            ],
+            "us_stocks": [
+                {'symbol': 'AAPL', 'name': 'Apple Inc'},
+                {'symbol': 'MSFT', 'name': 'Microsoft'},
+                {'symbol': 'GOOGL', 'name': 'Google'},
+                {'symbol': 'AMZN', 'name': 'Amazon'},
+                {'symbol': 'TSLA', 'name': 'Tesla'}
+            ]
         }
         
         assets = fallback_assets.get(self.market_type, [])
@@ -879,7 +1141,7 @@ class DataProviderFactory:
             raise ValueError(f"Unknown provider type: {provider_type}")
 
 class DynamicDataProvider(EnhancedDataProvider):
-    """Dynamic data provider dengan fallback yang benar"""
+    """Dynamic data provider dengan fallback yang benar - FIXED VERSION"""
     
     def __init__(self, market_type="crypto"):
         super().__init__()
@@ -898,51 +1160,70 @@ class DynamicDataProvider(EnhancedDataProvider):
         logger.info(f"DynamicDataProvider initialized for {market_type} market")
 
     def _setup_providers_with_fallback(self):
-        """Setup providers dengan sistem fallback yang benar"""
-        successful_exchange = None
+        """Setup providers dengan sistem fallback yang benar - FIXED"""
         
-        # Coba satu per satu exchange
-        for exchange_id in self.exchange_list:
-            try:
-                logger.info(f"🔄 Trying to connect to {exchange_id}...")
-                
-                # Coba spot dengan timeout pendek
-                spot_provider = EnhancedCCXTDataProvider(exchange_id=exchange_id, market_type='spot')
-                
-                # **FIXED: Test koneksi yang sebenarnya, bukan hanya get_popular_assets**
-                # Coba load markets untuk test koneksi
-                if spot_provider.exchange is not None:
-                    try:
-                        # Test dengan fetch ticker untuk BTC/USDT (timeout 5 detik)
-                        test_ticker = spot_provider.get_ticker("BTC/USDT")
-                        if test_ticker and test_ticker.get('last', 0) > 0:
-                            successful_exchange = exchange_id
-                            logger.info(f"✅ Successfully connected to {exchange_id}")
-                            
-                            # Setup providers dengan exchange yang berhasil
-                            self.providers = {
-                                'crypto_spot': spot_provider,
-                                'crypto_future': EnhancedCCXTFuturesProvider(exchange_id=exchange_id),
-                                'forex': EnhancedYFinanceDataProvider(market_type='forex'),
-                                'saham_id': EnhancedYFinanceDataProvider(market_type='saham_id'), 
-                                'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
-                                'stocks': EnhancedYFinanceDataProvider(market_type='us_stocks')
-                            }
-                            break
-                        else:
-                            logger.warning(f"❌ {exchange_id} test failed: Invalid ticker data")
-                    except Exception as test_e:
-                        logger.warning(f"❌ {exchange_id} test failed: {test_e}")
-                else:
-                    logger.warning(f"❌ {exchange_id} exchange not initialized")
+        # **PERBAIKAN: Tentukan provider berdasarkan market_type**
+        if self.market_type in ['crypto', 'crypto_spot', 'crypto_future']:
+            successful_exchange = None
+            
+            # Coba satu per satu exchange
+            for exchange_id in self.exchange_list:
+                try:
+                    logger.info(f"🔄 Trying to connect to {exchange_id}...")
                     
-            except Exception as e:
-                logger.warning(f"❌ Failed to initialize {exchange_id}: {e}")
-                continue
-        
-        # **FIXED: Jika semua exchange gagal, langsung gunakan YFinance**
-        if not successful_exchange:
-            logger.warning("⚠️ All exchanges failed, using YFinance as fallback...")
+                    # Coba spot dengan timeout pendek
+                    spot_provider = EnhancedCCXTDataProvider(exchange_id=exchange_id, market_type='spot')
+                    
+                    # **FIXED: Test koneksi yang sebenarnya, bukan hanya get_popular_assets**
+                    # Coba load markets untuk test koneksi
+                    if spot_provider.exchange is not None:
+                        try:
+                            # Test dengan fetch ticker untuk BTC/USDT (timeout 5 detik)
+                            test_ticker = spot_provider.get_ticker("BTC/USDT")
+                            if test_ticker and test_ticker.get('last', 0) > 0:
+                                successful_exchange = exchange_id
+                                logger.info(f"✅ Successfully connected to {exchange_id}")
+                                
+                                # Setup providers dengan exchange yang berhasil
+                                self.providers = {
+                                    'crypto_spot': spot_provider,
+                                    'crypto_future': EnhancedCCXTFuturesProvider(exchange_id=exchange_id),
+                                    'forex': EnhancedYFinanceDataProvider(market_type='forex'),
+                                    'saham_id': EnhancedYFinanceDataProvider(market_type='saham_id'), 
+                                    'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
+                                    'stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
+                                    'crypto': spot_provider  # default untuk crypto
+                                }
+                                break
+                            else:
+                                logger.warning(f"❌ {exchange_id} test failed: Invalid ticker data")
+                        except Exception as test_e:
+                            logger.warning(f"❌ {exchange_id} test failed: {test_e}")
+                    else:
+                        logger.warning(f"❌ {exchange_id} exchange not initialized")
+                        
+                except Exception as e:
+                    logger.warning(f"❌ Failed to initialize {exchange_id}: {e}")
+                    continue
+            
+            # **FIXED: Jika semua exchange gagal, langsung gunakan YFinance**
+            if not successful_exchange:
+                logger.warning("⚠️ All exchanges failed, using YFinance as fallback...")
+                successful_exchange = "yfinance"
+                
+                # Setup semua provider dengan YFinance
+                self.providers = {
+                    'crypto_spot': EnhancedYFinanceDataProvider(market_type='crypto'),
+                    'crypto_future': EnhancedYFinanceDataProvider(market_type='crypto'),
+                    'forex': EnhancedYFinanceDataProvider(market_type='forex'),
+                    'saham_id': EnhancedYFinanceDataProvider(market_type='saham_id'), 
+                    'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
+                    'stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
+                    'crypto': EnhancedYFinanceDataProvider(market_type='crypto')
+                }
+        else:
+            # **PERBAIKAN: Untuk market_type non-crypto, langsung gunakan YFinance**
+            logger.info(f"📊 Non-crypto market type detected: {self.market_type}, using YFinance")
             successful_exchange = "yfinance"
             
             # Setup semua provider dengan YFinance
@@ -952,20 +1233,24 @@ class DynamicDataProvider(EnhancedDataProvider):
                 'forex': EnhancedYFinanceDataProvider(market_type='forex'),
                 'saham_id': EnhancedYFinanceDataProvider(market_type='saham_id'), 
                 'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
-                'stocks': EnhancedYFinanceDataProvider(market_type='us_stocks')
+                'stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
+                'crypto': EnhancedYFinanceDataProvider(market_type='crypto')
             }
         
+        # Set default provider
         self.default_provider = self._get_default_provider(self.market_type)
-        logger.info(f"🎯 Using {successful_exchange} as data source")
+        logger.info(f"🎯 Using {successful_exchange} as data source for {self.market_type}")
         
         # Log provider status
         for provider_name, provider in self.providers.items():
             logger.info(f"   {provider_name}: {provider.__class__.__name__}")
 
     def _get_default_provider(self, market_type):
-        """Get default provider berdasarkan market type"""
+        """Get default provider berdasarkan market type - FIXED"""
         provider_map = {
-            'crypto': self.providers.get('crypto_spot', None),
+            'crypto': self.providers.get('crypto', None),
+            'crypto_spot': self.providers.get('crypto_spot', None),
+            'crypto_future': self.providers.get('crypto_future', None),
             'forex': self.providers.get('forex', None),
             'saham_id': self.providers.get('saham_id', None),
             'us_stocks': self.providers.get('us_stocks', None),
@@ -975,6 +1260,7 @@ class DynamicDataProvider(EnhancedDataProvider):
         default = provider_map.get(market_type)
         if default is None:
             # Fallback ke YFinance jika provider tidak ditemukan
+            logger.warning(f"⚠️ Provider not found for {market_type}, falling back to YFinance")
             default = EnhancedYFinanceDataProvider(market_type=market_type)
             
         return default
@@ -988,15 +1274,16 @@ class DynamicDataProvider(EnhancedDataProvider):
         
         # Crypto detection
         if ('/USDT' in symbol_upper or '/BUSD' in symbol_upper or 
-            '/BTC' in symbol_upper or '/ETH' in symbol_upper):
+            '/BTC' in symbol_upper or '/ETH' in symbol_upper or
+            '/USD' in symbol_upper and '=X' not in symbol_upper):
             if ':USDT' in symbol_upper or 'PERP' in symbol_upper or 'FUTURES' in symbol_upper:
                 return 'crypto_future'
             else:
                 return 'crypto_spot'
         
         # Forex detection
-        if ('/USD' in symbol_upper or '/EUR' in symbol_upper or '/JPY' in symbol_upper or
-            '=X' in symbol_upper or 'FOREX' in symbol_upper):
+        if ('=X' in symbol_upper or 'FOREX' in symbol_upper or
+            ('/' in symbol_upper and 'USD' in symbol_upper and len(symbol_upper) <= 7)):
             return 'forex'
         
         # Saham Indonesia detection
@@ -1012,7 +1299,7 @@ class DynamicDataProvider(EnhancedDataProvider):
         return 'crypto_spot'
 
     def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 200):
-        """Get OHLCV data dengan auto-detection symbol type"""
+        """Get OHLCV data dengan auto-detection symbol type - FIXED"""
         try:
             # Deteksi tipe symbol
             symbol_type = self._detect_symbol_type(symbol)
@@ -1025,7 +1312,7 @@ class DynamicDataProvider(EnhancedDataProvider):
             if cached_data is not None:
                 return cached_data
             
-            # **FIXED: Jika provider adalah CCXT dan exchange None, langsung fallback ke YFinance**
+            # **PERBAIKAN: Jika provider adalah CCXT dan exchange None, langsung fallback ke YFinance**
             if (isinstance(provider, (EnhancedCCXTDataProvider, EnhancedCCXTFuturesProvider)) 
                 and hasattr(provider, 'exchange') 
                 and provider.exchange is None):
@@ -1053,7 +1340,7 @@ class DynamicDataProvider(EnhancedDataProvider):
             return self.default_provider.get_ohlcv(symbol, timeframe, limit)
 
     def get_ticker(self, symbol: str):
-        """Get ticker data dengan auto-detection symbol type"""
+        """Get ticker data dengan auto-detection symbol type - FIXED"""
         try:
             # Deteksi tipe symbol
             symbol_type = self._detect_symbol_type(symbol)
@@ -1061,7 +1348,7 @@ class DynamicDataProvider(EnhancedDataProvider):
             
             logger.info(f"🔍 Getting ticker for {symbol} (detected as {symbol_type}) using {provider.__class__.__name__}")
             
-            # **FIXED: Jika provider adalah CCXT dan exchange None, langsung fallback ke YFinance**
+            # **PERBAIKAN: Jika provider adalah CCXT dan exchange None, langsung fallback ke YFinance**
             if (isinstance(provider, (EnhancedCCXTDataProvider, EnhancedCCXTFuturesProvider)) 
                 and hasattr(provider, 'exchange') 
                 and provider.exchange is None):
@@ -1081,56 +1368,112 @@ class DynamicDataProvider(EnhancedDataProvider):
             # Fallback ke default provider
             return self.default_provider.get_ticker(symbol)
 
-    def get_popular_assets(self, limit: int = 100, asset_type: str = None):
-        """Get popular assets dengan opsi pilih spot/future"""
+    def get_popular_assets(self, limit: int = 100, asset_type: str = None) -> List:
+        """Get popular assets dengan opsi pilih spot/futures - FIXED VERSION"""
         try:
-            # Jika ada parameter asset_type, gunakan provider yang sesuai
-            if asset_type:
-                if asset_type.lower() in ['futures', 'future'] and 'crypto_future' in self.providers:
-                    provider = self.providers['crypto_future']
-                    logger.info(f"📊 Getting {limit} {asset_type} assets from {provider.__class__.__name__}")
-                elif asset_type.lower() in ['spot', 'spots'] and 'crypto_spot' in self.providers:
-                    provider = self.providers['crypto_spot']
-                    logger.info(f"📊 Getting {limit} {asset_type} assets from {provider.__class__.__name__}")
+            # **PERBAIKAN: Jika market_type bukan crypto, langsung gunakan provider yang sesuai**
+            if self.market_type not in ['crypto', 'crypto_spot', 'crypto_future']:
+                logger.info(f"📊 Getting {limit} {self.market_type} assets from YFinance")
+                provider = self.providers.get(self.market_type, self.default_provider)
+                assets = provider.get_popular_assets(limit)
+                
+                # Format hasil
+                if assets and isinstance(assets[0], str):
+                    formatted_assets = []
+                    for symbol in assets:
+                        formatted_assets.append({
+                            'symbol': symbol,
+                            'name': symbol
+                        })
+                    return formatted_assets[:limit]
                 else:
-                    provider = self.default_provider
-                    logger.info(f"📊 Getting {limit} assets from default provider ({provider.__class__.__name__})")
-            else:
-                # Default: gunakan berdasarkan market_type
-                provider = self.default_provider
-                logger.info(f"📊 Getting {limit} {self.market_type} assets from default provider")
+                    return assets[:limit]
             
-            # Get assets dari provider yang sesuai
+            # **PERBAIKAN: Gunakan provider berdasarkan asset_type yang diminta**
+            provider_key = None
+            
+            if asset_type:
+                asset_type_lower = asset_type.lower()
+                if asset_type_lower in ['futures', 'future']:
+                    provider_key = 'crypto_future'
+                elif asset_type_lower in ['spot', 'spots']:
+                    provider_key = 'crypto_spot'
+            
+            # Jika tidak ada asset_type, gunakan berdasarkan market_type
+            if not provider_key:
+                if self.market_type == 'crypto_future':
+                    provider_key = 'crypto_future'
+                else:
+                    provider_key = 'crypto_spot'  # default untuk crypto
+            
+            # Dapatkan provider
+            provider = self.providers.get(provider_key, self.default_provider)
+            
+            logger.info(f"📊 Getting {limit} {asset_type or provider_key} assets from {provider.__class__.__name__}")
+            
+            # Get assets dari provider
             assets = provider.get_popular_assets(limit)
             
-            # Filter berdasarkan asset_type jika diperlukan (untuk safety)
-            if asset_type and asset_type.lower() in ['futures', 'future']:
-                # Pastikan yang diambil benar futures
-                filtered_assets = []
-                for asset in assets:
-                    if any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES']):
-                        filtered_assets.append(asset)
-                assets = filtered_assets[:limit] if filtered_assets else assets[:limit]
-            elif asset_type and asset_type.lower() in ['spot', 'spots']:
-                # Pastikan yang diambil benar spot
-                filtered_assets = []
-                for asset in assets:
-                    if not any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES']):
-                        filtered_assets.append(asset)
-                assets = filtered_assets[:limit] if filtered_assets else assets[:limit]
+            if not assets:
+                logger.warning(f"⚠️ No assets returned from {provider.__class__.__name__}")
+                return self._get_fallback_assets(limit)
             
-            logger.info(f"✅ Found {len(assets)} {asset_type or self.market_type} assets")
-            if assets:
-                logger.info(f"   Sample: {assets[:3]}")
-            return assets[:limit]
+            # **PERBAIKAN: Filter assets berdasarkan type yang diminta**
+            filtered_assets = []
+            
+            if asset_type and asset_type.lower() in ['futures', 'future']:
+                # Hanya ambil futures symbols
+                for asset in assets:
+                    if isinstance(asset, str):
+                        if any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
+                            filtered_assets.append(asset)
+                    elif isinstance(asset, dict):
+                        symbol = asset.get('symbol', '')
+                        if any(marker in symbol for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
+                            filtered_assets.append(asset)
+            elif asset_type and asset_type.lower() in ['spot', 'spots']:
+                # Hanya ambil spot symbols
+                for asset in assets:
+                    if isinstance(asset, str):
+                        if not any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
+                            filtered_assets.append(asset)
+                    elif isinstance(asset, dict):
+                        symbol = asset.get('symbol', '')
+                        if not any(marker in symbol for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
+                            filtered_assets.append(asset)
+            else:
+                filtered_assets = assets
+            
+            # Jika setelah filtering kosong, return aslinya
+            if not filtered_assets:
+                filtered_assets = assets
+            
+            # Format hasil untuk konsistensi
+            formatted_result = []
+            for asset in filtered_assets:
+                if isinstance(asset, dict):
+                    formatted_result.append(asset)
+                else:
+                    formatted_result.append({
+                        'symbol': asset,
+                        'name': asset
+                    })
+            
+            logger.info(f"✅ Found {len(formatted_result)} {asset_type or provider_key} assets")
+            if formatted_result:
+                sample_size = min(5, len(formatted_result))
+                sample = [item['symbol'] for item in formatted_result[:sample_size]]
+                logger.info(f"   Sample: {sample}")
+            
+            return formatted_result[:limit]
             
         except Exception as e:
-            logger.error(f"Error getting popular assets: {e}")
+            logger.error(f"❌ Error getting popular assets: {e}")
             # Fallback ke emergency assets
             return self._get_fallback_assets(limit)
 
     def _get_fallback_assets(self, limit: int):
-        """Emergency fallback assets"""
+        """Emergency fallback assets - ENHANCED"""
         logger.warning("🔄 Using emergency fallback assets")
         
         emergency_assets = {
@@ -1139,28 +1482,84 @@ class DynamicDataProvider(EnhancedDataProvider):
                 {"symbol": "ETH/USDT", "name": "Ethereum"},
                 {"symbol": "BNB/USDT", "name": "Binance Coin"},
                 {"symbol": "XRP/USDT", "name": "Ripple"},
-                {"symbol": "ADA/USDT", "name": "Cardano"}
+                {"symbol": "ADA/USDT", "name": "Cardano"},
+                {"symbol": "SOL/USDT", "name": "Solana"},
+                {"symbol": "DOT/USDT", "name": "Polkadot"},
+                {"symbol": "DOGE/USDT", "name": "Dogecoin"},
+                {"symbol": "AVAX/USDT", "name": "Avalanche"},
+                {"symbol": "MATIC/USDT", "name": "Polygon"}
+            ],
+            "crypto_spot": [
+                {"symbol": "BTC/USDT", "name": "Bitcoin"},
+                {"symbol": "ETH/USDT", "name": "Ethereum"},
+                {"symbol": "BNB/USDT", "name": "Binance Coin"},
+                {"symbol": "XRP/USDT", "name": "Ripple"},
+                {"symbol": "ADA/USDT", "name": "Cardano"},
+                {"symbol": "SOL/USDT", "name": "Solana"},
+                {"symbol": "DOT/USDT", "name": "Polkadot"},
+                {"symbol": "DOGE/USDT", "name": "Dogecoin"},
+                {"symbol": "AVAX/USDT", "name": "Avalanche"},
+                {"symbol": "MATIC/USDT", "name": "Polygon"}
+            ],
+            "crypto_future": [
+                {"symbol": "BTC/USDT:USDT", "name": "Bitcoin Futures"},
+                {"symbol": "ETH/USDT:USDT", "name": "Ethereum Futures"},
+                {"symbol": "BNB/USDT:USDT", "name": "Binance Coin Futures"},
+                {"symbol": "XRP/USDT:USDT", "name": "Ripple Futures"},
+                {"symbol": "ADA/USDT:USDT", "name": "Cardano Futures"},
+                {"symbol": "SOL/USDT:USDT", "name": "Solana Futures"},
+                {"symbol": "DOT/USDT:USDT", "name": "Polkadot Futures"},
+                {"symbol": "DOGE/USDT:USDT", "name": "Dogecoin Futures"},
+                {"symbol": "AVAX/USDT:USDT", "name": "Avalanche Futures"},
+                {"symbol": "MATIC/USDT:USDT", "name": "Polygon Futures"}
             ],
             "forex": [
                 {"symbol": "EUR/USD", "name": "Euro/Dollar"},
                 {"symbol": "USD/JPY", "name": "Dollar/Yen"},
                 {"symbol": "GBP/USD", "name": "Pound/Dollar"},
                 {"symbol": "USD/CHF", "name": "Dollar/Franc"},
-                {"symbol": "AUD/USD", "name": "Aussie/Dollar"}
+                {"symbol": "AUD/USD", "name": "Aussie/Dollar"},
+                {"symbol": "USD/CAD", "name": "Dollar/Canadian"},
+                {"symbol": "NZD/USD", "name": "Kiwi/Dollar"},
+                {"symbol": "EUR/GBP", "name": "Euro/Pound"},
+                {"symbol": "EUR/JPY", "name": "Euro/Yen"},
+                {"symbol": "GBP/JPY", "name": "Pound/Yen"}
             ],
             "us_stocks": [
                 {"symbol": "AAPL", "name": "Apple Inc"},
                 {"symbol": "MSFT", "name": "Microsoft"},
                 {"symbol": "GOOGL", "name": "Google"},
                 {"symbol": "AMZN", "name": "Amazon"},
-                {"symbol": "TSLA", "name": "Tesla"}
+                {"symbol": "TSLA", "name": "Tesla"},
+                {"symbol": "META", "name": "Meta Platforms"},
+                {"symbol": "NVDA", "name": "NVIDIA"},
+                {"symbol": "NFLX", "name": "Netflix"},
+                {"symbol": "JPM", "name": "JPMorgan Chase"},
+                {"symbol": "V", "name": "Visa"}
+            ],
+            "stocks": [
+                {"symbol": "AAPL", "name": "Apple Inc"},
+                {"symbol": "MSFT", "name": "Microsoft"},
+                {"symbol": "GOOGL", "name": "Google"},
+                {"symbol": "AMZN", "name": "Amazon"},
+                {"symbol": "TSLA", "name": "Tesla"},
+                {"symbol": "META", "name": "Meta Platforms"},
+                {"symbol": "NVDA", "name": "NVIDIA"},
+                {"symbol": "NFLX", "name": "Netflix"},
+                {"symbol": "JPM", "name": "JPMorgan Chase"},
+                {"symbol": "V", "name": "Visa"}
             ],
             "saham_id": [
                 {"symbol": "BBCA.JK", "name": "Bank BCA"},
                 {"symbol": "BBRI.JK", "name": "Bank BRI"},
                 {"symbol": "BMRI.JK", "name": "Bank Mandiri"},
                 {"symbol": "TLKM.JK", "name": "Telkom Indonesia"},
-                {"symbol": "ASII.JK", "name": "Astra International"}
+                {"symbol": "ASII.JK", "name": "Astra International"},
+                {"symbol": "UNVR.JK", "name": "Unilever Indonesia"},
+                {"symbol": "ICBP.JK", "name": "Indofood CBP"},
+                {"symbol": "INDF.JK", "name": "Indofood"},
+                {"symbol": "WIKA.JK", "name": "Wijaya Karya"},
+                {"symbol": "PGAS.JK", "name": "Perusahaan Gas Negara"}
             ]
         }
         
@@ -1244,25 +1643,43 @@ def test_dynamic_provider():
     """Test DynamicDataProvider dengan fallback system"""
     print("🧪 Testing DynamicDataProvider...")
     
-    # Test untuk crypto
+    # Test untuk crypto spot
+    print("\n1. Testing CRYPTO SPOT:")
     provider = DynamicDataProvider(market_type="crypto")
     
-    # Test popular assets SPOT
-    print("\n📊 Testing SPOT assets:")
     spot_assets = provider.get_popular_assets(10, asset_type='spot')
     print(f"✅ Popular SPOT assets: {len(spot_assets)} found")
-    for asset in spot_assets[:5]:
-        print(f"   - {asset}")
+    for i, asset in enumerate(spot_assets[:5]):
+        if isinstance(asset, dict):
+            print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')})")
+        else:
+            print(f"   {i+1}. {asset}")
     
-    # Test popular assets FUTURES
-    print("\n📊 Testing FUTURES assets:")
+    # Test untuk crypto futures
+    print("\n2. Testing CRYPTO FUTURES:")
     futures_assets = provider.get_popular_assets(10, asset_type='futures')
     print(f"✅ Popular FUTURES assets: {len(futures_assets)} found")
-    for asset in futures_assets[:5]:
-        print(f"   - {asset}")
+    for i, asset in enumerate(futures_assets[:5]):
+        if isinstance(asset, dict):
+            print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')})")
+        else:
+            print(f"   {i+1}. {asset}")
+    
+    # Test untuk saham_id
+    print("\n3. Testing SAHAM_ID:")
+    provider_saham = DynamicDataProvider(market_type="saham_id")
+    
+    saham_assets = provider_saham.get_popular_assets(10)
+    print(f"✅ Popular SAHAM_ID assets: {len(saham_assets)} found")
+    for i, asset in enumerate(saham_assets[:5]):
+        if isinstance(asset, dict):
+            print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')})")
+        else:
+            print(f"   {i+1}. {asset}")
     
     # Test OHLCV untuk BTC
     try:
+        print("\n4. Testing OHLCV for BTC/USDT:")
         ohlcv = provider.get_ohlcv("BTC/USDT", '1h', 10)
         if ohlcv is not None:
             print(f"✅ OHLCV data: {len(ohlcv)} rows for BTC/USDT")
@@ -1274,6 +1691,7 @@ def test_dynamic_provider():
     
     # Test ticker
     try:
+        print("\n5. Testing TICKER for BTC/USDT:")
         ticker = provider.get_ticker("BTC/USDT")
         if ticker:
             print(f"✅ Ticker data: {ticker['last']} for BTC/USDT")
@@ -1283,10 +1701,14 @@ def test_dynamic_provider():
         print(f"❌ Ticker error: {e}")
     
     # Test health metrics
+    print("\n6. Testing HEALTH METRICS:")
     metrics = provider.get_health_metrics()
     print(f"✅ Health metrics available")
     print(f"   Error rate: {metrics.get('error_rate', 'N/A')}")
     print(f"   Default provider: {metrics.get('default_provider', 'N/A')}")
+    print(f"   Market type: {metrics.get('market_type', 'N/A')}")
+    print(f"   Using CCXT: {metrics.get('using_ccxt', 'N/A')}")
+    print(f"   Using YFinance: {metrics.get('using_yfinance', 'N/A')}")
 
 if __name__ == "__main__":
     test_dynamic_provider()
