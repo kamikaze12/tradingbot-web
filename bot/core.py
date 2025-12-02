@@ -43,7 +43,7 @@ try:
     from .strategies import TechnicalAnalysisStrategy
     from .data_provider import (
         EnhancedYFinanceDataProvider,
-        DataProviderMonitor,  # Pastikan ini di-import
+        DataProviderMonitor,
         DynamicDataProvider,
         EnhancedCCXTDataProvider,
         EnhancedCCXTFuturesProvider,
@@ -1915,6 +1915,10 @@ class EnhancedTradingBot:
         self.max_drawdown_limit = self.config.get("max_drawdown_limit", 0.1)
         self.daily_loss_limit = self.config.get("daily_loss_limit", 0.05)
         
+        # Tambah config untuk trading mode
+        self.trading_mode = self.config.get("trading_mode", "spot")  # "spot" atau "futures"
+        self.asset_type = self.trading_mode  # untuk kompatibilitas dengan provider
+        
         # Monitoring
         self.daily_pnl = 0.0
         self.max_portfolio_value = 0.0
@@ -1966,7 +1970,8 @@ class EnhancedTradingBot:
             "daily_loss_limit": 0.05,
             "enable_ml": True,
             "enable_trailing_stop": True,
-            "partial_tp_enabled": True
+            "partial_tp_enabled": True,
+            "trading_mode": "spot"  # Default trading mode
         }
     
     def save_config(self):
@@ -1977,6 +1982,21 @@ class EnhancedTradingBot:
                 json.dump(self.config, f, indent=4)
         except Exception as e:
             logger.error(f"Error saving config: {e}")
+
+    def set_trading_mode(self, mode: str):
+        """Set trading mode: 'spot' atau 'futures'"""
+        if mode.lower() in ['spot', 'spots']:
+            self.trading_mode = 'spot'
+            self.asset_type = 'spot'
+            logger.info(f"🎯 Trading mode set to SPOT")
+        elif mode.lower() in ['futures', 'future']:
+            self.trading_mode = 'futures'
+            self.asset_type = 'futures'
+            logger.info(f"🎯 Trading mode set to FUTURES")
+        else:
+            logger.warning(f"Unknown trading mode: {mode}, defaulting to SPOT")
+            self.trading_mode = 'spot'
+            self.asset_type = 'spot'
 
     def set_mode(self, mode):
         """Set trading mode - NO EMERGENCY MODE"""
@@ -2033,8 +2053,8 @@ class EnhancedTradingBot:
         try:
             logger.info("🧪 Testing DynamicDataProvider...")
             
-            # Get popular assets
-            assets = self.dynamic_provider.get_popular_assets(5)
+            # Get popular assets dengan asset_type saat ini
+            assets = self.dynamic_provider.get_popular_assets(5, asset_type=self.asset_type)
             if not assets:
                 logger.warning("⚠️ No assets returned, but continuing...")
                 return []
@@ -2065,8 +2085,8 @@ class EnhancedTradingBot:
             logger.warning(f"⚠️ Provider test had issues: {e}")
             return []
 
-    def get_popular_assets(self, limit=None):
-        """Get popular assets"""
+    def get_popular_assets(self, limit=None, asset_type: str = None):
+        """Get popular assets dengan parameter asset_type"""
         if not self.dynamic_provider:
             logger.error("❌ No data provider available. Run set_mode() first!")
             return []
@@ -2075,12 +2095,17 @@ class EnhancedTradingBot:
             if limit is None:
                 limit = self.config.get("analysis_coins_limit", 100)
             
-            logger.info(f"🔄 Fetching {limit} popular assets for {self.mode}...")
+            # Tentukan asset_type
+            if asset_type is None:
+                asset_type = self.asset_type
             
-            assets = self.dynamic_provider.get_popular_assets(limit)
+            logger.info(f"🔄 Fetching {limit} popular assets for {self.mode} ({asset_type})...")
+            
+            # Panggil get_popular_assets dari provider dengan asset_type
+            assets = self.dynamic_provider.get_popular_assets(limit, asset_type=asset_type)
             
             if assets:
-                logger.info(f"✅ Found {len(assets)} assets for {self.mode}")
+                logger.info(f"✅ Found {len(assets)} assets for {self.mode} ({asset_type})")
                 
                 # Format assets untuk konsistensi
                 formatted_assets = []
@@ -2117,8 +2142,8 @@ class EnhancedTradingBot:
             if hasattr(self.dynamic_provider, 'search_assets'):
                 results = self.dynamic_provider.search_assets(query, limit)
             else:
-                # Manual search dari popular assets
-                all_assets = self.dynamic_provider.get_popular_assets(limit * 2)
+                # Manual search dari popular assets dengan asset_type saat ini
+                all_assets = self.get_popular_assets(limit * 2, asset_type=self.asset_type)
                 results = []
                 for asset in all_assets:
                     if isinstance(asset, dict):
@@ -2139,7 +2164,7 @@ class EnhancedTradingBot:
             logger.error(f"Error searching assets: {e}")
             return []
 
-    def scan_potential_assets(self, limit=None, search_query: str = None):
+    def scan_potential_assets(self, limit=None, search_query: str = None, asset_type: str = None):
         """Scan untuk potential signals - NO EMERGENCY"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
@@ -2157,7 +2182,11 @@ class EnhancedTradingBot:
             if limit is None:
                 limit = self.config.get("max_signals", 20)
             
-            logger.info(f"🔍 Scanning for {limit} signals in {self.mode}...")
+            # Tentukan asset_type yang akan digunakan
+            if asset_type is None:
+                asset_type = self.asset_type  # default dari bot
+            
+            logger.info(f"🔍 Scanning for {limit} signals in {self.mode} ({asset_type})...")
             
             # Get assets
             assets = []
@@ -2167,10 +2196,10 @@ class EnhancedTradingBot:
                     assets = self.dynamic_provider.search_assets(search_query, limit * 2)
                 else:
                     # Fallback: filter dari popular assets
-                    all_assets = self.get_popular_assets(limit * 3)
+                    all_assets = self.get_popular_assets(limit * 3, asset_type=asset_type)
                     assets = [a for a in all_assets if search_query.lower() in a['symbol'].lower()]
             else:
-                assets = self.get_popular_assets(limit * 2)
+                assets = self.get_popular_assets(limit * 2, asset_type=asset_type)
             
             if not assets:
                 logger.warning("❌ No assets available for scanning")
@@ -2237,11 +2266,12 @@ class EnhancedTradingBot:
                             'rsi': round(analysis.get('rsi', 50), 2),
                             'volume_ratio': round(analysis.get('volume_ratio', 1), 2),
                             'market_type': self.mode,
-                            'provider': self.current_provider_name
+                            'provider': self.current_provider_name,
+                            'asset_type': asset_type  # Tambahkan asset_type ke signal
                         }
                         
                         signals.append(signal_data)
-                        logger.info(f"✅ Signal: {symbol} | {action} | Score: {score:.2f}")
+                        logger.info(f"✅ Signal: {symbol} | {action} | Score: {score:.2f} | Type: {asset_type}")
                         
                         # Stop jika sudah cukup sinyal
                         if len(signals) >= limit:
@@ -2260,7 +2290,7 @@ class EnhancedTradingBot:
             if signals:
                 logger.info("🏆 Top signals:")
                 for i, signal in enumerate(signals[:5]):
-                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']}")
+                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']} | Type: {signal.get('asset_type', 'N/A')}")
             else:
                 logger.info("ℹ️ No signals found with current criteria")
             
@@ -2373,7 +2403,8 @@ class EnhancedTradingBot:
                 'allocation_percent': 1/n_signals,
                 'allocated_capital': base_allocation,
                 'score': s.get('score', 0),
-                'action': s.get('action', 'NEUTRAL')
+                'action': s.get('action', 'NEUTRAL'),
+                'asset_type': s.get('asset_type', self.asset_type)
             }
             for s in signals
         ]
@@ -2527,36 +2558,59 @@ def test_real_providers_only():
     
     bot = EnhancedTradingBot()
     
-    # Test crypto market
-    print("\n1. Testing CRYPTO market...")
+    # Test crypto market dengan spot
+    print("\n1. Testing CRYPTO market (SPOT)...")
+    bot.set_trading_mode('spot')
     success = bot.set_mode("crypto")
     
     if success:
-        print("✅ Crypto mode set successfully")
+        print("✅ Crypto mode set successfully (SPOT)")
         
-        # Test popular assets
-        assets = bot.get_popular_assets(5)
-        print(f"   Found {len(assets)} assets")
+        # Test popular assets spot
+        assets = bot.get_popular_assets(5, asset_type='spot')
+        print(f"   Found {len(assets)} spot assets")
         for asset in assets[:3]:
             print(f"   - {asset['symbol']}")
         
-        # Test scanning
-        print("\n2. Testing scanning...")
-        signals = bot.scan_potential_assets(limit=3)
-        print(f"   Found {len(signals)} signals")
+        # Test scanning spot
+        print("\n2. Testing scanning SPOT...")
+        signals = bot.scan_potential_assets(limit=3, asset_type='spot')
+        print(f"   Found {len(signals)} spot signals")
         
         if signals:
             for signal in signals:
                 print(f"   - {signal['symbol']}: {signal['action']} (Score: {signal['score']})")
         else:
-            print("   ℹ️ No signals found - this is normal with real data")
-    else:
-        print("❌ Failed to set crypto mode")
-        print("   Check your internet connection and provider configurations")
+            print("   ℹ️ No spot signals found - this is normal with real data")
+    
+    # Test crypto market dengan futures
+    print("\n3. Testing CRYPTO market (FUTURES)...")
+    bot.set_trading_mode('futures')
+    success = bot.set_mode("crypto")
+    
+    if success:
+        print("✅ Crypto mode set successfully (FUTURES)")
+        
+        # Test popular assets futures
+        assets = bot.get_popular_assets(5, asset_type='futures')
+        print(f"   Found {len(assets)} futures assets")
+        for asset in assets[:3]:
+            print(f"   - {asset['symbol']}")
+        
+        # Test scanning futures
+        print("\n4. Testing scanning FUTURES...")
+        signals = bot.scan_potential_assets(limit=3, asset_type='futures')
+        print(f"   Found {len(signals)} futures signals")
+        
+        if signals:
+            for signal in signals:
+                print(f"   - {signal['symbol']}: {signal['action']} (Score: {signal['score']})")
+        else:
+            print("   ℹ️ No futures signals found - this is normal with real data")
     
     print("\n" + "="*60)
-    print("✅ Test completed - Bot hanya menggunakan REAL providers")
-    print("   No emergency mode, no fake data")
+    print("✅ Test completed - Bot mendukung pemisahan SPOT dan FUTURES")
+    print("   Real providers only dengan parameter asset_type")
 
 if __name__ == "__main__":
     test_real_providers_only()
