@@ -60,6 +60,12 @@ class TradingStrategy(ABC):
         self.leverage = leverage
         self.max_leverage_risk = max_leverage_risk  # Max risk per trade with leverage
         
+        # 🔥 ADJUST PARAMETERS UNTUK FUTURES
+        if 'future' in str(market_type).lower() or trading_type == "futures":
+            self.atr_multiplier = atr_multiplier * 1.5  # Volatility lebih tinggi
+            self.entry_range_pct = entry_range_pct * 1.3  # Range lebih besar
+            logger.info(f"🔄 Strategy adjusted for FUTURES: ATR multiplier={self.atr_multiplier}, Entry range={self.entry_range_pct}")
+        
         # Auto-adjust for futures
         if self.trading_type == "futures":
             self._auto_adjust_for_futures()
@@ -196,6 +202,9 @@ class TradingStrategy(ABC):
                         "forex_gold": 0.012,  # 1.2% for gold
                         "us_stocks": 0.015,   # 1.5% for US stocks
                         "indonesia_stocks": 0.02,  # 2.0% for ID stocks
+                        "crypto_future": 0.035,    # 3.5% untuk crypto futures
+                        "stock_future": 0.020,     # 2.0% untuk stock futures
+                        "forex_future": 0.010,     # 1.0% untuk forex futures
                     }
                     volatility = volatility_map.get(self.market_type, 0.02)
             
@@ -222,10 +231,8 @@ class TradingStrategy(ABC):
                 base_range *= 0.7
             
             # Adjust for market type
-            if self.market_type == "crypto":
-                base_range *= 1.2  # Crypto more volatile
-            elif self.market_type == "forex":
-                base_range *= 0.8  # Forex more stable
+            if self.market_type == "crypto" or "future" in str(self.market_type).lower():
+                base_range *= 1.2  # Crypto lebih volatile
             
             # Clamping values
             min_range = 0.005  # Minimum 0.5%
@@ -304,14 +311,15 @@ class TradingStrategy(ABC):
                         atr = current_price * 0.02  # 2%
             else:
                 # Fallback ATR by market type
-                if self.market_type == "forex":
-                    atr = current_price * 0.005
-                elif self.market_type == "us_stocks":
-                    atr = current_price * 0.015
-                elif self.market_type == "forex_gold":
-                    atr = current_price * 0.008
-                else:
-                    atr = current_price * 0.02
+                atr_map = {
+                    "forex": current_price * 0.005,
+                    "us_stocks": current_price * 0.015,
+                    "forex_gold": current_price * 0.008,
+                    "crypto_future": current_price * 0.025,  # Futures lebih volatile
+                    "stock_future": current_price * 0.015,
+                    "forex_future": current_price * 0.006,
+                }
+                atr = atr_map.get(self.market_type, current_price * 0.02)
             
             atr = max(atr, current_price * 0.01)
             
@@ -549,6 +557,10 @@ class TradingStrategy(ABC):
             'ES1!': 4500.0, 'NQ1!': 15500.0, 'YM1!': 34000.0,  # S&P, Nasdaq, Dow futures
             'RTY1!': 1800.0,  # Russell 2000
             
+            # Futures Contracts
+            'CL': 75.0, 'NG': 2.5, 'GC': 1950.0,  # Oil, Natural Gas, Gold futures
+            'SI': 22.0, 'HG': 3.5, 'ZC': 450.0,  # Silver, Copper, Corn futures
+            
             # Indonesian Stocks
             'BBCA.JK': 9000.0, 'BBRI.JK': 5000.0, 'BMRI.JK': 6000.0,
             'TLKM.JK': 4000.0, 'ASII.JK': 6000.0,
@@ -579,6 +591,8 @@ class TradingStrategy(ABC):
             return 5000.0
         elif any(stock in symbol.upper() for stock in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX']):
             return 300.0
+        elif any(future in symbol.upper() for future in ['ES', 'NQ', 'YM', 'RTY', 'CL', 'NG', 'GC', 'SI', 'HG', 'ZC']):
+            return 100.0  # Default for futures
         else:
             return 100.0
 
@@ -1377,9 +1391,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             insufficient_data = len(df) < 50
             
             # PERBAIKAN: Kondisi 4: Harga stuck (5 bar berturut-turut tidak berubah)
-            # Ganti dari: any(df['close'].diff().fillna(0) == 0 for _ in range(5))
             price_diff = df['close'].diff().fillna(0)
-            # Cek apakah ada setidaknya 5 bar berturut-turut dengan perubahan 0
             price_stuck = False
             if len(df) >= 5:
                 for i in range(len(df) - 4):
@@ -2275,6 +2287,15 @@ def auto_suggest_leverage(symbol: str, market_type: str = "crypto") -> int:
         'forex_gold': {
             'XAU': 20, 'GOLD': 20, 'XAG': 20, 'SILVER': 20,
             'default': 20
+        },
+        'crypto_future': {
+            'BTC': 5, 'ETH': 8, 'SOL': 10, 'default': 8
+        },
+        'stock_future': {
+            'ES': 20, 'NQ': 15, 'YM': 15, 'default': 15
+        },
+        'forex_future': {
+            'EURUSD': 30, 'USDJPY': 30, 'default': 25
         }
     }
     
@@ -2302,6 +2323,16 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto") -> Enhanc
             market_type = "forex"
         elif any(x in symbol.upper() for x in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META']):
             market_type = "us_stocks"
+        elif any(x in symbol.upper() for x in ['PERP', 'FUTURES', 'SWAP', '1226', '0325', '0626', '0926']):
+            # Auto-detect futures
+            if 'BTC' in symbol.upper() or 'ETH' in symbol.upper() or 'SOL' in symbol.upper():
+                market_type = "crypto_future"
+            elif 'ES' in symbol.upper() or 'NQ' in symbol.upper() or 'YM' in symbol.upper():
+                market_type = "stock_future"
+            elif 'EUR' in symbol.upper() or 'USD' in symbol.upper() or 'JPY' in symbol.upper():
+                market_type = "forex_future"
+            else:
+                market_type = "crypto_future"
         else:
             market_type = "crypto"
     
@@ -2361,7 +2392,7 @@ def test_strategy_with_futures_support():
     print("\n2. TESTING BTC/USDT-PERP FUTURES (5x LEVERAGE)")
     print("-" * 40)
     futures_strategy = EnhancedTechnicalAnalysisStrategy(
-        market_type="crypto",
+        market_type="crypto_future",
         trading_type="futures",
         leverage=5
     )
@@ -2386,7 +2417,8 @@ def test_strategy_with_futures_support():
         "EUR/USD",
         "XAU/USD",
         "ES1!",
-        "AAPL"
+        "AAPL",
+        "CL"  # Oil futures
     ]
     
     for symbol in symbols_to_test:
@@ -2396,6 +2428,7 @@ def test_strategy_with_futures_support():
         print(f"  Trading Type: {strategy.trading_type}")
         print(f"  Leverage: {strategy.leverage}x")
         print(f"  Entry Range: {strategy.entry_range_pct*100:.1f}%")
+        print(f"  ATR Multiplier: {strategy.atr_multiplier:.1f}")
     
     # Test 4: Dynamic range calculation
     print("\n4. TESTING DYNAMIC ENTRY RANGE")
@@ -2403,7 +2436,7 @@ def test_strategy_with_futures_support():
     
     for leverage in [1, 5, 10, 20]:
         strategy = EnhancedTechnicalAnalysisStrategy(
-            market_type="crypto",
+            market_type="crypto_future",
             trading_type="futures",
             leverage=leverage
         )
@@ -2461,7 +2494,7 @@ if __name__ == "__main__":
     df = pd.DataFrame(data, index=dates)
     
     futures_strategy = EnhancedTechnicalAnalysisStrategy(
-        market_type="crypto",
+        market_type="crypto_future",
         trading_type="futures",
         leverage=5
     )
