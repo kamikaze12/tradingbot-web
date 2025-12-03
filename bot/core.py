@@ -1987,7 +1987,8 @@ class EnhancedTradingBot:
             "enable_ml": True,
             "enable_trailing_stop": True,
             "partial_tp_enabled": True,
-            "trading_mode": "spot"
+            "trading_mode": "spot",
+            "futures_symbol_format": "binance"  # binance, bybit, kucoin, okx
         }
     
     def save_config(self):
@@ -2013,6 +2014,38 @@ class EnhancedTradingBot:
             logger.warning(f"Unknown trading mode: {mode}, defaulting to SPOT")
             self.trading_mode = 'spot'
             self.asset_type = 'spot'
+
+    def _ensure_futures_symbol(self, symbol: str) -> str:
+        """Konversi simbol spot ke futures jika mode futures aktif"""
+        if self.trading_mode != 'futures':
+            return symbol
+
+        # Jika sudah format futures, return as-is
+        futures_markers = [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']
+        if any(marker in symbol.upper() for marker in futures_markers):
+            return symbol
+
+        # Konversi berdasarkan exchange
+        exchange = self.config.get("futures_symbol_format", "binance").lower()
+
+        if exchange == 'binance':
+            # Binance futures format: BTC/USDT:USDT
+            if '/USDT' in symbol:
+                return f"{symbol}:USDT"
+        elif exchange == 'bybit':
+            # Bybit: BTCUSDT
+            return symbol.replace('/', '')
+        elif exchange in ['kucoin', 'okx']:
+            # KuCoin/OKX: BTC-USDT
+            return symbol.replace('/', '-')
+        elif exchange == 'gateio':
+            return f"{symbol}_PERP"
+
+        # Default: tambahkan :USDT
+        if '/USDT' in symbol:
+            return f"{symbol}:USDT"
+
+        return symbol
 
     def get_assets_by_type(self, limit: int = 100, asset_type: str = None) -> List[Dict]:
         """Get assets berdasarkan type (spot/futures) dengan limit yang benar"""
@@ -2062,6 +2095,7 @@ class EnhancedTradingBot:
             self.stop_background_tasks()
             
             logger.info(f"🎯 Setting mode to: {self.mode.upper()}")
+            logger.info(f"📊 Trading mode: {self.trading_mode.upper()}")
             
             # SELALU gunakan DynamicDataProvider sebagai default
             logger.info("🔄 Initializing DynamicDataProvider...")
@@ -2120,6 +2154,11 @@ class EnhancedTradingBot:
                     symbol = asset.get('symbol', 'Unknown')
                 else:
                     symbol = str(asset)
+                
+                # 🔥 KONVERSI KE FUTURES JIKA MODE FUTURES
+                if self.trading_mode == 'futures':
+                    symbol = self._ensure_futures_symbol(symbol)
+                
                 asset_symbols.append(symbol)
             
             # Test OHLCV untuk asset pertama
@@ -2219,7 +2258,7 @@ class EnhancedTradingBot:
             return []
 
     def scan_potential_assets(self, limit=None, search_query: str = None, asset_type: str = None):
-        """Scan untuk potential signals - FIXED VERSION untuk saham Indonesia"""
+        """Scan untuk potential signals - FIXED VERSION dengan futures support"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -2244,7 +2283,7 @@ class EnhancedTradingBot:
                 else:
                     asset_type = self.asset_type  # default dari bot
             
-            # **PERBAIKAN: Gunakan analysis_coins_limit untuk jumlah assets**
+            # Gunakan analysis_coins_limit untuk jumlah assets
             assets_limit = self.config.get("analysis_coins_limit", 150)
             
             logger.info(f"🔍 Scanning for {limit} signals in {self.mode} ({asset_type})...")
@@ -2273,6 +2312,13 @@ class EnhancedTradingBot:
                         continue
                     
                     logger.info(f"  [{i+1}/{len(assets)}] Analyzing: {symbol}")
+                    
+                    # 🔥 KONVERSI KE FUTURES JIKA MODE FUTURES
+                    original_symbol = symbol
+                    if self.trading_mode == 'futures' and asset_type in ['futures', 'future']:
+                        symbol = self._ensure_futures_symbol(symbol)
+                        if original_symbol != symbol:
+                            logger.info(f"    🔄 Converted {original_symbol} → {symbol}")
                     
                     # **PERBAIKAN: Validasi symbol khusus untuk saham Indonesia**
                     if self.mode == 'saham_id':
@@ -2359,7 +2405,7 @@ class EnhancedTradingBot:
             
             logger.info(f"🎯 Scan completed: {len(signals)} signals found")
             
-            # **PERBAIKAN: Sort signals by score absolute value (terbaik ke terburuk)**
+            # Sort signals by score absolute value (terbaik ke terburuk)
             if signals:
                 signals.sort(key=lambda x: abs(x['score']), reverse=True)
                 logger.info("🏆 Top signals:")
@@ -2398,6 +2444,13 @@ class EnhancedTradingBot:
             if not self.dynamic_provider:
                 return {'error': 'No data provider available'}
             
+            # 🔥 KONVERSI KE FUTURES JIKA MODE FUTURES
+            original_symbol = symbol
+            if self.trading_mode == 'futures':
+                symbol = self._ensure_futures_symbol(symbol)
+                if original_symbol != symbol:
+                    logger.info(f"🔁 Converted symbol for ML analysis: {original_symbol} → {symbol}")
+            
             # Get data
             df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
             if df is None or len(df) < 50:
@@ -2427,6 +2480,13 @@ class EnhancedTradingBot:
             return {"error": "No data provider available"}
             
         try:
+            # 🔥 KONVERSI KE FUTURES JIKA MODE FUTURES
+            original_symbol = symbol
+            if self.trading_mode == 'futures':
+                symbol = self._ensure_futures_symbol(symbol)
+                if original_symbol != symbol:
+                    logger.info(f"🔁 Converted symbol for backtest: {original_symbol} → {symbol}")
+            
             if timeframe is None:
                 timeframe = self.config.get("timeframe", "1h")
                 
@@ -2568,6 +2628,13 @@ class EnhancedTradingBot:
     def calculate_custom_entry(self, symbol, entry_price, action="LONG"):
         """Calculate custom entry dengan TP/SL"""
         try:
+            # 🔥 KONVERSI KE FUTURES JIKA MODE FUTURES
+            original_symbol = symbol
+            if self.trading_mode == 'futures':
+                symbol = self._ensure_futures_symbol(symbol)
+                if original_symbol != symbol:
+                    logger.info(f"🔁 Converted symbol for custom entry: {original_symbol} → {symbol}")
+            
             df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 50)
             
             if df is None or len(df) < 20:
