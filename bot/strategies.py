@@ -45,24 +45,128 @@ except ImportError:
 import yfinance as yf
 
 # =============================================
-# BASE STRATEGY CLASS 
+# BASE STRATEGY CLASS WITH FUTURES SUPPORT
 # =============================================
 
 class TradingStrategy(ABC):
-    """Base class for all trading strategies - ENHANCED WITH ENTRY RANGE"""
+    """Base class for all trading strategies - ENHANCED WITH FUTURES SUPPORT"""
     
-    def __init__(self, market_type="crypto", atr_multiplier=1.0, entry_range_pct=0.02):
+    def __init__(self, market_type="crypto", atr_multiplier=1.0, entry_range_pct=0.02,
+                 trading_type="spot", leverage=1, max_leverage_risk=0.01):
         self.market_type = market_type
         self.atr_multiplier = atr_multiplier
         self.entry_range_pct = entry_range_pct
+        self.trading_type = trading_type  # 'spot' or 'futures'
+        self.leverage = leverage
+        self.max_leverage_risk = max_leverage_risk  # Max risk per trade with leverage
         
+        # Auto-adjust for futures
+        if self.trading_type == "futures":
+            self._auto_adjust_for_futures()
+    
+    def _auto_adjust_for_futures(self):
+        """Auto-adjust parameters for futures trading"""
+        # Wider entry range for futures
+        if self.entry_range_pct == 0.02:  # If using default
+            if self.leverage >= 20:
+                self.entry_range_pct = 0.015  # 1.5% for high leverage
+            elif self.leverage >= 10:
+                self.entry_range_pct = 0.018  # 1.8% for medium leverage
+            elif self.leverage >= 5:
+                self.entry_range_pct = 0.022  # 2.2% for low leverage
+            else:
+                self.entry_range_pct = 0.025  # 2.5% for no leverage futures
+        
+        # Adjust ATR multiplier for leverage
+        self.atr_multiplier *= (1 + (self.leverage - 1) * 0.05)
+        
+        logger.info(f"Auto-adjusted for {self.trading_type.upper()} with leverage {self.leverage}x")
+        logger.info(f"Entry range: {self.entry_range_pct*100:.1f}%, ATR multiplier: {self.atr_multiplier:.2f}")
+    
     @abstractmethod
     def analyze(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Analyze market data and return trading signals"""
         pass
     
-    def calculate_custom_entry(self, symbol: str, current_price: float, action: str = "LONG", df: pd.DataFrame = None) -> Dict[str, Any]:
-        """Calculate TP/SL dengan entry range - FIXED VERSION with dynamic ATR and sentiment modifier"""
+    def calculate_dynamic_entry_range(self, current_price: float, volatility: float = None, 
+                                     df: pd.DataFrame = None) -> float:
+        """
+        Calculate dynamic entry range based on:
+        1. Volatility (ATR or historical)
+        2. Trading type (spot/futures)
+        3. Leverage (for futures)
+        4. Market type
+        """
+        try:
+            # Calculate volatility if not provided
+            if volatility is None:
+                if df is not None and len(df) > 20:
+                    returns = df['close'].pct_change().dropna()
+                    if len(returns) > 1:
+                        volatility = returns.std() * np.sqrt(252)  # Annualized
+                    else:
+                        volatility = 0.02
+                else:
+                    # Default volatility by market type
+                    volatility_map = {
+                        "crypto": 0.025,      # 2.5% for crypto
+                        "forex": 0.008,       # 0.8% for forex
+                        "forex_gold": 0.012,  # 1.2% for gold
+                        "us_stocks": 0.015,   # 1.5% for US stocks
+                        "indonesia_stocks": 0.02,  # 2.0% for ID stocks
+                    }
+                    volatility = volatility_map.get(self.market_type, 0.02)
+            
+            # Base range: 1.5 x daily volatility
+            daily_vol = volatility / np.sqrt(252)
+            base_range = daily_vol * 1.5
+            
+            # Adjust for trading type
+            if self.trading_type == "futures":
+                # Wider range for futures (allows scaling in/out)
+                base_range *= 1.5
+                
+                # Adjust for leverage: Higher leverage = tighter range
+                if self.leverage >= 20:
+                    base_range *= 0.6  # Very tight for high leverage
+                elif self.leverage >= 10:
+                    base_range *= 0.8
+                elif self.leverage >= 5:
+                    base_range *= 1.0
+                else:
+                    base_range *= 1.2  # Wider for low leverage
+            elif self.trading_type == "spot":
+                # Tighter range for spot trading
+                base_range *= 0.7
+            
+            # Adjust for market type
+            if self.market_type == "crypto":
+                base_range *= 1.2  # Crypto more volatile
+            elif self.market_type == "forex":
+                base_range *= 0.8  # Forex more stable
+            
+            # Clamping values
+            min_range = 0.005  # Minimum 0.5%
+            max_range = 0.03   # Maximum 3.0%
+            
+            # Special clamp for futures
+            if self.trading_type == "futures":
+                min_range = 0.01   # Min 1.0% for futures
+                max_range = 0.04   # Max 4.0% for futures
+            
+            base_range = max(base_range, min_range)
+            base_range = min(base_range, max_range)
+            
+            logger.debug(f"Dynamic range: {base_range*100:.2f}% (Vol: {volatility:.3f}, Type: {self.trading_type}, Lev: {self.leverage}x)")
+            return base_range
+            
+        except Exception as e:
+            logger.error(f"Error calculating dynamic range: {e}")
+            return self.entry_range_pct
+    
+    def calculate_custom_entry(self, symbol: str, current_price: float, action: str = "LONG", 
+                              df: pd.DataFrame = None) -> Dict[str, Any]:
+        """Calculate TP/SL dengan entry range - ENHANCED FOR FUTURES"""
         try:
             # Validasi input yang lebih ketat
             if current_price <= 0 or pd.isna(current_price) or not isinstance(current_price, (int, float)):
@@ -70,64 +174,86 @@ class TradingStrategy(ABC):
                 current_price = self._estimate_realistic_price(symbol)
                 logger.info(f"Using estimated price: {current_price}")
             
-            # Pastikan current_price valid
             current_price = float(current_price)
             if current_price <= 0:
                 current_price = self._estimate_realistic_price(symbol)
             
-            # Calculate dynamic ATR from real data if DF provided, else fallback
+            # Calculate dynamic ATR
             if df is not None and not df.empty and all(col in df.columns for col in ['high', 'low', 'close']):
                 atr = self._calculate_atr(df)
             else:
+                # Fallback ATR by market type
                 if self.market_type == "forex":
-                    atr = current_price * 0.005  # 0.5% untuk forex
+                    atr = current_price * 0.005
                 elif self.market_type == "us_stocks":
-                    atr = current_price * 0.015  # 1.5% untuk saham US
+                    atr = current_price * 0.015
                 elif self.market_type == "forex_gold":
-                    atr = current_price * 0.008  # 0.8% untuk gold
+                    atr = current_price * 0.008
                 else:
-                    atr = current_price * 0.02   # 2% untuk crypto
+                    atr = current_price * 0.02
             
-            atr = max(atr, current_price * 0.01)  # Minimum 1%
+            atr = max(atr, current_price * 0.01)
             
-            # Sentiment modifier: Widen range if sentiment < -0.3
-            entry_range_pct = self.entry_range_pct
+            # Calculate dynamic entry range
+            dynamic_range = self.calculate_dynamic_entry_range(current_price, df=df)
+            entry_range_pct = dynamic_range
+            
+            # Sentiment modifier
             if df is not None and 'sentiment' in df.columns:
                 avg_sentiment = df['sentiment'].mean()
                 if avg_sentiment < -0.3:
-                    entry_range_pct *= 1.5  # Widen by 50% for caution
+                    entry_range_pct *= 1.5
                     logger.info(f"Negative sentiment ({avg_sentiment:.2f}) detected; widening entry range to {entry_range_pct*100:.2f}%")
             
-            # ✅ PERBAIKAN: Pastikan entry range selalu terhitung
             if entry_range_pct <= 0:
-                entry_range_pct = 0.02  # Default 2%
+                entry_range_pct = self.entry_range_pct
             
-            # Tentukan entry range berdasarkan aksi
+            # FUTURES-SPECIFIC: Adjust for liquidation risk
+            liquidation_buffer = 0.0
+            if self.trading_type == "futures" and self.leverage > 1:
+                # Calculate approximate liquidation distance
+                liquidation_buffer = (self.max_leverage_risk / self.leverage) * 0.5
+            
+            # Determine entry range based on action
             if action == "LONG":
-                # Untuk LONG: entry range di BAWAH current price
+                # For LONG: entry range BELOW current price
                 entry_range_low = current_price * (1 - entry_range_pct)
                 entry_range_high = current_price * (1 - entry_range_pct * 0.3)
                 best_entry = (entry_range_low + entry_range_high) / 2
                 
-                # TP/SL untuk LONG
-                min_move = max(atr * self.atr_multiplier, current_price * 0.01)
+                # Apply liquidation buffer (avoid being too close to liquidation)
+                entry_range_low = max(entry_range_low, current_price * (1 - entry_range_pct - liquidation_buffer))
+                
+                # TP/SL for LONG with leverage adjustment
+                base_move = max(atr * self.atr_multiplier, current_price * 0.01)
+                
+                # Adjust for leverage (higher leverage = tighter stops)
+                leverage_factor = max(1, self.leverage / 10)
+                min_move = base_move / leverage_factor
+                
                 tp1 = best_entry + min_move
                 tp2 = best_entry + min_move * 2
                 tp3 = best_entry + min_move * 3
-                sl = best_entry - min_move
+                sl = best_entry - min_move * (1 + liquidation_buffer * 10)
                 
             elif action == "SHORT":
-                # Untuk SHORT: entry range di ATAS current price  
+                # For SHORT: entry range ABOVE current price  
                 entry_range_low = current_price * (1 + entry_range_pct * 0.3)
                 entry_range_high = current_price * (1 + entry_range_pct)
                 best_entry = (entry_range_low + entry_range_high) / 2
                 
-                # TP/SL untuk SHORT
-                min_move = max(atr * self.atr_multiplier, current_price * 0.01)
+                # Apply liquidation buffer
+                entry_range_high = min(entry_range_high, current_price * (1 + entry_range_pct + liquidation_buffer))
+                
+                # TP/SL for SHORT with leverage adjustment
+                base_move = max(atr * self.atr_multiplier, current_price * 0.01)
+                leverage_factor = max(1, self.leverage / 10)
+                min_move = base_move / leverage_factor
+                
                 tp1 = best_entry - min_move
                 tp2 = best_entry - min_move * 2
                 tp3 = best_entry - min_move * 3
-                sl = best_entry + min_move
+                sl = best_entry + min_move * (1 + liquidation_buffer * 10)
                 
             else:  # NEUTRAL
                 entry_range_low = current_price * (1 - entry_range_pct * 0.1)
@@ -138,40 +264,40 @@ class TradingStrategy(ABC):
                 tp3 = current_price * 1.03
                 sl = current_price * 0.99
 
-            # ✅ VALIDASI FINAL: Pastikan tidak ada nilai 0
+            # FINAL VALIDATION: Ensure no zero/negative values
             if entry_range_low <= 0 or entry_range_high <= 0 or best_entry <= 0:
                 logger.error(f"Invalid entry range calculation for {symbol}, using fallback")
                 # Fallback calculation
+                fallback_price = max(current_price, self._estimate_realistic_price(symbol))
                 if action == "LONG":
-                    entry_range_low = current_price * 0.98
-                    entry_range_high = current_price * 0.99
+                    entry_range_low = fallback_price * 0.98
+                    entry_range_high = fallback_price * 0.99
                     best_entry = (entry_range_low + entry_range_high) / 2
                     tp1 = best_entry * 1.03
                     tp2 = best_entry * 1.06  
                     tp3 = best_entry * 1.09
                     sl = best_entry * 0.97
                 elif action == "SHORT":
-                    entry_range_low = current_price * 1.01
-                    entry_range_high = current_price * 1.02
+                    entry_range_low = fallback_price * 1.01
+                    entry_range_high = fallback_price * 1.02
                     best_entry = (entry_range_low + entry_range_high) / 2
                     tp1 = best_entry * 0.97
                     tp2 = best_entry * 0.94
                     tp3 = best_entry * 0.91
                     sl = best_entry * 1.03
                 else:
-                    entry_range_low = current_price * 0.995
-                    entry_range_high = current_price * 1.005
-                    best_entry = current_price
-                    tp1 = current_price * 1.01
-                    tp2 = current_price * 1.02
-                    tp3 = current_price * 1.03
-                    sl = current_price * 0.99
+                    entry_range_low = fallback_price * 0.995
+                    entry_range_high = fallback_price * 1.005
+                    best_entry = fallback_price
+                    tp1 = fallback_price * 1.01
+                    tp2 = fallback_price * 1.02
+                    tp3 = fallback_price * 1.03
+                    sl = fallback_price * 0.99
 
-            # Validasi final levels
+            # Validate order levels
             if action == "LONG":
                 if not (sl < entry_range_low <= entry_range_high < tp1 < tp2 < tp3):
-                    logger.warning("Invalid LONG levels in calculate_custom_entry, applying correction")
-                    # Reset ke level yang valid
+                    logger.warning("Invalid LONG levels, applying correction")
                     entry_range_low = current_price * 0.98
                     entry_range_high = current_price * 0.99
                     best_entry = (entry_range_low + entry_range_high) / 2
@@ -182,8 +308,7 @@ class TradingStrategy(ABC):
                     
             elif action == "SHORT":
                 if not (sl > entry_range_high >= entry_range_low > tp1 > tp2 > tp3):
-                    logger.warning("Invalid SHORT levels in calculate_custom_entry, applying correction")
-                    # Reset ke level yang valid
+                    logger.warning("Invalid SHORT levels, applying correction")
                     entry_range_low = current_price * 1.01
                     entry_range_high = current_price * 1.02
                     best_entry = (entry_range_low + entry_range_high) / 2
@@ -192,9 +317,28 @@ class TradingStrategy(ABC):
                     tp3 = best_entry * 0.91
                     sl = best_entry * 1.03
 
+            # Calculate risk metrics
+            if action == "LONG":
+                risk_amount = abs(best_entry - sl)
+                reward_tp1 = abs(tp1 - best_entry)
+                reward_tp3 = abs(tp3 - best_entry)
+            elif action == "SHORT":
+                risk_amount = abs(sl - best_entry)
+                reward_tp1 = abs(best_entry - tp1)
+                reward_tp3 = abs(best_entry - tp3)
+            else:
+                risk_amount = abs(best_entry - sl)
+                reward_tp1 = abs(tp1 - best_entry)
+                reward_tp3 = abs(tp3 - best_entry)
+            
+            rr_ratio_1 = reward_tp1 / risk_amount if risk_amount > 0 else 1
+            rr_ratio_3 = reward_tp3 / risk_amount if risk_amount > 0 else 1
+
             return {
                 'symbol': symbol,
                 'action': action,
+                'trading_type': self.trading_type,
+                'leverage': self.leverage,
                 'current_price': current_price,
                 'entry_range_low': entry_range_low,
                 'entry_range_high': entry_range_high,
@@ -205,16 +349,23 @@ class TradingStrategy(ABC):
                 'sl': sl,
                 'atr': atr,
                 'entry_range_pct': entry_range_pct * 100,
-                'range_size': (entry_range_high - entry_range_low) / current_price * 100
+                'range_size': (entry_range_high - entry_range_low) / current_price * 100,
+                'risk_amount': risk_amount,
+                'risk_percentage': (risk_amount / best_entry) * 100 if best_entry > 0 else 0,
+                'rr_ratio_tp1': rr_ratio_1,
+                'rr_ratio_tp3': rr_ratio_3,
+                'liquidation_buffer_pct': liquidation_buffer * 100
             }
             
         except Exception as e:
             logger.error(f"Error in calculate_custom_entry: {e}")
-            # Fallback calculation yang lebih robust
+            # Robust fallback
             fallback_price = max(self._estimate_realistic_price(symbol), 0.01)
             return {
                 'symbol': symbol,
                 'action': action,
+                'trading_type': self.trading_type,
+                'leverage': self.leverage,
                 'current_price': fallback_price,
                 'entry_range_low': fallback_price * 0.98,
                 'entry_range_high': fallback_price * 0.99,
@@ -225,61 +376,97 @@ class TradingStrategy(ABC):
                 'sl': fallback_price * 0.97,
                 'atr': fallback_price * 0.02,
                 'entry_range_pct': self.entry_range_pct * 100,
-                'range_size': 1.0
+                'range_size': 1.0,
+                'risk_amount': fallback_price * 0.03,
+                'risk_percentage': 3.0,
+                'rr_ratio_tp1': 1.5,
+                'rr_ratio_tp3': 3.0,
+                'liquidation_buffer_pct': 0.5
             }
 
     def _estimate_realistic_price(self, symbol):
-        """Estimate realistic price based on symbol - ENHANCED"""
-        # Harga estimasi untuk simbol umum
+        """Estimate realistic price based on symbol - UPDATED WITH FUTURES"""
+        # Enhanced price estimates including futures symbols
         price_estimates = {
+            # Crypto Spot
             'BTC/USDT': 50000.0, 'ETH/USDT': 3000.0, 'BNB/USDT': 500.0,
             'XRP/USDT': 0.5, 'ADA/USDT': 0.4, 'SOL/USDT': 100.0,
+            
+            # Crypto Futures
+            'BTC/USDT-PERP': 50000.0, 'ETH/USDT-PERP': 3000.0,
+            'BTC-PERP': 50000.0, 'ETH-PERP': 3000.0,
+            'BTCUSDT': 50000.0, 'BTCUSDT.P': 50000.0,
+            
+            # Forex
             'EUR/USD': 1.08, 'USD/JPY': 150.0, 'GBP/USD': 1.26,
+            'AUD/USD': 0.66, 'USD/CAD': 1.35, 'NZD/USD': 0.61,
+            
+            # Gold/Metals
             'XAU/USD': 1950.0, 'XAUUSD': 1950.0, 'GOLD': 1950.0,
-            'AAPL': 180.0, 'MSFT': 400.0, 'GOOGL': 150.0, 'AMZN': 170.0, 'TSLA': 200.0,
-            'META': 500.0, 'NVDA': 900.0, 'NFLX': 600.0,
-            'BTC-USD': 50000.0, 'ETH-USD': 3000.0,
-            'EURUSD=X': 1.08, 'USDJPY=X': 150.0, 'XAUUSD=X': 1950.0,
+            'XAG/USD': 22.0, 'XAGUSD': 22.0, 'SILVER': 22.0,
+            
+            # US Stocks
+            'AAPL': 180.0, 'MSFT': 400.0, 'GOOGL': 150.0, 
+            'AMZN': 170.0, 'TSLA': 200.0, 'META': 500.0, 
+            'NVDA': 900.0, 'NFLX': 600.0,
+            
+            # Stock Futures
+            'ES1!': 4500.0, 'NQ1!': 15500.0, 'YM1!': 34000.0,  # S&P, Nasdaq, Dow futures
+            'RTY1!': 1800.0,  # Russell 2000
+            
+            # Indonesian Stocks
             'BBCA.JK': 9000.0, 'BBRI.JK': 5000.0, 'BMRI.JK': 6000.0,
+            'TLKM.JK': 4000.0, 'ASII.JK': 6000.0,
+            
+            # New Crypto
             'HYPE/USDT': 35.0, 'TON/USDT': 1.5, 'ENA/USDT': 0.3,
             'PINGPONG/USDT': 0.022, 'PLUME/USDT': 0.033, 'ASTER/USDT': 1.12
         }
         
-        # Cari pattern dalam simbol
+        # Check for exact match first
+        if symbol in price_estimates:
+            return price_estimates[symbol]
+        
+        # Check for pattern match
         for pattern, price in price_estimates.items():
             if pattern in symbol:
                 return price
         
-        # Default berdasarkan tipe market
-        if 'USDT' in symbol or '/USDT' in symbol:
+        # Default based on symbol type
+        if any(x in symbol.upper() for x in ['PERP', 'FUTURES', 'SWAP', '1226', '0325', '0626', '0926']):
+            # Futures symbol - use crypto default
+            return 100.0
+        elif 'USDT' in symbol or '/USDT' in symbol:
             return 10.0
         elif 'USD' in symbol or '=X' in symbol:
             return 1.0
         elif '.JK' in symbol:
             return 5000.0
-        elif any(stock in symbol for stock in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX']):
+        elif any(stock in symbol.upper() for stock in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX']):
             return 300.0
         else:
             return 100.0
 
     def format_signal_output(self, analysis: Dict[str, Any]) -> str:
-        """Format output signal dengan entry range yang jelas"""
+        """Format output signal dengan futures-specific info"""
         
         action = analysis.get('action', 'NEUTRAL')
         symbol = analysis.get('symbol', 'UNKNOWN')
+        trading_type = analysis.get('trading_type', 'spot')
+        leverage = analysis.get('leverage', 1)
         score = analysis.get('score', 0)
         current_price = analysis.get('current_price', 0)
         confidence = analysis.get('confidence', 0.5) * 100
         
-        # Tentukan emoji dan warna berdasarkan aksi
+        # Determine emoji and color
         if action == "LONG":
-            emoji = "🟢"
+            emoji = "🟢" if trading_type == "spot" else "💰"
             color_start = "🟢"
         elif action == "SHORT":
-            emoji = "🔴" 
+            emoji = "🔴" if trading_type == "spot" else "📉"
             color_start = "🔴"
         else:
-            emoji = "⚪"
+            emoji = "⚪" if trading_type == "spot" else "📊"
             color_start = "⚪"
         
         # Format entry range
@@ -288,7 +475,6 @@ class TradingStrategy(ABC):
         best_entry = analysis.get('best_entry', current_price)
         range_pct = analysis.get('entry_range_pct', 2.0)
         
-        # Untuk display, gunakan format yang lebih baik
         if action == "LONG":
             entry_display = f"{entry_low:.5f} - {entry_high:.5f}"
             direction = "BELOW current"
@@ -299,16 +485,32 @@ class TradingStrategy(ABC):
             entry_display = f"{current_price:.5f}"
             direction = "AT current"
         
-        # Probabilitas berdasarkan confidence score
+        # Probabilities based on confidence score
         tp1_prob = min(confidence * 0.8, 95)
         tp2_prob = min(confidence * 0.5, 70)
         tp3_prob = min(confidence * 0.2, 40)
         
+        # Futures-specific info
+        futures_info = ""
+        if trading_type == "futures":
+            risk_pct = analysis.get('risk_percentage', 0)
+            rr_ratio = analysis.get('rr_ratio_tp1', 0)
+            liquidation_buffer = analysis.get('liquidation_buffer_pct', 0)
+            
+            futures_info = f"""
+⚡ FUTURES SPECIFICS:
+   Leverage: {leverage}x
+   Risk per Trade: {risk_pct:.2f}%
+   R/R Ratio (TP1): {rr_ratio:.2f}:1
+   Liquidation Buffer: ±{liquidation_buffer:.2f}%
+"""
+        
         output = f"""
 {emoji} {symbol} - {action} (Score: {score})
+📊 Type: {trading_type.upper()}
 💰 Current: {current_price:.5f} 
 🎯 Entry Range: {entry_display} ({direction})
-📊 Probabilitas: TP1: {tp1_prob:.1f}% | TP2: {tp2_prob:.1f}% | TP3: {tp3_prob:.1f}%
+📊 Probabilities: TP1: {tp1_prob:.1f}% | TP2: {tp2_prob:.1f}% | TP3: {tp3_prob:.1f}%
 
 🎯 Take Profit: 
    TP1: {analysis.get('tp1', 0):.5f}
@@ -317,13 +519,15 @@ class TradingStrategy(ABC):
 
 🛑 Stop Loss: {analysis.get('sl', 0):.5f}
 
+{futures_info}
 📈 Analytics:
    Confidence: {confidence:.1f}%
    Range Size: ±{range_pct:.1f}%
    ATR: {analysis.get('atr', 0):.5f}
    RSI: {analysis.get('rsi', 50):.1f}
    Trend: {analysis.get('trend_direction', 'NEUTRAL')}
-        """
+   Market Regime: {analysis.get('market_regime', 'unknown')}
+"""
         
         return output
 
@@ -867,8 +1071,6 @@ class AdvancedPatternDetector:
                     entry, target, stop_loss, rr_ratio, "1D"
                 )
             
-            # Add more candlestick patterns as needed
-            
             return patterns
             
         except Exception as e:
@@ -983,14 +1185,17 @@ class AdvancedPatternDetector:
             return {}
 
 # =============================================
-# ENHANCED TECHNICAL ANALYSIS STRATEGY
+# ENHANCED TECHNICAL ANALYSIS STRATEGY WITH FUTURES SUPPORT
 # =============================================
 
 class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
-    """Enhanced technical analysis strategy dengan multi-timeframe dan pattern detection"""
+    """Enhanced technical analysis strategy with futures support"""
     
-    def __init__(self, market_type="crypto", atr_multiplier=1.0, entry_range_pct=0.02):
-        super().__init__(market_type, atr_multiplier, entry_range_pct)
+    def __init__(self, market_type="crypto", atr_multiplier=1.0, entry_range_pct=0.02,
+                 trading_type="spot", leverage=1, max_leverage_risk=0.01):
+        super().__init__(market_type=market_type, atr_multiplier=atr_multiplier,
+                        entry_range_pct=entry_range_pct, trading_type=trading_type,
+                        leverage=leverage, max_leverage_risk=max_leverage_risk)
         self.pattern_detector = AdvancedPatternDetector()
         self.risk_engine = DynamicRiskEngine()
         self.analysis_history = []
@@ -1021,7 +1226,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return 0.0
 
     def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Analyze market data with enhanced features and entry range"""
+        """Analyze market data with enhanced features and futures support"""
         try:
             if df is None or df.empty:
                 logger.warning("Empty DataFrame in analyze")
@@ -1058,6 +1263,13 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             # Apply regime adjustment
             adjusted_score = base_score * regime_multiplier
             
+            # FUTURES-SPECIFIC: Adjust score for leverage
+            if self.trading_type == "futures":
+                # Higher leverage = more conservative signals
+                leverage_factor = 1.0 / (1 + (self.leverage - 1) * 0.05)
+                adjusted_score *= leverage_factor
+                logger.debug(f"Futures leverage adjustment: {leverage_factor:.2f}")
+            
             # Determine action
             action = "LONG" if adjusted_score > 5 else "SHORT" if adjusted_score < -5 else "NEUTRAL"
             
@@ -1067,6 +1279,8 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             # Final analysis dict
             analysis = {
                 'action': action,
+                'trading_type': self.trading_type,
+                'leverage': self.leverage,
                 'entry_range_low': entry_calculation['entry_range_low'],
                 'entry_range_high': entry_calculation['entry_range_high'],
                 'best_entry': entry_calculation['best_entry'],
@@ -1097,7 +1311,12 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 'bb_position': indicators['bb_position'],
                 'symbol': symbol,
                 'entry_range_pct': entry_calculation['entry_range_pct'],
-                'range_size': entry_calculation['range_size']
+                'range_size': entry_calculation['range_size'],
+                'risk_amount': entry_calculation.get('risk_amount', 0),
+                'risk_percentage': entry_calculation.get('risk_percentage', 0),
+                'rr_ratio_tp1': entry_calculation.get('rr_ratio_tp1', 0),
+                'rr_ratio_tp3': entry_calculation.get('rr_ratio_tp3', 0),
+                'liquidation_buffer_pct': entry_calculation.get('liquidation_buffer_pct', 0)
             }
             
             # Final validation
@@ -1508,27 +1727,41 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return "LOW"
     
     def _apply_risk_adjustment(self, analysis: Dict[str, Any], df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Apply risk adjustment to analysis"""
+        """Apply risk adjustment to analysis with futures support"""
         try:
             volatility = analysis.get('volatility', 0.02)
             score = analysis.get('score', 0)
             current_price = analysis.get('current_price', 0)
+            trading_type = analysis.get('trading_type', 'spot')
+            leverage = analysis.get('leverage', 1)
             
             if current_price <= 0:
                 current_price = self._estimate_realistic_price(symbol or "UNKNOWN")
+            
+            # Adjust for futures leverage
+            if trading_type == "futures" and leverage > 1:
+                # Reduce position size for higher leverage
+                leverage_factor = 1.0 / (1 + (leverage - 1) * 0.1)
+            else:
+                leverage_factor = 1.0
             
             risk_calc = self.risk_engine.calculate_dynamic_position_size(
                 balance=10000,
                 current_price=current_price,
                 risk_score=score,
-                volatility=volatility
+                volatility=volatility,
+                leverage_factor=leverage_factor,
+                trading_type=trading_type,
+                leverage=leverage
             )
             
             analysis.update({
                 'risk_metrics': risk_calc,
                 'recommended_position_size': risk_calc.get('position_size', 0),
                 'position_value_usd': risk_calc.get('position_value', 0),
-                'risk_profile': risk_calc.get('risk_profile', 'MEDIUM')
+                'risk_profile': risk_calc.get('risk_profile', 'MEDIUM'),
+                'max_position_pct': risk_calc.get('max_position_pct', 0) * 100,
+                'leverage_factor': leverage_factor
             })
             
             return analysis
@@ -1544,9 +1777,13 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 'timestamp': datetime.now(),
                 'symbol': analysis.get('symbol', 'Unknown'),
                 'action': analysis.get('action', 'NEUTRAL'),
+                'trading_type': analysis.get('trading_type', 'spot'),
+                'leverage': analysis.get('leverage', 1),
                 'score': analysis.get('score', 0),
                 'confidence': analysis.get('confidence', 0.5),
-                'market_regime': analysis.get('market_regime', 'unknown')
+                'market_regime': analysis.get('market_regime', 'unknown'),
+                'entry_range_pct': analysis.get('entry_range_pct', 0),
+                'range_size': analysis.get('range_size', 0)
             })
             
             if len(self.analysis_history) > 1000:
@@ -1562,6 +1799,8 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         
         return {
             'action': 'NEUTRAL',
+            'trading_type': self.trading_type,
+            'leverage': self.leverage,
             'entry_range_low': default_entry['entry_range_low'],
             'entry_range_high': default_entry['entry_range_high'],
             'best_entry': default_entry['best_entry'],
@@ -1591,7 +1830,12 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'risk_profile': 'MEDIUM',
             'symbol': symbol,
             'entry_range_pct': self.entry_range_pct * 100,
-            'range_size': default_entry['range_size']
+            'range_size': default_entry['range_size'],
+            'risk_amount': default_entry['risk_amount'],
+            'risk_percentage': default_entry['risk_percentage'],
+            'rr_ratio_tp1': default_entry['rr_ratio_tp1'],
+            'rr_ratio_tp3': default_entry['rr_ratio_tp3'],
+            'liquidation_buffer_pct': default_entry['liquidation_buffer_pct']
         }
 
     def _get_default_analysis_with_price(self, current_price: float, symbol: str = None) -> Dict[str, Any]:
@@ -1610,7 +1854,12 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'tp3': default_entry['tp3'],
             'sl': default_entry['sl'],
             'current_price': current_price,
-            'range_size': default_entry['range_size']
+            'range_size': default_entry['range_size'],
+            'risk_amount': default_entry['risk_amount'],
+            'risk_percentage': default_entry['risk_percentage'],
+            'rr_ratio_tp1': default_entry['rr_ratio_tp1'],
+            'rr_ratio_tp3': default_entry['rr_ratio_tp3'],
+            'liquidation_buffer_pct': default_entry['liquidation_buffer_pct']
         })
         return analysis
 
@@ -1619,7 +1868,8 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         try:
             # Ensure all numeric values are valid
             for key in ['current_price', 'entry_range_low', 'entry_range_high', 
-                       'best_entry', 'tp1', 'tp2', 'tp3', 'sl', 'atr', 'score']:
+                       'best_entry', 'tp1', 'tp2', 'tp3', 'sl', 'atr', 'score',
+                       'risk_amount', 'risk_percentage', 'rr_ratio_tp1', 'rr_ratio_tp3']:
                 if key in analysis:
                     if pd.isna(analysis[key]) or not isinstance(analysis[key], (int, float)):
                         analysis[key] = 0.0
@@ -1629,6 +1879,10 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             if analysis['action'] not in ['LONG', 'SHORT', 'NEUTRAL']:
                 analysis['action'] = 'NEUTRAL'
             
+            # Ensure trading type is valid
+            if analysis['trading_type'] not in ['spot', 'futures']:
+                analysis['trading_type'] = 'spot'
+            
             return analysis
             
         except Exception as e:
@@ -1636,28 +1890,75 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return self._get_default_analysis(symbol)
 
 # =============================================
-# DYNAMIC RISK ENGINE
+# DYNAMIC RISK ENGINE WITH FUTURES SUPPORT
 # =============================================
 
 class DynamicRiskEngine:
-    """Dynamic risk management engine"""
+    """Dynamic risk management engine with futures support"""
     
     def __init__(self):
         self.risk_profiles = {
-            'LOW': {'max_position_size': 0.1, 'max_drawdown': 0.02, 'volatility_threshold': 0.01},
-            'MEDIUM': {'max_position_size': 0.07, 'max_drawdown': 0.035, 'volatility_threshold': 0.02},
-            'HIGH': {'max_position_size': 0.04, 'max_drawdown': 0.05, 'volatility_threshold': 0.03},
-            'VERY_HIGH': {'max_position_size': 0.02, 'max_drawdown': 0.08, 'volatility_threshold': 0.05}
+            'SPOT': {
+                'LOW': {'max_position_size': 0.1, 'max_drawdown': 0.02, 'volatility_threshold': 0.01},
+                'MEDIUM': {'max_position_size': 0.07, 'max_drawdown': 0.035, 'volatility_threshold': 0.02},
+                'HIGH': {'max_position_size': 0.04, 'max_drawdown': 0.05, 'volatility_threshold': 0.03},
+                'VERY_HIGH': {'max_position_size': 0.02, 'max_drawdown': 0.08, 'volatility_threshold': 0.05}
+            },
+            'FUTURES': {
+                'LOW': {'max_position_size': 0.08, 'max_drawdown': 0.015, 'volatility_threshold': 0.01},
+                'MEDIUM': {'max_position_size': 0.05, 'max_drawdown': 0.025, 'volatility_threshold': 0.015},
+                'HIGH': {'max_position_size': 0.03, 'max_drawdown': 0.035, 'volatility_threshold': 0.02},
+                'VERY_HIGH': {'max_position_size': 0.015, 'max_drawdown': 0.05, 'volatility_threshold': 0.03}
+            }
         }
         
-    def calculate_dynamic_position_size(self, balance, current_price, risk_score, volatility, correlation_penalty=0):
-        """Calculate position size"""
+    def calculate_dynamic_position_size(self, balance, current_price, risk_score, volatility, 
+                                       leverage_factor=1.0, trading_type="spot", leverage=1,
+                                       correlation_penalty=0):
+        """Calculate position size with futures support"""
         if current_price <= 0:
             current_price = 1.0
             
-        risk_profile = 'MEDIUM'
-        base_size = self.risk_profiles[risk_profile]['max_position_size']
-        adjusted_size = base_size * (1 - correlation_penalty)
+        # Determine risk profile
+        if abs(risk_score) > 7:
+            risk_profile = 'LOW'
+        elif abs(risk_score) > 5:
+            risk_profile = 'MEDIUM'
+        elif abs(risk_score) > 3:
+            risk_profile = 'HIGH'
+        else:
+            risk_profile = 'VERY_HIGH'
+        
+        # Get base size based on trading type
+        trading_type_key = 'FUTURES' if trading_type == "futures" else 'SPOT'
+        base_size = self.risk_profiles[trading_type_key][risk_profile]['max_position_size']
+        
+        # Adjust for volatility
+        volatility_factor = 1.0
+        if volatility > 0.03:
+            volatility_factor = 0.7
+        elif volatility > 0.02:
+            volatility_factor = 0.85
+        
+        # Adjust for leverage (for futures)
+        if trading_type == "futures":
+            leverage_adjustment = 1.0 / (1 + (leverage - 1) * 0.08)
+        else:
+            leverage_adjustment = 1.0
+        
+        # Calculate adjusted size
+        adjusted_size = base_size * leverage_factor * volatility_factor * leverage_adjustment * (1 - correlation_penalty)
+        
+        # Clamp minimum and maximum
+        min_size = 0.01  # Minimum 1%
+        max_size = 0.1   # Maximum 10%
+        
+        if trading_type == "futures":
+            min_size = 0.005  # Lower minimum for futures (0.5%)
+            max_size = 0.05   # Lower maximum for futures (5%)
+        
+        adjusted_size = max(min_size, min(adjusted_size, max_size))
+        
         position_value = balance * adjusted_size
         position_size = position_value / current_price if current_price > 0 else 0
         
@@ -1666,7 +1967,12 @@ class DynamicRiskEngine:
             'position_value': position_value,
             'risk_profile': risk_profile,
             'base_size_percent': base_size * 100,
-            'adjusted_size_percent': adjusted_size * 100
+            'adjusted_size_percent': adjusted_size * 100,
+            'max_position_pct': adjusted_size,
+            'leverage_adjustment': leverage_adjustment,
+            'volatility_factor': volatility_factor,
+            'trading_type': trading_type,
+            'leverage': leverage
         }
 
 # =============================================
@@ -1678,14 +1984,122 @@ class TechnicalAnalysisStrategy(EnhancedTechnicalAnalysisStrategy):
     pass
 
 # =============================================
+# UTILITY FUNCTIONS FOR AUTO-DETECTION
+# =============================================
+
+def auto_detect_trading_type(symbol: str) -> str:
+    """
+    Auto-detect if symbol is for spot or futures trading
+    """
+    symbol_upper = symbol.upper()
+    
+    # Futures patterns across different exchanges
+    futures_patterns = [
+        'PERP', 'PERPETUAL',  # Bybit, OKX, Binance
+        'SWAP',               # Binance
+        'FUTURES', 'FUTURE',  # Generic
+        '1226', '0325', '0626', '0926',  # Quarterly expiry
+        'CME:', 'COMEX:', 'NYMEX:',  # Traditional futures
+        'ES1!', 'NQ1!', 'YM1!', 'RTY1!',  # Stock index futures
+        '_FW', '_FUT', '_QUARTER',        # Huobi, others
+        '/USD-M', '/COIN-M',              # Binance futures
+        '-MARGIN', 'MARGIN'               # Margin trading
+    ]
+    
+    for pattern in futures_patterns:
+        if pattern in symbol_upper:
+            return "futures"
+    
+    return "spot"
+
+def auto_suggest_leverage(symbol: str, market_type: str = "crypto") -> int:
+    """
+    Auto-suggest leverage based on symbol and market type
+    """
+    leverage_map = {
+        'crypto': {
+            'BTC': 5, 'ETH': 8, 'SOL': 10, 'ADA': 15, 'XRP': 15,
+            'BNB': 10, 'DOGE': 20, 'DOT': 12, 'AVAX': 12, 'MATIC': 15,
+            'default': 10
+        },
+        'forex': {
+            'EURUSD': 30, 'USDJPY': 30, 'GBPUSD': 20, 'AUDUSD': 25,
+            'USDCAD': 25, 'NZDUSD': 25, 'XAUUSD': 20, 'XAGUSD': 20,
+            'default': 25
+        },
+        'us_stocks': {
+            'ES': 20, 'NQ': 15, 'YM': 15, 'RTY': 15,
+            'SPX': 20, 'NDX': 15, 'DJI': 15,
+            'default': 15
+        },
+        'forex_gold': {
+            'XAU': 20, 'GOLD': 20, 'XAG': 20, 'SILVER': 20,
+            'default': 20
+        }
+    }
+    
+    symbol_upper = symbol.upper().replace('/', '').replace('-', '').replace('_', '').replace('=', '')
+    
+    # Check for specific symbol match
+    for key, leverage in leverage_map.get(market_type, {}).items():
+        if key in symbol_upper:
+            return leverage
+    
+    # Return default for market type
+    return leverage_map.get(market_type, {}).get('default', 10)
+
+def create_strategy_for_symbol(symbol: str, market_type: str = "auto") -> EnhancedTechnicalAnalysisStrategy:
+    """
+    Create appropriate strategy based on symbol auto-detection
+    """
+    # Auto-detect market type if not specified
+    if market_type == "auto":
+        if any(x in symbol.upper() for x in ['.JK', 'IDX', 'JAKARTA']):
+            market_type = "indonesia_stocks"
+        elif any(x in symbol.upper() for x in ['XAU', 'XAG', 'GOLD', 'SILVER']):
+            market_type = "forex_gold"
+        elif any(x in symbol.upper() for x in ['EUR', 'USD', 'JPY', 'GBP', 'AUD', 'CAD']):
+            market_type = "forex"
+        elif any(x in symbol.upper() for x in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META']):
+            market_type = "us_stocks"
+        else:
+            market_type = "crypto"
+    
+    # Auto-detect trading type
+    trading_type = auto_detect_trading_type(symbol)
+    
+    # Auto-suggest leverage
+    leverage = auto_suggest_leverage(symbol, market_type)
+    
+    logger.info(f"Auto-detected for {symbol}: Market={market_type}, Type={trading_type}, Leverage={leverage}x")
+    
+    return EnhancedTechnicalAnalysisStrategy(
+        market_type=market_type,
+        trading_type=trading_type,
+        leverage=leverage,
+        entry_range_pct=0.02,  # Will be auto-adjusted
+        atr_multiplier=1.0
+    )
+
+# =============================================
 # TESTING FUNCTIONS
 # =============================================
 
-def test_strategy_with_entry_range():
-    """Test the enhanced strategy with entry range"""
-    strategy = EnhancedTechnicalAnalysisStrategy(market_type="crypto", entry_range_pct=0.03)
+def test_strategy_with_futures_support():
+    """Test the enhanced strategy with futures support"""
+    print("=" * 60)
+    print("TESTING STRATEGY WITH FUTURES SUPPORT")
+    print("=" * 60)
     
-    # Create sample data
+    # Test 1: BTC Spot Trading
+    print("\n1. TESTING BTC/USDT SPOT TRADING")
+    print("-" * 40)
+    spot_strategy = EnhancedTechnicalAnalysisStrategy(
+        market_type="crypto",
+        trading_type="spot",
+        leverage=1
+    )
+    
     dates = pd.date_range('2023-01-01', periods=100, freq='D')
     data = {
         'open': np.random.normal(100, 10, 100),
@@ -1693,36 +2107,99 @@ def test_strategy_with_entry_range():
         'low': np.random.normal(95, 12, 100),
         'close': np.random.normal(100, 10, 100),
         'volume': np.random.normal(1000000, 100000, 100),
-        'sentiment': np.random.uniform(-1, 1, 100)  # Sample sentiment data
+        'sentiment': np.random.uniform(-1, 1, 100)
     }
     df = pd.DataFrame(data, index=dates)
     
-    # Test analysis
-    result = strategy.analyze(df, "BTC/USDT")
-    print("Enhanced Analysis Result with Entry Range:")
+    result = spot_strategy.analyze(df, "BTC/USDT")
     print(f"Action: {result['action']}")
-    print(f"Current Price: {result['current_price']:.5f}")
+    print(f"Trading Type: {result['trading_type']}")
     print(f"Entry Range: {result['entry_range_low']:.5f} - {result['entry_range_high']:.5f}")
-    print(f"Best Entry: {result['best_entry']:.5f}")
-    print(f"TP1: {result['tp1']:.5f}, TP2: {result['tp2']:.5f}, TP3: {result['tp3']:.5f}")
-    print(f"SL: {result['sl']:.5f}")
-    print(f"Score: {result['score']}")
+    print(f"Range Size: {result['range_size']:.2f}%")
     
-    # Test format output
-    formatted_output = strategy.format_signal_output(result)
-    print("\nFormatted Output:")
-    print(formatted_output)
+    # Test 2: BTC Futures Trading (5x leverage)
+    print("\n2. TESTING BTC/USDT-PERP FUTURES (5x LEVERAGE)")
+    print("-" * 40)
+    futures_strategy = EnhancedTechnicalAnalysisStrategy(
+        market_type="crypto",
+        trading_type="futures",
+        leverage=5
+    )
     
-    # Test custom entry calculation
-    custom_entry = strategy.calculate_custom_entry("BTC/USDT", 100.0, "LONG", df)
-    print(f"\nCustom Entry Calculation:")
-    print(f"Entry Range: {custom_entry['entry_range_low']:.5f} - {custom_entry['entry_range_high']:.5f}")
-    print(f"Range Size: {custom_entry['range_size']:.2f}%")
+    result = futures_strategy.analyze(df, "BTC/USDT-PERP")
+    print(f"Action: {result['action']}")
+    print(f"Trading Type: {result['trading_type']}")
+    print(f"Leverage: {result['leverage']}x")
+    print(f"Entry Range: {result['entry_range_low']:.5f} - {result['entry_range_high']:.5f}")
+    print(f"Range Size: {result['range_size']:.2f}% (wider for futures)")
+    print(f"Liquidation Buffer: {result.get('liquidation_buffer_pct', 0):.2f}%")
+    print(f"Risk per Trade: {result.get('risk_percentage', 0):.2f}%")
     
-    return result
+    # Test 3: Auto-detection
+    print("\n3. TESTING AUTO-DETECTION")
+    print("-" * 40)
+    
+    symbols_to_test = [
+        "BTC/USDT",
+        "BTC/USDT-PERP",
+        "ETH/USDT-SWAP",
+        "EUR/USD",
+        "XAU/USD",
+        "ES1!",
+        "AAPL"
+    ]
+    
+    for symbol in symbols_to_test:
+        strategy = create_strategy_for_symbol(symbol)
+        print(f"\n{symbol}:")
+        print(f"  Market Type: {strategy.market_type}")
+        print(f"  Trading Type: {strategy.trading_type}")
+        print(f"  Leverage: {strategy.leverage}x")
+        print(f"  Entry Range: {strategy.entry_range_pct*100:.1f}%")
+    
+    # Test 4: Dynamic range calculation
+    print("\n4. TESTING DYNAMIC ENTRY RANGE")
+    print("-" * 40)
+    
+    for leverage in [1, 5, 10, 20]:
+        strategy = EnhancedTechnicalAnalysisStrategy(
+            market_type="crypto",
+            trading_type="futures",
+            leverage=leverage
+        )
+        dynamic_range = strategy.calculate_dynamic_entry_range(100000, volatility=0.025)
+        print(f"Leverage {leverage}x: {dynamic_range*100:.2f}% entry range")
+    
+    return spot_strategy, futures_strategy
 
 if __name__ == "__main__":
     # Run the test
-    test_result = test_strategy_with_entry_range()
+    spot, futures = test_strategy_with_futures_support()
     
-    print("\n✅ Enhanced Strategy with Entry Range Testing Completed!")
+    print("\n" + "=" * 60)
+    print("✅ ENHANCED STRATEGY WITH FUTURES SUPPORT TESTING COMPLETED!")
+    print("=" * 60)
+    
+    # Show example output
+    print("\n📊 EXAMPLE BTC FUTURES SIGNAL OUTPUT:")
+    print("-" * 40)
+    
+    dates = pd.date_range('2023-12-01', periods=50, freq='H')
+    data = {
+        'open': np.random.normal(87000, 1000, 50),
+        'high': np.random.normal(87500, 1200, 50),
+        'low': np.random.normal(86500, 1200, 50),
+        'close': np.random.normal(87000, 1000, 50),
+        'volume': np.random.normal(1000000, 100000, 50),
+    }
+    df = pd.DataFrame(data, index=dates)
+    
+    futures_strategy = EnhancedTechnicalAnalysisStrategy(
+        market_type="crypto",
+        trading_type="futures",
+        leverage=5
+    )
+    
+    result = futures_strategy.analyze(df, "BTC/USDT-PERP")
+    formatted_output = futures_strategy.format_signal_output(result)
+    print(formatted_output)
