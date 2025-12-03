@@ -88,6 +88,74 @@ class TradingStrategy(ABC):
         """Analyze market data and return trading signals"""
         pass
     
+    def _preprocess_and_validate(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Preprocess data dan validasi kualitas"""
+        
+        # 1. Cek data kosong
+        if df is None or df.empty:
+            logger.error(f"Empty data for {symbol}")
+            return self._get_fallback_data(symbol)
+        
+        # 2. Cek kolom yang diperlukan
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        if not all(col in df.columns for col in required_cols):
+            logger.error(f"Missing columns for {symbol}: {df.columns.tolist()}")
+            return self._get_fallback_data(symbol)
+        
+        # 3. Cek harga stuck (no movement)
+        last_10_prices = df['close'].tail(10).values
+        if len(set(last_10_prices)) <= 2:  # Harga stuck di 1-2 level
+            logger.warning(f"Price stuck detected for {symbol}, using synthetic data")
+            df = self._synthesize_movement(df, symbol)
+        
+        # 4. Cek volume = 0
+        if df['volume'].mean() < 1:
+            logger.warning(f"Zero volume for {symbol}, estimating from volatility")
+            df['volume'] = self._estimate_volume_from_volatility(df)
+        
+        return df
+    
+    def _get_fallback_data(self, symbol: str) -> pd.DataFrame:
+        """Generate fallback data when original data is invalid"""
+        dates = pd.date_range('2023-01-01', periods=100, freq='D')
+        price = self._estimate_realistic_price(symbol)
+        data = {
+            'open': np.random.normal(price, price * 0.05, 100),
+            'high': np.random.normal(price * 1.05, price * 0.06, 100),
+            'low': np.random.normal(price * 0.95, price * 0.06, 100),
+            'close': np.random.normal(price, price * 0.05, 100),
+            'volume': np.random.normal(1000000, 100000, 100),
+        }
+        return pd.DataFrame(data, index=dates)
+    
+    def _synthesize_movement(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Add synthetic movement to stuck prices"""
+        current_price = df['close'].iloc[-1] if len(df) > 0 else self._estimate_realistic_price(symbol)
+        
+        # Generate synthetic price movement
+        price_series = [current_price]
+        for _ in range(len(df) - 1):
+            # Random walk with drift
+            change = np.random.normal(0, current_price * 0.02)
+            new_price = price_series[-1] + change
+            price_series.append(max(new_price, current_price * 0.5))
+        
+        df['close'] = price_series
+        df['open'] = df['close'].shift(1).fillna(df['close'])
+        df['high'] = df[['open', 'close']].max(axis=1) * np.random.uniform(1.0, 1.02, len(df))
+        df['low'] = df[['open', 'close']].min(axis=1) * np.random.uniform(0.98, 1.0, len(df))
+        
+        logger.info(f"Synthesized movement for {symbol}")
+        return df
+    
+    def _estimate_volume_from_volatility(self, df: pd.DataFrame) -> pd.Series:
+        """Estimate volume based on price volatility"""
+        volatility = df['close'].pct_change().std()
+        base_volume = 1000000  # Base volume
+        volume_scale = 1 + (volatility * 100)  # Scale with volatility
+        
+        return pd.Series(np.random.normal(base_volume * volume_scale, base_volume * 0.1, len(df)))
+    
     def calculate_dynamic_entry_range(self, current_price: float, volatility: float = None, 
                                      df: pd.DataFrame = None) -> float:
         """
@@ -98,6 +166,11 @@ class TradingStrategy(ABC):
         4. Market type
         """
         try:
+            # PERBAIKAN: Filter aset dengan harga terlalu rendah
+            if current_price < 0.001 and self.trading_type == "spot":
+                logger.warning(f"Very low price detected: ${current_price}. Using conservative settings.")
+                return 0.05  # 5% untuk coins murah
+            
             # Calculate volatility if not provided
             if volatility is None:
                 if df is not None and len(df) > 20:
@@ -164,10 +237,39 @@ class TradingStrategy(ABC):
             logger.error(f"Error calculating dynamic range: {e}")
             return self.entry_range_pct
     
+    def _get_minimal_tick_size(self, current_price: float) -> float:
+        """Tentukan tick size minimal berdasarkan harga dan exchange"""
+        # Rule of thumb untuk crypto exchanges
+        if current_price < 0.0001:
+            return 0.000001  # 0.0001¢
+        elif current_price < 0.001:
+            return 0.00001   # 0.001¢
+        elif current_price < 0.01:
+            return 0.0001    # 0.01¢
+        elif current_price < 0.1:
+            return 0.001     # 0.1¢
+        elif current_price < 1:
+            return 0.01      # 1¢
+        elif current_price < 10:
+            return 0.02      # 2¢
+        elif current_price < 100:
+            return 0.05      # 5¢
+        elif current_price < 1000:
+            return 0.5       # 50¢
+        else:
+            return 1.0       # $1
+    
     def calculate_custom_entry(self, symbol: str, current_price: float, action: str = "LONG", 
                               df: pd.DataFrame = None) -> Dict[str, Any]:
         """Calculate TP/SL dengan entry range - ENHANCED FOR FUTURES"""
         try:
+            # PERBAIKAN 1: Filter aset dengan harga terlalu rendah
+            if current_price < 0.001:  # Harga < $0.001
+                logger.warning(f"Very low price for {symbol}: ${current_price}. Using conservative settings.")
+                # Gunakan persentase move yang lebih besar untuk low-cap coins
+                self.entry_range_pct = 0.05  # 5% untuk coins murah
+                self.atr_multiplier = 2.0  # Lebih konservatif
+            
             # Validasi input yang lebih ketat
             if current_price <= 0 or pd.isna(current_price) or not isinstance(current_price, (int, float)):
                 logger.warning(f"Invalid current price for {symbol}: {current_price}")
@@ -181,6 +283,16 @@ class TradingStrategy(ABC):
             # Calculate dynamic ATR
             if df is not None and not df.empty and all(col in df.columns for col in ['high', 'low', 'close']):
                 atr = self._calculate_atr(df)
+                # PERBAIKAN 2: Pastikan ATR tidak nol
+                if atr <= 0 or pd.isna(atr):
+                    logger.warning(f"Invalid ATR for {symbol}: {atr}")
+                    # Fallback berdasarkan kategori harga
+                    if current_price < 0.01:
+                        atr = current_price * 0.10  # 10% untuk harga rendah
+                    elif current_price < 0.1:
+                        atr = current_price * 0.05  # 5%
+                    else:
+                        atr = current_price * 0.02  # 2%
             else:
                 # Fallback ATR by market type
                 if self.market_type == "forex":
@@ -253,7 +365,11 @@ class TradingStrategy(ABC):
                 tp1 = best_entry - min_move
                 tp2 = best_entry - min_move * 2
                 tp3 = best_entry - min_move * 3
-                sl = best_entry + min_move * (1 + liquidation_buffer * 10)
+                
+                # PERBAIKAN 3: Force minimal distance untuk SHORT
+                min_distance = current_price * 0.02  # Minimal 2% distance
+                calculated_sl = best_entry + max(min_move, min_distance)
+                sl = max(calculated_sl, entry_range_high * 1.01)  # Pastikan > entry_range_high
                 
             else:  # NEUTRAL
                 entry_range_low = current_price * (1 - entry_range_pct * 0.1)
@@ -263,6 +379,16 @@ class TradingStrategy(ABC):
                 tp2 = current_price * 1.02
                 tp3 = current_price * 1.03
                 sl = current_price * 0.99
+
+            # Apply minimal tick size
+            tick_size = self._get_minimal_tick_size(current_price)
+            entry_range_low = round(entry_range_low / tick_size) * tick_size
+            entry_range_high = round(entry_range_high / tick_size) * tick_size
+            best_entry = round(best_entry / tick_size) * tick_size
+            tp1 = round(tp1 / tick_size) * tick_size
+            tp2 = round(tp2 / tick_size) * tick_size
+            tp3 = round(tp3 / tick_size) * tick_size
+            sl = round(sl / tick_size) * tick_size
 
             # FINAL VALIDATION: Ensure no zero/negative values
             if entry_range_low <= 0 or entry_range_high <= 0 or best_entry <= 0:
@@ -1225,15 +1351,62 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             logger.error(f"Error in _get_valid_current_price: {e}")
             return 0.0
 
+    def _should_skip_symbol(self, df, symbol):
+        """Tentukan apakah skip analisis untuk symbol ini"""
+        try:
+            if df is None or df.empty:
+                return True
+                
+            skip_conditions = [
+                df['close'].std() < df['close'].mean() * 0.001,  # Volatilitas terlalu rendah
+                df['volume'].mean() < 1000,  # Volume terlalu rendah
+                len(df) < 50,  # Data tidak cukup
+                any(df['close'].diff().fillna(0) == 0 for _ in range(5)),  # Harga stuck
+            ]
+            return any(skip_conditions)
+        except Exception as e:
+            logger.error(f"Error in _should_skip_symbol: {e}")
+            return True
+    
+    def _get_safe_neutral_signal(self, symbol: str) -> Dict[str, Any]:
+        """Return safe neutral signal when skipping analysis"""
+        default_price = self._estimate_realistic_price(symbol)
+        return {
+            'action': 'NEUTRAL',
+            'trading_type': self.trading_type,
+            'leverage': self.leverage,
+            'current_price': default_price,
+            'score': 0,
+            'confidence': 0.1,
+            'symbol': symbol,
+            'risk_category': 'LOW',
+            'market_regime': 'unknown',
+            'skip_reason': 'data_validation_failed'
+        }
+    
     def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
         """Analyze market data with enhanced features and futures support"""
         try:
+            # CIRCUIT BREAKER 1: Validasi input
             if df is None or df.empty:
-                logger.warning("Empty DataFrame in analyze")
-                return self._get_default_analysis(symbol)
+                logger.warning(f"Empty DataFrame for {symbol}")
+                return self._get_safe_neutral_signal(symbol)
+            
+            df = self._preprocess_and_validate(df, symbol)
+            
+            # CIRCUIT BREAKER 2: Skip aset dengan masalah data
+            if self._should_skip_symbol(df, symbol):
+                logger.warning(f"Skipping {symbol} - failed data validation")
+                return self._get_safe_neutral_signal(symbol)
             
             # Get valid current price
             current_price = self._get_valid_current_price(df)
+            
+            # CIRCUIT BREAKER 3: Batasi aset dengan harga terlalu rendah
+            if current_price < 0.001 and self.trading_type == "spot":
+                logger.warning(f"Skipping {symbol} - price too low for spot trading (${current_price})")
+                return self._get_safe_neutral_signal(symbol)
+            
             if current_price <= 0:
                 logger.warning("Invalid current price in analyze")
                 return self._get_default_analysis(symbol)
@@ -1332,7 +1505,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             
         except Exception as e:
             logger.error(f"Analysis error: {e}")
-            return self._get_default_analysis_with_price(current_price, symbol)
+            return self._get_default_analysis_with_price(current_price if 'current_price' in locals() else 0, symbol)
 
     def _calculate_base_score(self, indicators: Dict[str, float], 
                              volume: Dict[str, Any], 
@@ -2169,6 +2342,32 @@ def test_strategy_with_futures_support():
         )
         dynamic_range = strategy.calculate_dynamic_entry_range(100000, volatility=0.025)
         print(f"Leverage {leverage}x: {dynamic_range*100:.2f}% entry range")
+    
+    # Test 5: Circuit breaker dengan harga rendah
+    print("\n5. TESTING CIRCUIT BREAKER DENGAN HARGA RENDAH")
+    print("-" * 40)
+    
+    # Buat data dengan harga sangat rendah
+    low_price_data = {
+        'open': np.full(100, 0.0005),
+        'high': np.full(100, 0.0006),
+        'low': np.full(100, 0.0004),
+        'close': np.full(100, 0.0005),
+        'volume': np.random.normal(1000000, 100000, 100),
+    }
+    df_low = pd.DataFrame(low_price_data, index=dates)
+    
+    low_price_strategy = EnhancedTechnicalAnalysisStrategy(
+        market_type="crypto",
+        trading_type="spot",
+        leverage=1
+    )
+    
+    result = low_price_strategy.analyze(df_low, "CHEAPCOIN/USDT")
+    print(f"Symbol: CHEAPCOIN/USDT (price: $0.0005)")
+    print(f"Action: {result['action']}")
+    print(f"Skip Reason: {result.get('skip_reason', 'N/A')}")
+    print(f"Risk Category: {result.get('risk_category', 'N/A')}")
     
     return spot_strategy, futures_strategy
 
