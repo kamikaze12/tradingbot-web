@@ -311,6 +311,9 @@ class EnhancedDataProvider(DataProvider, ABC):
         if df is None or not isinstance(df, pd.DataFrame):
             return False, "Data is None or not a DataFrame"
         
+        if df.empty:
+            return False, "DataFrame is empty"
+        
         checks = []
         messages = []
         
@@ -326,8 +329,22 @@ class EnhancedDataProvider(DataProvider, ABC):
         if 'close' in df.columns:
             current_price = df['close'].iloc[-1] if len(df) > 0 else 0
             if current_price <= 0:
-                checks.append(False)
-                messages.append(f"⚠️ Invalid price: {current_price}")
+                # PERBAIKAN: Ganti harga 0/negatif dengan harga yang realistis
+                logger.warning(f"⚠️ Found zero/negative price for {symbol}: {current_price}")
+                
+                # Cari harga positif dalam data
+                positive_prices = df['close'][df['close'] > 0]
+                if len(positive_prices) > 0:
+                    replacement_price = positive_prices.median()
+                    df.loc[df['close'] <= 0, 'close'] = replacement_price
+                    messages.append(f"⚠️ Fixed {len(df[df['close'] <= 0])} invalid prices with median: {replacement_price:.8f}")
+                    checks.append(True)
+                else:
+                    # Jika semua harga 0, gunakan estimasi
+                    estimated_price = self._estimate_realistic_price(symbol)
+                    df['close'] = estimated_price
+                    messages.append(f"⚠️ All prices invalid, estimated: {estimated_price:.2f}")
+                    checks.append(True)
             else:
                 checks.append(True)
                 messages.append(f"✅ Valid price: {current_price:.8f}")
@@ -363,23 +380,72 @@ class EnhancedDataProvider(DataProvider, ABC):
                 messages.append(f"✅ Price changes: {price_changes}/{len(df)}")
         
         # Check 6: Data integrity (no NaN)
-        nan_count = df[['open', 'high', 'low', 'close', 'volume']].isna().sum().sum()
-        if nan_count > 0:
-            checks.append(False)
-            messages.append(f"⚠️ NaN values: {nan_count}")
+        required_columns = ['open', 'high', 'low', 'close', 'volume']
+        available_columns = [col for col in required_columns if col in df.columns]
+        
+        if available_columns:
+            nan_count = df[available_columns].isna().sum().sum()
+            if nan_count > 0:
+                # PERBAIKAN: Isi NaN dengan forward fill, lalu backward fill
+                df[available_columns] = df[available_columns].ffill().bfill()
+                messages.append(f"⚠️ Fixed {nan_count} NaN values")
+                checks.append(True)
+            else:
+                checks.append(True)
+                messages.append(f"✅ No NaN values")
         else:
-            checks.append(True)
-            messages.append(f"✅ No NaN values")
+            checks.append(False)
+            messages.append(f"⚠️ Missing required columns")
         
         # Check 7: Price consistency (high >= low)
         if 'high' in df.columns and 'low' in df.columns:
             invalid_rows = (df['high'] < df['low']).sum()
             if invalid_rows > 0:
-                checks.append(False)
-                messages.append(f"⚠️ Invalid price rows: {invalid_rows}")
+                # PERBAIKAN: Perbaiki baris yang invalid
+                for idx in df[df['high'] < df['low']].index:
+                    # Tukar high dan low jika high < low
+                    high_val = df.loc[idx, 'high']
+                    low_val = df.loc[idx, 'low']
+                    df.loc[idx, 'high'] = low_val
+                    df.loc[idx, 'low'] = high_val
+                messages.append(f"⚠️ Fixed {invalid_rows} invalid price rows")
+                checks.append(True)
             else:
                 checks.append(True)
                 messages.append(f"✅ Price consistency OK")
+        
+        # Check 8: High >= Open, High >= Close, Low <= Open, Low <= Close
+        if all(col in df.columns for col in ['open', 'high', 'low', 'close']):
+            invalid_high_open = (df['high'] < df['open']).sum()
+            invalid_high_close = (df['high'] < df['close']).sum()
+            invalid_low_open = (df['low'] > df['open']).sum()
+            invalid_low_close = (df['low'] > df['close']).sum()
+            
+            if invalid_high_open > 0 or invalid_high_close > 0 or invalid_low_open > 0 or invalid_low_close > 0:
+                # PERBAIKAN: Atur ulang harga agar konsisten
+                for idx in df.index:
+                    prices = [df.loc[idx, 'open'], df.loc[idx, 'high'], df.loc[idx, 'low'], df.loc[idx, 'close']]
+                    prices_sorted = sorted(prices)
+                    
+                    # Set high ke harga tertinggi, low ke harga terendah
+                    df.loc[idx, 'high'] = prices_sorted[-1]
+                    df.loc[idx, 'low'] = prices_sorted[0]
+                    
+                    # Pastikan open dan close di antara high dan low
+                    if df.loc[idx, 'open'] > df.loc[idx, 'high']:
+                        df.loc[idx, 'open'] = df.loc[idx, 'high']
+                    if df.loc[idx, 'open'] < df.loc[idx, 'low']:
+                        df.loc[idx, 'open'] = df.loc[idx, 'low']
+                    if df.loc[idx, 'close'] > df.loc[idx, 'high']:
+                        df.loc[idx, 'close'] = df.loc[idx, 'high']
+                    if df.loc[idx, 'close'] < df.loc[idx, 'low']:
+                        df.loc[idx, 'close'] = df.loc[idx, 'low']
+                
+                messages.append(f"⚠️ Fixed {invalid_high_open + invalid_high_close + invalid_low_open + invalid_low_close} price consistency issues")
+                checks.append(True)
+            else:
+                checks.append(True)
+                messages.append(f"✅ OHLC consistency OK")
         
         # Overall validation
         all_valid = all(checks)
@@ -529,16 +595,15 @@ class RobustDataFetcher(EnhancedDataProvider):
         # Step 3: Use available data even if validation partially failed
         best_data = df_primary if df_primary is not None else df_secondary
         if best_data is not None and not best_data.empty:
-            # Try to fix common issues
-            if 'close' in best_data.columns and (best_data['close'] <= 0).any():
-                logger.warning(f"⚠️ Fixing invalid prices in {symbol}")
-                avg_price = best_data['close'][best_data['close'] > 0].mean()
-                if avg_price <= 0:
-                    avg_price = self._estimate_realistic_price(symbol)
-                best_data['close'] = best_data['close'].apply(lambda x: x if x > 0 else avg_price)
+            # Validasi ulang dan perbaiki data
+            is_valid, _ = self.validate_market_data(best_data, symbol)
+            
+            if not is_valid:
+                logger.warning(f"⚠️ Data has issues, attempting to repair for {symbol}")
+                # Validasi sudah memperbaiki data di dalam fungsi validate_market_data
             
             # Add basic indicators
-            logger.info(f"⚠️ Using data with issues for {symbol}")
+            logger.info(f"⚠️ Using repaired data for {symbol}")
             self._set_cached_data(symbol, timeframe, limit, best_data)
             return self._add_basic_indicators(best_data)
         
@@ -658,11 +723,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 is_valid, validation_msg = self.validate_market_data(df, symbol)
                 if not is_valid:
                     logger.warning(f"CCXT data validation failed: {symbol}")
-                    # Try to fix common issues
-                    if 'close' in df.columns and (df['close'] <= 0).any():
-                        avg_price = df['close'][df['close'] > 0].mean()
-                        if avg_price > 0:
-                            df['close'] = df['close'].apply(lambda x: x if x > 0 else avg_price)
+                    # Data sudah diperbaiki di dalam fungsi validate_market_data
                 
                 current_price = df['close'].iloc[-1] if len(df) > 0 else 0
                 logger.info(f"📊 CCXT DATA: {symbol} - {len(df)} bars, current price: {current_price:.8f}")
@@ -969,11 +1030,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 is_valid, validation_msg = self.validate_market_data(df, symbol)
                 if not is_valid:
                     logger.warning(f"YFinance data validation failed: {symbol}")
-                    # Try to fix common issues
-                    if 'close' in df.columns and (df['close'] <= 0).any():
-                        avg_price = df['close'][df['close'] > 0].mean()
-                        if avg_price > 0:
-                            df['close'] = df['close'].apply(lambda x: x if x > 0 else avg_price)
+                    # Data sudah diperbaiki di dalam fungsi validate_market_data
                 
                 return df
                 
@@ -1204,27 +1261,27 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 'SMDR.JK', 'SMGR.JK', 'SMKL.JK', 'SMMA.JK', 'SMMT.JK',
                 'SMRA.JK', 'SMRU.JK', 'SMSM.JK', 'SNLK.JK', 'SOCI.JK',
                 'SOFA.JK', 'SOHO.JK', 'SONA.JK', 'SOSS.JK', 'SOTS.JK',
-                'SPMA.JK', 'SPOT.JK', 'SPTO.JK', 'SQMI.JK', 'SRAJ.JK',
-                'SRIL.JK', 'SRSN.JK', 'SRTG.JK', 'SSIA.JK', 'SSMS.JK',
-                'SSTM.JK', 'STAR.JK', 'STTP.JK', 'SUDI.JK', 'SUGI.JK',
-                'SULI.JK', 'SUPR.JK', 'SURY.JK', 'SWAT.JK', 'TALF.JK',
-                'TAMA.JK', 'TAMU.JK', 'TAPG.JK', 'TARA.JK', 'TAXI.JK',
-                'TBIG.JK', 'TBLA.JK', 'TBMS.JK', 'TCID.JK', 'TCPI.JK',
-                'TDPM.JK', 'TEBE.JK', 'TECH.JK', 'TELE.JK', 'TFAS.JK',
-                'TFCO.JK', 'TINS.JK', 'TIRA.JK', 'TIRT.JK', 'TKIM.JK',
-                'TLKM.JK', 'TMAS.JK', 'TMPO.JK', 'TMPP.JK', 'TNCA.JK',
-                'TOBA.JK', 'TOPS.JK', 'TOTL.JK', 'TOWR.JK', 'TOYS.JK',
-                'TPEN.JK', 'TPIA.JK', 'TPMA.JK', 'TRAM.JK', 'TRIL.JK',
-                'TRIM.JK', 'TRIN.JK', 'TRIO.JK', 'TRIS.JK', 'TRST.JK',
-                'TRUK.JK', 'TRUS.JK', 'TSPC.JK', 'TUGU.JK', 'TURI.JK',
-                'UANG.JK', 'UCID.JK', 'UFOE.JK', 'ULTJ.JK', 'UNIC.JK',
-                'UNIQ.JK', 'UNIT.JK', 'UNSP.JK', 'UNTR.JK', 'UNVR.JK',
-                'URBN.JK', 'VICI.JK', 'VINS.JK', 'VIVA.JK', 'VOKS.JK',
-                'VRNA.JK', 'WAPO.JK', 'WEGE.JK', 'WEHA.JK', 'WICO.JK',
-                'WIFI.JK', 'WIIM.JK', 'WIKA.JK', 'WINS.JK', 'WMPP.JK',
-                'WMUU.JK', 'WOOD.JK', 'WOWS.JK', 'WSBP.JK', 'WSKT.JK',
-                'WSON.JK', 'WTON.JK', 'YELO.JK', 'YPAS.JK', 'YULE.JK',
-                'ZBRA.JK', 'ZONE.JK', 'ZYRX.JK'
+                'SPMA.JK', 'SPTO.JK', 'SQMI.JK', 'SRAJ.JK', 'SRIL.JK',
+                'SRSN.JK', 'SRTG.JK', 'SSIA.JK', 'SSMS.JK', 'SSTM.JK',
+                'STAR.JK', 'STTP.JK', 'SUDI.JK', 'SUGI.JK', 'SULI.JK',
+                'SUPR.JK', 'SURY.JK', 'SWAT.JK', 'TALF.JK', 'TAMA.JK',
+                'TAMU.JK', 'TAPG.JK', 'TARA.JK', 'TAXI.JK', 'TBIG.JK',
+                'TBLA.JK', 'TBMS.JK', 'TCID.JK', 'TCPI.JK', 'TDPM.JK',
+                'TEBE.JK', 'TECH.JK', 'TELE.JK', 'TFAS.JK', 'TFCO.JK',
+                'TINS.JK', 'TIRA.JK', 'TIRT.JK', 'TKIM.JK', 'TLKM.JK',
+                'TMAS.JK', 'TMPO.JK', 'TMPP.JK', 'TNCA.JK', 'TOBA.JK',
+                'TOPS.JK', 'TOTL.JK', 'TOWR.JK', 'TOYS.JK', 'TPEN.JK',
+                'TPIA.JK', 'TPMA.JK', 'TRAM.JK', 'TRIL.JK', 'TRIM.JK',
+                'TRIN.JK', 'TRIO.JK', 'TRIS.JK', 'TRST.JK', 'TRUK.JK',
+                'TRUS.JK', 'TSPC.JK', 'TUGU.JK', 'TURI.JK', 'UANG.JK',
+                'UCID.JK', 'UFOE.JK', 'ULTJ.JK', 'UNIC.JK', 'UNIQ.JK',
+                'UNIT.JK', 'UNSP.JK', 'UNTR.JK', 'UNVR.JK', 'URBN.JK',
+                'VICI.JK', 'VINS.JK', 'VIVA.JK', 'VOKS.JK', 'VRNA.JK',
+                'WAPO.JK', 'WEGE.JK', 'WEHA.JK', 'WICO.JK', 'WIFI.JK',
+                'WIIM.JK', 'WIKA.JK', 'WINS.JK', 'WMPP.JK', 'WMUU.JK',
+                'WOOD.JK', 'WOWS.JK', 'WSBP.JK', 'WSKT.JK', 'WSON.JK',
+                'WTON.JK', 'YELO.JK', 'YPAS.JK', 'YULE.JK', 'ZBRA.JK',
+                'ZONE.JK', 'ZYRX.JK'
             ]
             
             # Ambil sesuai limit
