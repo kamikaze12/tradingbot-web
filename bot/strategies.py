@@ -108,7 +108,12 @@ class TradingStrategy(ABC):
             logger.warning(f"Price stuck detected for {symbol}, using synthetic data")
             df = self._synthesize_movement(df, symbol)
         
-        # 4. Cek volume = 0
+        # 4. Cek harga tidak valid (<= 0)
+        if (df['close'] <= 0).any():
+            logger.warning(f"Invalid price (<=0) detected for {symbol}, using synthetic data")
+            df = self._synthesize_movement(df, symbol)
+        
+        # 5. Cek volume = 0
         if df['volume'].mean() < 1:
             logger.warning(f"Zero volume for {symbol}, estimating from volatility")
             df['volume'] = self._estimate_volume_from_volatility(df)
@@ -131,6 +136,10 @@ class TradingStrategy(ABC):
     def _synthesize_movement(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """Add synthetic movement to stuck prices"""
         current_price = df['close'].iloc[-1] if len(df) > 0 else self._estimate_realistic_price(symbol)
+        
+        # PERBAIKAN: Jika harga <= 0, gunakan harga realistis
+        if current_price <= 0:
+            current_price = self._estimate_realistic_price(symbol)
         
         # Generate synthetic price movement
         price_series = [current_price]
@@ -1352,24 +1361,57 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return 0.0
 
     def _should_skip_symbol(self, df, symbol):
-        """Tentukan apakah skip analisis untuk symbol ini"""
+        """Tentukan apakah skip analisis untuk symbol ini - FIXED VERSION"""
         try:
             if df is None or df.empty:
                 return True
                 
+            # PERBAIKAN: Ganti logika yang menyebabkan ambiguity error
+            # Kondisi 1: Volatilitas terlalu rendah
+            volatility_too_low = df['close'].std() < df['close'].mean() * 0.001
+            
+            # Kondisi 2: Volume terlalu rendah
+            volume_too_low = df['volume'].mean() < 1000
+            
+            # Kondisi 3: Data tidak cukup
+            insufficient_data = len(df) < 50
+            
+            # PERBAIKAN: Kondisi 4: Harga stuck (5 bar berturut-turut tidak berubah)
+            # Ganti dari: any(df['close'].diff().fillna(0) == 0 for _ in range(5))
+            price_diff = df['close'].diff().fillna(0)
+            # Cek apakah ada setidaknya 5 bar berturut-turut dengan perubahan 0
+            price_stuck = False
+            if len(df) >= 5:
+                for i in range(len(df) - 4):
+                    if (price_diff.iloc[i:i+5] == 0).all():
+                        price_stuck = True
+                        break
+            
+            # PERBAIKAN: Kondisi 5: Harga terlalu rendah (untuk spot trading)
+            price_too_low = False
+            if self.trading_type == "spot":
+                current_price = df['close'].iloc[-1] if len(df) > 0 else 0
+                price_too_low = current_price < 0.001
+            
             skip_conditions = [
-                df['close'].std() < df['close'].mean() * 0.001,  # Volatilitas terlalu rendah
-                df['volume'].mean() < 1000,  # Volume terlalu rendah
-                len(df) < 50,  # Data tidak cukup
-                any(df['close'].diff().fillna(0) == 0 for _ in range(5)),  # Harga stuck
+                volatility_too_low,
+                volume_too_low,
+                insufficient_data,
+                price_stuck,
+                price_too_low
             ]
             return any(skip_conditions)
         except Exception as e:
-            logger.error(f"Error in _should_skip_symbol: {e}")
+            logger.error(f"Error in _should_skip_symbol for {symbol}: {e}")
             return True
     
-    def _get_safe_neutral_signal(self, symbol: str) -> Dict[str, Any]:
-        """Return safe neutral signal when skipping analysis"""
+    def _get_safe_neutral_signal(self, symbol: str = None) -> Dict[str, Any]:
+        """Return safe neutral signal when skipping analysis - FIXED"""
+        # PERBAIKAN: Handle symbol yang None
+        if symbol is None:
+            symbol = "UNKNOWN"
+            logger.warning("Symbol is None, using 'UNKNOWN'")
+        
         default_price = self._estimate_realistic_price(symbol)
         return {
             'action': 'NEUTRAL',
@@ -1378,15 +1420,20 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'current_price': default_price,
             'score': 0,
             'confidence': 0.1,
-            'symbol': symbol,
+            'symbol': symbol,  # PASTIKAN ADA SYMBOL
             'risk_category': 'LOW',
             'market_regime': 'unknown',
             'skip_reason': 'data_validation_failed'
         }
     
     def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Analyze market data with enhanced features and futures support"""
+        """Analyze market data with enhanced features and futures support - FIXED VERSION"""
         try:
+            # PERBAIKAN 1: Pastikan symbol tidak None
+            if symbol is None:
+                logger.warning("Symbol is None in analyze(), using 'UNKNOWN'")
+                symbol = "UNKNOWN"
+            
             # CIRCUIT BREAKER 1: Validasi input
             if df is None or df.empty:
                 logger.warning(f"Empty DataFrame for {symbol}")
@@ -1408,7 +1455,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 return self._get_safe_neutral_signal(symbol)
             
             if current_price <= 0:
-                logger.warning("Invalid current price in analyze")
+                logger.warning(f"Invalid current price in analyze for {symbol}: {current_price}")
                 return self._get_default_analysis(symbol)
             
             # Calculate enhanced indicators
@@ -1504,8 +1551,16 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return analysis
             
         except Exception as e:
-            logger.error(f"Analysis error: {e}")
-            return self._get_default_analysis_with_price(current_price if 'current_price' in locals() else 0, symbol)
+            logger.error(f"Analysis error for {symbol}: {e}")
+            # PERBAIKAN: Gunakan current_price jika ada, jika tidak gunakan default
+            current_price_val = 0
+            try:
+                if 'current_price' in locals():
+                    current_price_val = current_price
+            except:
+                pass
+            
+            return self._get_default_analysis_with_price(current_price_val, symbol)
 
     def _calculate_base_score(self, indicators: Dict[str, float], 
                              volume: Dict[str, Any], 
@@ -1967,8 +2022,11 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     
     def _get_default_analysis(self, symbol: str = None) -> Dict[str, Any]:
         """Get default analysis result"""
-        default_price = self._estimate_realistic_price(symbol or "UNKNOWN")
-        default_entry = self.calculate_custom_entry(symbol or "UNKNOWN", default_price, "NEUTRAL")
+        if symbol is None:
+            symbol = "UNKNOWN"
+            
+        default_price = self._estimate_realistic_price(symbol)
+        default_entry = self.calculate_custom_entry(symbol, default_price, "NEUTRAL")
         
         return {
             'action': 'NEUTRAL',
@@ -2013,10 +2071,13 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
 
     def _get_default_analysis_with_price(self, current_price: float, symbol: str = None) -> Dict[str, Any]:
         """Get default analysis dengan harga tertentu"""
+        if symbol is None:
+            symbol = "UNKNOWN"
+            
         if current_price <= 0 or pd.isna(current_price):
-            current_price = self._estimate_realistic_price(symbol or "UNKNOWN")
+            current_price = self._estimate_realistic_price(symbol)
         
-        default_entry = self.calculate_custom_entry(symbol or "UNKNOWN", current_price, "NEUTRAL")
+        default_entry = self.calculate_custom_entry(symbol, current_price, "NEUTRAL")
         analysis = self._get_default_analysis(symbol)
         analysis.update({
             'entry_range_low': default_entry['entry_range_low'],
@@ -2039,6 +2100,9 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def _final_validation(self, analysis: Dict[str, Any], symbol: str = None) -> Dict[str, Any]:
         """Final validation and cleanup of analysis data"""
         try:
+            if symbol is None:
+                symbol = analysis.get('symbol', 'UNKNOWN')
+            
             # Ensure all numeric values are valid
             for key in ['current_price', 'entry_range_low', 'entry_range_high', 
                        'best_entry', 'tp1', 'tp2', 'tp3', 'sl', 'atr', 'score',
@@ -2055,6 +2119,9 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             # Ensure trading type is valid
             if analysis['trading_type'] not in ['spot', 'futures']:
                 analysis['trading_type'] = 'spot'
+            
+            # Ensure symbol is set
+            analysis['symbol'] = symbol
             
             return analysis
             
@@ -2197,7 +2264,7 @@ def auto_suggest_leverage(symbol: str, market_type: str = "crypto") -> int:
         },
         'forex': {
             'EURUSD': 30, 'USDJPY': 30, 'GBPUSD': 20, 'AUDUSD': 25,
-            'USDCAD': 25, 'NZDUSD': 25, 'XAUUSD': 20, 'XAGUSD': 20,
+            'USDCAD': 25, 'USDCHF': 25, 'NZDUSD': 25, 'XAUUSD': 20, 'XAGUSD': 20,
             'default': 25
         },
         'us_stocks': {
