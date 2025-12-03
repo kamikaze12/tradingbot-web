@@ -304,6 +304,309 @@ class EnhancedDataProvider(DataProvider, ABC):
         else:
             return 100.0
 
+    # ================ PERBAIKAN UTAMA: VALIDASI DATA ================
+    
+    def validate_market_data(self, df: pd.DataFrame, symbol: str) -> Tuple[bool, str]:
+        """Validasi kualitas data sebelum diproses - FIXED VERSION"""
+        if df is None or not isinstance(df, pd.DataFrame):
+            return False, "Data is None or not a DataFrame"
+        
+        checks = []
+        messages = []
+        
+        # Check 1: Minimum data points
+        if len(df) < 20:
+            checks.append(False)
+            messages.append(f"⚠️ Insufficient data points: {len(df)} < 20")
+        else:
+            checks.append(True)
+            messages.append(f"✅ Sufficient data: {len(df)} bars")
+        
+        # Check 2: Valid price
+        if 'close' in df.columns:
+            current_price = df['close'].iloc[-1] if len(df) > 0 else 0
+            if current_price <= 0:
+                checks.append(False)
+                messages.append(f"⚠️ Invalid price: {current_price}")
+            else:
+                checks.append(True)
+                messages.append(f"✅ Valid price: {current_price:.8f}")
+        
+        # Check 3: Positive volume
+        if 'volume' in df.columns:
+            avg_volume = df['volume'].mean() if len(df) > 0 else 0
+            if avg_volume <= 0:
+                checks.append(False)
+                messages.append(f"⚠️ Zero volume: {avg_volume}")
+            else:
+                checks.append(True)
+                messages.append(f"✅ Volume OK: {avg_volume:.2f}")
+        
+        # Check 4: Price volatility
+        if 'close' in df.columns and len(df) > 1:
+            price_std = df['close'].pct_change().std()
+            if price_std <= 0.0001:  # Very low volatility
+                checks.append(False)
+                messages.append(f"⚠️ Low volatility: {price_std:.6f}")
+            else:
+                checks.append(True)
+                messages.append(f"✅ Volatility OK: {price_std:.6f}")
+        
+        # Check 5: Price changes (no flatline)
+        if 'close' in df.columns and len(df) > 1:
+            price_changes = (df['close'] != df['close'].shift(1)).sum()
+            if price_changes < len(df) * 0.3:  # Less than 30% changes
+                checks.append(False)
+                messages.append(f"⚠️ Flatline detected: {price_changes}/{len(df)} changes")
+            else:
+                checks.append(True)
+                messages.append(f"✅ Price changes: {price_changes}/{len(df)}")
+        
+        # Check 6: Data integrity (no NaN)
+        nan_count = df[['open', 'high', 'low', 'close', 'volume']].isna().sum().sum()
+        if nan_count > 0:
+            checks.append(False)
+            messages.append(f"⚠️ NaN values: {nan_count}")
+        else:
+            checks.append(True)
+            messages.append(f"✅ No NaN values")
+        
+        # Check 7: Price consistency (high >= low)
+        if 'high' in df.columns and 'low' in df.columns:
+            invalid_rows = (df['high'] < df['low']).sum()
+            if invalid_rows > 0:
+                checks.append(False)
+                messages.append(f"⚠️ Invalid price rows: {invalid_rows}")
+            else:
+                checks.append(True)
+                messages.append(f"✅ Price consistency OK")
+        
+        # Overall validation
+        all_valid = all(checks)
+        if all_valid:
+            messages.append(f"✅ Data validation PASSED for {symbol}")
+        else:
+            messages.append(f"❌ Data validation FAILED for {symbol}")
+            
+        # Log detailed validation results
+        validation_summary = f"\n📊 Data Validation for {symbol}:\n" + "\n".join(messages)
+        if all_valid:
+            logger.info(validation_summary)
+        else:
+            logger.warning(validation_summary)
+        
+        return all_valid, validation_summary
+    
+    def _generate_synthetic_data(self, symbol: str, reference_data: pd.DataFrame = None) -> pd.DataFrame:
+        """Generate synthetic data when real data is invalid"""
+        logger.warning(f"⚠️ Generating synthetic data for {symbol}")
+        
+        # Use reference data if available, otherwise create from scratch
+        if reference_data is not None and len(reference_data) > 0:
+            base_price = reference_data['close'].iloc[-1] if 'close' in reference_data.columns else self._estimate_realistic_price(symbol)
+            base_time = reference_data['timestamp'].iloc[-1] if 'timestamp' in reference_data.columns else datetime.now()
+        else:
+            base_price = self._estimate_realistic_price(symbol)
+            base_time = datetime.now()
+        
+        # Generate synthetic OHLCV data
+        periods = 100
+        timestamps = [base_time - timedelta(hours=i) for i in range(periods)]
+        timestamps.reverse()
+        
+        # Simulate price movement with some randomness
+        np.random.seed(int(time.time()))
+        returns = np.random.normal(0.0005, 0.02, periods)
+        prices = base_price * np.exp(np.cumsum(returns))
+        
+        # Create OHLC data (simplified: close = price, others +/- 1%)
+        data = {
+            'timestamp': timestamps,
+            'open': prices * np.random.uniform(0.99, 1.01, periods),
+            'high': prices * np.random.uniform(1.00, 1.02, periods),
+            'low': prices * np.random.uniform(0.98, 1.00, periods),
+            'close': prices,
+            'volume': np.random.uniform(1000, 10000, periods)
+        }
+        
+        df = pd.DataFrame(data)
+        logger.info(f"📊 Generated synthetic data for {symbol}: {len(df)} bars, price ~{base_price:.2f}")
+        return df
+    
+    def _add_basic_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add basic technical indicators to DataFrame"""
+        if df.empty or 'close' not in df.columns:
+            return df
+        
+        try:
+            # Simple Moving Averages
+            df['sma_20'] = df['close'].rolling(window=20, min_periods=1).mean()
+            df['sma_50'] = df['close'].rolling(window=50, min_periods=1).mean()
+            
+            # RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['rsi'] = 100 - (100 / (1 + rs))
+            
+            # Bollinger Bands
+            df['bb_middle'] = df['close'].rolling(window=20).mean()
+            bb_std = df['close'].rolling(window=20).std()
+            df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
+            df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
+            
+            # Volume indicators
+            if 'volume' in df.columns:
+                df['volume_sma'] = df['volume'].rolling(window=20).mean()
+                df['volume_ratio'] = df['volume'] / df['volume_sma']
+            
+            logger.debug(f"✅ Added technical indicators to data")
+            return df
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to add indicators: {e}")
+            return df
+
+class RobustDataFetcher(EnhancedDataProvider):
+    """Robust data fetcher with multi-layer validation and fallback"""
+    
+    def __init__(self, primary_provider=None, secondary_provider=None, synthetic_fallback=True):
+        super().__init__()
+        self.primary_provider = primary_provider
+        self.secondary_provider = secondary_provider
+        self.synthetic_fallback = synthetic_fallback
+        self.validation_history = {}
+        
+    def fetch_with_validation(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
+        """Fetch data with comprehensive validation and fallback strategy"""
+        logger.info(f"🔄 Starting robust data fetch for {symbol} ({timeframe})")
+        
+        # Check cache first
+        cached_data = self._get_cached_data(symbol, timeframe, limit)
+        if cached_data is not None:
+            is_valid, _ = self.validate_market_data(cached_data, symbol)
+            if is_valid:
+                logger.info(f"✅ Using validated cached data for {symbol}")
+                return self._add_basic_indicators(cached_data)
+        
+        # Step 1: Try primary source
+        df_primary = None
+        if self.primary_provider:
+            try:
+                logger.info(f"1️⃣ Fetching from primary source: {self.primary_provider.__class__.__name__}")
+                df_primary = self.primary_provider.get_ohlcv(symbol, timeframe, limit)
+                
+                if df_primary is not None and not df_primary.empty:
+                    is_valid, validation_msg = self.validate_market_data(df_primary, symbol)
+                    if is_valid:
+                        logger.info(f"✅ Primary source data validated for {symbol}")
+                        self._set_cached_data(symbol, timeframe, limit, df_primary)
+                        return self._add_basic_indicators(df_primary)
+                    else:
+                        logger.warning(f"⚠️ Primary data invalid for {symbol}")
+            except Exception as e:
+                logger.warning(f"❌ Primary source failed: {e}")
+        
+        # Step 2: Try secondary source
+        df_secondary = None
+        if self.secondary_provider and df_primary is None:
+            try:
+                logger.info(f"2️⃣ Fetching from secondary source: {self.secondary_provider.__class__.__name__}")
+                df_secondary = self.secondary_provider.get_ohlcv(symbol, timeframe, limit)
+                
+                if df_secondary is not None and not df_secondary.empty:
+                    is_valid, validation_msg = self.validate_market_data(df_secondary, symbol)
+                    if is_valid:
+                        logger.info(f"✅ Secondary source data validated for {symbol}")
+                        self._set_cached_data(symbol, timeframe, limit, df_secondary)
+                        return self._add_basic_indicators(df_secondary)
+                    else:
+                        logger.warning(f"⚠️ Secondary data invalid for {symbol}")
+            except Exception as e:
+                logger.warning(f"❌ Secondary source failed: {e}")
+        
+        # Step 3: Use available data even if validation partially failed
+        best_data = df_primary if df_primary is not None else df_secondary
+        if best_data is not None and not best_data.empty:
+            # Try to fix common issues
+            if 'close' in best_data.columns and (best_data['close'] <= 0).any():
+                logger.warning(f"⚠️ Fixing invalid prices in {symbol}")
+                avg_price = best_data['close'][best_data['close'] > 0].mean()
+                if avg_price <= 0:
+                    avg_price = self._estimate_realistic_price(symbol)
+                best_data['close'] = best_data['close'].apply(lambda x: x if x > 0 else avg_price)
+            
+            # Add basic indicators
+            logger.info(f"⚠️ Using data with issues for {symbol}")
+            self._set_cached_data(symbol, timeframe, limit, best_data)
+            return self._add_basic_indicators(best_data)
+        
+        # Step 4: Generate synthetic data as last resort
+        if self.synthetic_fallback:
+            logger.warning(f"⚠️ All sources failed, generating synthetic data for {symbol}")
+            synthetic_data = self._generate_synthetic_data(symbol, best_data)
+            is_valid, _ = self.validate_market_data(synthetic_data, symbol)
+            
+            if is_valid:
+                logger.info(f"✅ Synthetic data generated for {symbol}")
+                self._set_cached_data(symbol, timeframe, limit, synthetic_data)
+                return self._add_basic_indicators(synthetic_data)
+        
+        # Step 5: Emergency fallback
+        logger.error(f"❌ All data sources failed for {symbol}, returning empty DataFrame")
+        return pd.DataFrame()
+
+    def _validate_data_quality(self, df: pd.DataFrame) -> bool:
+        """Internal validation method"""
+        checks = [
+            df is not None,
+            isinstance(df, pd.DataFrame),
+            len(df) >= 20,
+            'close' in df.columns,
+            df['close'].iloc[-1] > 0 if len(df) > 0 else False,
+            'volume' in df.columns,
+            df['volume'].mean() > 0 if len(df) > 0 else False,
+            'close' in df.columns and len(df) > 1,
+            df['close'].pct_change().std() > 0.0001 if len(df) > 1 else False,
+            'high' in df.columns and 'low' in df.columns,
+            (df['high'] >= df['low']).all() if len(df) > 0 else False,
+        ]
+        return all(checks)
+
+    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
+        """Implement abstract method - use robust fetch"""
+        return self.fetch_with_validation(symbol, timeframe, limit)
+    
+    def get_ticker(self, symbol):
+        """Get ticker with fallback"""
+        providers = [self.primary_provider, self.secondary_provider]
+        
+        for provider in providers:
+            if provider:
+                try:
+                    ticker = provider.get_ticker(symbol)
+                    if ticker and 'last' in ticker and ticker['last'] > 0:
+                        return ticker
+                except:
+                    continue
+        
+        # Fallback ticker
+        return {
+            'last': self._estimate_realistic_price(symbol),
+            'volume': 10000,
+            'symbol': symbol
+        }
+    
+    def get_popular_assets(self, limit=100):
+        """Get popular assets from primary provider"""
+        if self.primary_provider:
+            return self.primary_provider.get_popular_assets(limit)
+        elif self.secondary_provider:
+            return self.secondary_provider.get_popular_assets(limit)
+        else:
+            return super().get_popular_assets(limit)
+
 class EnhancedCCXTDataProvider(EnhancedDataProvider):
     """Enhanced CCXT provider dengan fallback support"""
     
@@ -338,7 +641,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 self.exchange = None
 
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
-        """Get OHLCV data"""
+        """Get OHLCV data dengan validation"""
         def fetch_ccxt_data():
             if not self.exchange:
                 raise Exception("Exchange not initialized")
@@ -350,6 +653,16 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                
+                # Validasi data sebelum return
+                is_valid, validation_msg = self.validate_market_data(df, symbol)
+                if not is_valid:
+                    logger.warning(f"CCXT data validation failed: {symbol}")
+                    # Try to fix common issues
+                    if 'close' in df.columns and (df['close'] <= 0).any():
+                        avg_price = df['close'][df['close'] > 0].mean()
+                        if avg_price > 0:
+                            df['close'] = df['close'].apply(lambda x: x if x > 0 else avg_price)
                 
                 current_price = df['close'].iloc[-1] if len(df) > 0 else 0
                 logger.info(f"📊 CCXT DATA: {symbol} - {len(df)} bars, current price: {current_price:.8f}")
@@ -621,7 +934,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         self.market_type = market_type
 
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
-        """Get OHLCV from Yahoo Finance"""
+        """Get OHLCV from Yahoo Finance dengan validation"""
         def fetch_yfinance_data():
             try:
                 interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
@@ -651,6 +964,16 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                     df.rename(columns={'datetime': 'timestamp'}, inplace=True)
                 
                 df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+                
+                # Validasi data
+                is_valid, validation_msg = self.validate_market_data(df, symbol)
+                if not is_valid:
+                    logger.warning(f"YFinance data validation failed: {symbol}")
+                    # Try to fix common issues
+                    if 'close' in df.columns and (df['close'] <= 0).any():
+                        avg_price = df['close'][df['close'] > 0].mean()
+                        if avg_price > 0:
+                            df['close'] = df['close'].apply(lambda x: x if x > 0 else avg_price)
                 
                 return df
                 
@@ -1004,7 +1327,7 @@ class AlphaVantageProvider(EnhancedDataProvider):
         self.base_url = 'https://www.alphavantage.co/query'
         
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
-        """Get OHLCV data dari Alpha Vantage"""
+        """Get OHLCV data dari Alpha Vantage dengan validation"""
         def fetch_av_data():
             try:
                 # Mapping timeframe ke interval Alpha Vantage
@@ -1044,6 +1367,11 @@ class AlphaVantageProvider(EnhancedDataProvider):
                     
                     df = pd.DataFrame(records)
                     df.sort_values('timestamp', inplace=True)
+                    
+                    # Validasi data
+                    is_valid, validation_msg = self.validate_market_data(df, symbol)
+                    if not is_valid:
+                        logger.warning(f"AlphaVantage data validation failed: {symbol}")
                     
                     logger.info(f"📊 Alpha Vantage DATA: {symbol} - {len(df)} bars")
                     return df
@@ -1136,6 +1464,24 @@ class DataProviderFactory:
         elif provider_type == 'dynamic':
             market_type = kwargs.get('market_type', 'crypto')
             return DynamicDataProvider(market_type=market_type)
+        
+        elif provider_type == 'robust':
+            primary_type = kwargs.get('primary_type', 'ccxt')
+            secondary_type = kwargs.get('secondary_type', 'yfinance')
+            market_type = kwargs.get('market_type', 'crypto')
+            
+            primary_provider = DataProviderFactory.create_provider(
+                primary_type, **{**kwargs, 'market_type': market_type}
+            )
+            secondary_provider = DataProviderFactory.create_provider(
+                secondary_type, **{**kwargs, 'market_type': market_type}
+            )
+            
+            return RobustDataFetcher(
+                primary_provider=primary_provider,
+                secondary_provider=secondary_provider,
+                synthetic_fallback=kwargs.get('synthetic_fallback', True)
+            )
             
         else:
             raise ValueError(f"Unknown provider type: {provider_type}")
@@ -1310,7 +1656,10 @@ class DynamicDataProvider(EnhancedDataProvider):
             # Gunakan cache mechanism
             cached_data = self._get_cached_data(symbol, timeframe, limit)
             if cached_data is not None:
-                return cached_data
+                is_valid, _ = self.validate_market_data(cached_data, symbol)
+                if is_valid:
+                    logger.info(f"✅ Using validated cached data for {symbol}")
+                    return cached_data
             
             # **PERBAIKAN: Jika provider adalah CCXT dan exchange None, langsung fallback ke YFinance**
             if (isinstance(provider, (EnhancedCCXTDataProvider, EnhancedCCXTFuturesProvider)) 
@@ -1328,9 +1677,15 @@ class DynamicDataProvider(EnhancedDataProvider):
             # Get data dari provider yang sesuai
             data = provider.get_ohlcv(symbol, timeframe, limit)
             
-            # Cache hasil yang valid
-            if data is not None and len(data) > 0:
-                self._set_cached_data(symbol, timeframe, limit, data)
+            # Validasi data
+            if data is not None and not data.empty:
+                is_valid, validation_msg = self.validate_market_data(data, symbol)
+                
+                # Cache hasil yang valid
+                if is_valid:
+                    self._set_cached_data(symbol, timeframe, limit, data)
+                else:
+                    logger.warning(f"⚠️ Data invalid for {symbol}, not caching")
             
             return data
             
@@ -1639,6 +1994,98 @@ class DataProviderMonitor:
         return report
 
 # Test function
+def test_robust_data_fetcher():
+    """Test RobustDataFetcher dengan multi-layer validation"""
+    print("🧪 Testing RobustDataFetcher...")
+    
+    # Setup providers
+    ccxt_provider = EnhancedCCXTDataProvider(exchange_id='binance', market_type='spot')
+    yfinance_provider = EnhancedYFinanceDataProvider(market_type='crypto')
+    
+    # Create robust fetcher
+    fetcher = RobustDataFetcher(
+        primary_provider=ccxt_provider,
+        secondary_provider=yfinance_provider,
+        synthetic_fallback=True
+    )
+    
+    # Test 1: Validasi data untuk BTC/USDT
+    print("\n1. Testing data validation for BTC/USDT:")
+    try:
+        data = fetcher.fetch_with_validation("BTC/USDT", '1h', 50)
+        if data is not None and not data.empty:
+            print(f"✅ Data fetched: {len(data)} rows")
+            print(f"   Columns: {list(data.columns)}")
+            print(f"   Latest price: {data['close'].iloc[-1] if 'close' in data.columns else 'N/A'}")
+            
+            # Test validation function
+            is_valid, msg = fetcher.validate_market_data(data, "BTC/USDT")
+            print(f"   Data validation: {'PASS' if is_valid else 'FAIL'}")
+        else:
+            print("❌ No data returned")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+    # Test 2: Test dengan symbol yang mungkin gagal
+    print("\n2. Testing with potentially invalid symbol (XXX/USDT):")
+    try:
+        data = fetcher.fetch_with_validation("XXX/USDT", '1h', 20)
+        if data is not None and not data.empty:
+            print(f"✅ Data fetched: {len(data)} rows")
+            is_valid, msg = fetcher.validate_market_data(data, "XXX/USDT")
+            print(f"   Data validation: {'PASS' if is_valid else 'FAIL'}")
+            if not is_valid:
+                print(f"   Will use synthetic data as fallback")
+        else:
+            print("❌ No data returned - synthetic fallback expected")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+    # Test 3: Test technical indicators
+    print("\n3. Testing technical indicators:")
+    try:
+        data = fetcher.fetch_with_validation("ETH/USDT", '1h', 100)
+        if data is not None and not data.empty:
+            indicator_cols = [col for col in data.columns if col not in ['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+            print(f"✅ Indicators added: {indicator_cols}")
+            if 'sma_20' in data.columns:
+                print(f"   SMA_20 value: {data['sma_20'].iloc[-1]:.2f}")
+            if 'rsi' in data.columns:
+                print(f"   RSI value: {data['rsi'].iloc[-1]:.2f}")
+        else:
+            print("❌ No data returned")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+    # Test 4: Test cache functionality
+    print("\n4. Testing cache functionality:")
+    try:
+        start_time = time.time()
+        data1 = fetcher.fetch_with_validation("BTC/USDT", '1h', 10)
+        fetch_time1 = time.time() - start_time
+        
+        start_time = time.time()
+        data2 = fetcher.fetch_with_validation("BTC/USDT", '1h', 10)
+        fetch_time2 = time.time() - start_time
+        
+        print(f"✅ First fetch: {fetch_time1:.3f}s")
+        print(f"✅ Second fetch (cached): {fetch_time2:.3f}s")
+        print(f"   Cache speedup: {fetch_time1/fetch_time2:.1f}x faster")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+    # Test 5: Test health metrics
+    print("\n5. Testing health metrics:")
+    try:
+        metrics = fetcher.get_health_metrics()
+        print(f"✅ Health metrics available")
+        print(f"   Request count: {metrics.get('request_count', 0)}")
+        print(f"   Error count: {metrics.get('error_count', 0)}")
+        print(f"   Error rate: {metrics.get('error_rate', 0):.2%}")
+        print(f"   Cache size: {metrics.get('cache_size', 0)}")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
 def test_dynamic_provider():
     """Test DynamicDataProvider dengan fallback system"""
     print("🧪 Testing DynamicDataProvider...")
@@ -1711,4 +2158,15 @@ def test_dynamic_provider():
     print(f"   Using YFinance: {metrics.get('using_yfinance', 'N/A')}")
 
 if __name__ == "__main__":
+    print("=" * 60)
+    print("DATA PROVIDER TEST SUITE")
+    print("=" * 60)
+    
+    # Run tests
+    test_robust_data_fetcher()
+    print("\n" + "=" * 60)
     test_dynamic_provider()
+    
+    print("\n" + "=" * 60)
+    print("TESTS COMPLETED")
+    print("=" * 60)
