@@ -765,9 +765,9 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
         return self._safe_api_call(fetch_ticker)
 
     def get_popular_assets(self, limit=100):
-        """Get popular crypto assets dengan prioritas volume & trend"""
+        """Get popular crypto assets dengan prioritas volume & trend - ENHANCED untuk SPOT"""
         try:
-            logger.info(f"🔄 Getting {limit} popular assets from {self.exchange_id}...")
+            logger.info(f"🔄 Getting {limit} popular SPOT assets from {self.exchange_id}...")
             
             if not self.exchange:
                 logger.warning(f"Exchange {self.exchange_id} not initialized")
@@ -781,21 +781,15 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 logger.error(f"Failed to load markets: {e}")
                 return self._get_fallback_major_coins(limit)
             
-            if self.market_type == 'future':
-                target_markets = [
-                    symbol for symbol, market in markets.items()
-                    if (market.get('future', False) or 
-                        ':USDT' in symbol or 
-                        'PERP' in symbol or
-                        '/USDT:' in symbol)
-                ]
-            else:
-                target_markets = [
-                    symbol for symbol, market in markets.items()
-                    if symbol.endswith('/USDT') and market.get('spot', True)
-                ]
+            # Untuk spot, hanya ambil simbol yang tidak mengandung marker futures
+            target_markets = []
+            for symbol, market in markets.items():
+                if symbol.endswith('/USDT') and market.get('spot', True):
+                    # Filter out futures markers
+                    if not any(marker in symbol for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
+                        target_markets.append(symbol)
             
-            logger.info(f"📊 Found {len(target_markets)} target markets for {self.market_type}")
+            logger.info(f"📊 Found {len(target_markets)} SPOT markets (filtered out futures)")
             
             excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST', 'FDUSD']
             filtered_markets = [
@@ -848,22 +842,41 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                     if symbol not in result and len(result) < limit:
                         result.append(symbol)
             
-            logger.info(f"✅ CCXT returning {len(result)} popular {self.market_type} assets (prioritized by volume)")
-            logger.info(f"   Top 5: {result[:5]}")
-            return result[:limit]
+            # Format sebagai list of dict untuk konsistensi
+            formatted_result = []
+            for symbol in result:
+                formatted_result.append({
+                    'symbol': symbol,
+                    'name': symbol.replace('/USDT', ''),
+                    'type': 'spot'
+                })
+            
+            logger.info(f"✅ CCXT returning {len(formatted_result)} popular SPOT assets (prioritized by volume)")
+            if formatted_result:
+                logger.info(f"   Top 5: {[item['symbol'] for item in formatted_result[:5]]}")
+            return formatted_result[:limit]
             
         except Exception as e:
             logger.error(f"Error getting popular assets from {self.exchange_id}: {str(e)}")
             return self._get_fallback_major_coins(limit)
 
     def _get_fallback_major_coins(self, limit):
-        """Fallback major coins"""
+        """Fallback major coins untuk spot"""
         major_pairs = [
             'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
             'SOL/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
             'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'XLM/USDT', 'BCH/USDT'
         ]
-        return major_pairs[:limit]
+        
+        formatted_result = []
+        for symbol in major_pairs[:limit]:
+            formatted_result.append({
+                'symbol': symbol,
+                'name': symbol.replace('/USDT', ''),
+                'type': 'spot'
+            })
+        
+        return formatted_result[:limit]
 
 class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
     """Enhanced CCXT Futures provider"""
@@ -872,9 +885,9 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
         super().__init__(exchange_id=exchange_id, api_key=api_key, secret=secret, market_type='future')
         
     def get_popular_assets(self, limit=100):
-        """Get popular futures assets dengan prioritas major coins - ENHANCED"""
+        """Get popular futures assets dengan prioritas major coins - ENHANCED untuk FUTURES"""
         try:
-            logger.info(f"🔄 Getting {limit} popular futures from {self.exchange_id}...")
+            logger.info(f"🔄 Getting {limit} popular FUTURES from {self.exchange_id}...")
             
             if not self.exchange:
                 logger.warning(f"Exchange {self.exchange_id} not initialized")
@@ -928,12 +941,12 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
             
             # 1. Tambahkan major futures yang tersedia (format apapun)
             for futures_coin in major_futures_patterns:
-                # Cari semua format yang mungkin
+                base_coin = futures_coin.split('/')[0]
+                # Cari simbol futures yang sesuai
                 for symbol in filtered_markets:
-                    base_coin = futures_coin.split('/')[0]
                     if base_coin in symbol and symbol not in result:
                         # Pastikan ini futures (ada tanda futures)
-                        if any(marker in symbol for marker in [':', 'PERP', '-USDT', 'FUTURES']):
+                        if any(marker in symbol for marker in [':', 'PERP', '-USDT', 'FUTURES', '/USDT:']):
                             result.append(symbol)
                             break
             
@@ -967,16 +980,28 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
                     if symbol not in result and len(result) < limit:
                         result.append(symbol)
             
-            logger.info(f"✅ CCXT Futures returning {len(result)} popular FUTURES assets")
-            logger.info(f"   Top 5: {result[:5]}")
-            return result[:limit]
+            # Format sebagai list of dict untuk konsistensi
+            formatted_result = []
+            for symbol in result:
+                # Extract base coin name
+                base_name = symbol.split('/')[0] if '/' in symbol else symbol.split(':')[0]
+                formatted_result.append({
+                    'symbol': symbol,
+                    'name': base_name,
+                    'type': 'future'
+                })
+            
+            logger.info(f"✅ CCXT Futures returning {len(formatted_result)} popular FUTURES assets")
+            if formatted_result:
+                logger.info(f"   Top 5: {[item['symbol'] for item in formatted_result[:5]]}")
+            return formatted_result[:limit]
             
         except Exception as e:
             logger.error(f"Error getting popular futures from {self.exchange_id}: {str(e)}")
             return self._get_fallback_futures_coins(limit)
 
     def _get_fallback_futures_coins(self, limit):
-        """Fallback futures coins - ENHANCED"""
+        """Fallback futures coins - ENHANCED dengan format futures yang benar"""
         major_pairs = [
             'BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT',
             'XRP/USDT:USDT', 'ADA/USDT:USDT', 'SOL/USDT:USDT',
@@ -985,7 +1010,17 @@ class EnhancedCCXTFuturesProvider(EnhancedCCXTDataProvider):
             'BCH/USDT:USDT', 'ETC/USDT:USDT', 'FIL/USDT:USDT', 'THETA/USDT:USDT',
             'EOS/USDT:USDT', 'XTZ/USDT:USDT', 'ALGO/USDT:USDT', 'XMR/USDT:USDT'
         ]
-        return major_pairs[:limit]
+        
+        formatted_result = []
+        for symbol in major_pairs[:limit]:
+            base_name = symbol.split('/')[0] if '/' in symbol else symbol.split(':')[0]
+            formatted_result.append({
+                'symbol': symbol,
+                'name': base_name,
+                'type': 'future'
+            })
+        
+        return formatted_result[:limit]
 
 class EnhancedYFinanceDataProvider(EnhancedDataProvider):
     """Enhanced Yahoo Finance provider"""
@@ -1113,7 +1148,8 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         for symbol in result:
             formatted_result.append({
                 'symbol': symbol,
-                'name': symbol.replace('-USD', '')
+                'name': symbol.replace('-USD', ''),
+                'type': 'crypto'
             })
         
         return formatted_result
@@ -1135,7 +1171,8 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
             pair = symbol.replace('=X', '')
             formatted_result.append({
                 'symbol': symbol,
-                'name': pair
+                'name': pair,
+                'type': 'forex'
             })
         
         return formatted_result
@@ -1293,7 +1330,8 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
             for symbol in result:
                 formatted_result.append({
                     'symbol': symbol,
-                    'name': symbol.replace('.JK', '')
+                    'name': symbol.replace('.JK', ''),
+                    'type': 'stock'
                 })
             
             return formatted_result
@@ -1301,11 +1339,11 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
             logger.error(f"Error getting Indonesian stocks: {e}")
             # Fallback minimal
             fallback = [
-                {'symbol': 'BBCA.JK', 'name': 'Bank BCA'},
-                {'symbol': 'BBRI.JK', 'name': 'Bank BRI'},
-                {'symbol': 'BMRI.JK', 'name': 'Bank Mandiri'},
-                {'symbol': 'TLKM.JK', 'name': 'Telkom Indonesia'},
-                {'symbol': 'ASII.JK', 'name': 'Astra International'}
+                {'symbol': 'BBCA.JK', 'name': 'Bank BCA', 'type': 'stock'},
+                {'symbol': 'BBRI.JK', 'name': 'Bank BRI', 'type': 'stock'},
+                {'symbol': 'BMRI.JK', 'name': 'Bank Mandiri', 'type': 'stock'},
+                {'symbol': 'TLKM.JK', 'name': 'Telkom Indonesia', 'type': 'stock'},
+                {'symbol': 'ASII.JK', 'name': 'Astra International', 'type': 'stock'}
             ]
             return fallback[:limit]
 
@@ -1333,7 +1371,8 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         for symbol in result:
             formatted_result.append({
                 'symbol': symbol,
-                'name': symbol
+                'name': symbol,
+                'type': 'stock'
             })
         
         return formatted_result
@@ -1342,32 +1381,32 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
         """Fallback assets ketika primary method gagal"""
         fallback_assets = {
             "crypto": [
-                {'symbol': 'BTC-USD', 'name': 'Bitcoin'},
-                {'symbol': 'ETH-USD', 'name': 'Ethereum'},
-                {'symbol': 'BNB-USD', 'name': 'Binance Coin'},
-                {'symbol': 'XRP-USD', 'name': 'Ripple'},
-                {'symbol': 'ADA-USD', 'name': 'Cardano'}
+                {'symbol': 'BTC-USD', 'name': 'Bitcoin', 'type': 'crypto'},
+                {'symbol': 'ETH-USD', 'name': 'Ethereum', 'type': 'crypto'},
+                {'symbol': 'BNB-USD', 'name': 'Binance Coin', 'type': 'crypto'},
+                {'symbol': 'XRP-USD', 'name': 'Ripple', 'type': 'crypto'},
+                {'symbol': 'ADA-USD', 'name': 'Cardano', 'type': 'crypto'}
             ],
             "forex": [
-                {'symbol': 'EURUSD=X', 'name': 'Euro/Dollar'},
-                {'symbol': 'USDJPY=X', 'name': 'Dollar/Yen'},
-                {'symbol': 'GBPUSD=X', 'name': 'Pound/Dollar'},
-                {'symbol': 'AUDUSD=X', 'name': 'Aussie/Dollar'},
-                {'symbol': 'USDCAD=X', 'name': 'Dollar/Canadian'}
+                {'symbol': 'EURUSD=X', 'name': 'Euro/Dollar', 'type': 'forex'},
+                {'symbol': 'USDJPY=X', 'name': 'Dollar/Yen', 'type': 'forex'},
+                {'symbol': 'GBPUSD=X', 'name': 'Pound/Dollar', 'type': 'forex'},
+                {'symbol': 'AUDUSD=X', 'name': 'Aussie/Dollar', 'type': 'forex'},
+                {'symbol': 'USDCAD=X', 'name': 'Dollar/Canadian', 'type': 'forex'}
             ],
             "saham_id": [
-                {'symbol': 'BBCA.JK', 'name': 'Bank BCA'},
-                {'symbol': 'BBRI.JK', 'name': 'Bank BRI'},
-                {'symbol': 'BMRI.JK', 'name': 'Bank Mandiri'},
-                {'symbol': 'TLKM.JK', 'name': 'Telkom Indonesia'},
-                {'symbol': 'ASII.JK', 'name': 'Astra International'}
+                {'symbol': 'BBCA.JK', 'name': 'Bank BCA', 'type': 'stock'},
+                {'symbol': 'BBRI.JK', 'name': 'Bank BRI', 'type': 'stock'},
+                {'symbol': 'BMRI.JK', 'name': 'Bank Mandiri', 'type': 'stock'},
+                {'symbol': 'TLKM.JK', 'name': 'Telkom Indonesia', 'type': 'stock'},
+                {'symbol': 'ASII.JK', 'name': 'Astra International', 'type': 'stock'}
             ],
             "us_stocks": [
-                {'symbol': 'AAPL', 'name': 'Apple Inc'},
-                {'symbol': 'MSFT', 'name': 'Microsoft'},
-                {'symbol': 'GOOGL', 'name': 'Google'},
-                {'symbol': 'AMZN', 'name': 'Amazon'},
-                {'symbol': 'TSLA', 'name': 'Tesla'}
+                {'symbol': 'AAPL', 'name': 'Apple Inc', 'type': 'stock'},
+                {'symbol': 'MSFT', 'name': 'Microsoft', 'type': 'stock'},
+                {'symbol': 'GOOGL', 'name': 'Google', 'type': 'stock'},
+                {'symbol': 'AMZN', 'name': 'Amazon', 'type': 'stock'},
+                {'symbol': 'TSLA', 'name': 'Tesla', 'type': 'stock'}
             ]
         }
         
@@ -1482,7 +1521,16 @@ class AlphaVantageProvider(EnhancedDataProvider):
             'JPM', 'V', 'JNJ', 'WMT', 'PG', 'MA', 'UNH', 'HD', 
             'BAC', 'DIS', 'CMCSA', 'NFLX', 'ADBE'
         ]
-        return popular_assets[:limit]
+        
+        formatted_result = []
+        for symbol in popular_assets[:limit]:
+            formatted_result.append({
+                'symbol': symbol,
+                'name': symbol,
+                'type': 'stock'
+            })
+        
+        return formatted_result[:limit]
 
 class DataProviderFactory:
     """Factory untuk membuat data provider"""
@@ -1576,6 +1624,7 @@ class DynamicDataProvider(EnhancedDataProvider):
                     
                     # Coba spot dengan timeout pendek
                     spot_provider = EnhancedCCXTDataProvider(exchange_id=exchange_id, market_type='spot')
+                    futures_provider = EnhancedCCXTFuturesProvider(exchange_id=exchange_id)
                     
                     # **FIXED: Test koneksi yang sebenarnya, bukan hanya get_popular_assets**
                     # Coba load markets untuk test koneksi
@@ -1590,7 +1639,7 @@ class DynamicDataProvider(EnhancedDataProvider):
                                 # Setup providers dengan exchange yang berhasil
                                 self.providers = {
                                     'crypto_spot': spot_provider,
-                                    'crypto_future': EnhancedCCXTFuturesProvider(exchange_id=exchange_id),
+                                    'crypto_future': futures_provider,
                                     'forex': EnhancedYFinanceDataProvider(market_type='forex'),
                                     'saham_id': EnhancedYFinanceDataProvider(market_type='saham_id'), 
                                     'us_stocks': EnhancedYFinanceDataProvider(market_type='us_stocks'),
@@ -1669,36 +1718,38 @@ class DynamicDataProvider(EnhancedDataProvider):
         return default
 
     def _detect_symbol_type(self, symbol):
-        """Detect symbol type secara otomatis"""
+        """Detect symbol type secara otomatis - ENHANCED untuk futures priority"""
         if not symbol:
             return 'unknown'
             
         symbol_upper = symbol.upper()
         
-        # Crypto detection
+        # 1. Futures detection priority - PERBAIKAN UTAMA
+        futures_markers = [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']
+        if any(marker in symbol_upper for marker in futures_markers):
+            return 'crypto_future'
+        
+        # 2. Crypto spot detection
         if ('/USDT' in symbol_upper or '/BUSD' in symbol_upper or 
             '/BTC' in symbol_upper or '/ETH' in symbol_upper or
             '/USD' in symbol_upper and '=X' not in symbol_upper):
-            if ':USDT' in symbol_upper or 'PERP' in symbol_upper or 'FUTURES' in symbol_upper:
-                return 'crypto_future'
-            else:
-                return 'crypto_spot'
+            return 'crypto_spot'
         
-        # Forex detection
+        # 3. Forex detection
         if ('=X' in symbol_upper or 'FOREX' in symbol_upper or
             ('/' in symbol_upper and 'USD' in symbol_upper and len(symbol_upper) <= 7)):
             return 'forex'
         
-        # Saham Indonesia detection
+        # 4. Saham Indonesia detection
         if '.JK' in symbol_upper:
             return 'saham_id'
         
-        # US Stocks detection
+        # 5. US Stocks detection
         if (len(symbol) <= 5 and symbol.isalpha() and 
             not any(c in symbol for c in ['/', '=', '.', '-'])):
             return 'us_stocks'
         
-        # Default ke crypto spot
+        # 6. Default ke crypto spot
         return 'crypto_spot'
 
     def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 200):
@@ -1795,7 +1846,8 @@ class DynamicDataProvider(EnhancedDataProvider):
                     for symbol in assets:
                         formatted_assets.append({
                             'symbol': symbol,
-                            'name': symbol
+                            'name': symbol,
+                            'type': self.market_type
                         })
                     return formatted_assets[:limit]
                 else:
@@ -1836,23 +1888,23 @@ class DynamicDataProvider(EnhancedDataProvider):
             if asset_type and asset_type.lower() in ['futures', 'future']:
                 # Hanya ambil futures symbols
                 for asset in assets:
-                    if isinstance(asset, str):
-                        if any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
-                            filtered_assets.append(asset)
-                    elif isinstance(asset, dict):
+                    if isinstance(asset, dict):
                         symbol = asset.get('symbol', '')
                         if any(marker in symbol for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
                             filtered_assets.append(asset)
+                    elif isinstance(asset, str):
+                        if any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
+                            filtered_assets.append({'symbol': asset, 'name': asset, 'type': 'future'})
             elif asset_type and asset_type.lower() in ['spot', 'spots']:
                 # Hanya ambil spot symbols
                 for asset in assets:
-                    if isinstance(asset, str):
-                        if not any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
-                            filtered_assets.append(asset)
-                    elif isinstance(asset, dict):
+                    if isinstance(asset, dict):
                         symbol = asset.get('symbol', '')
                         if not any(marker in symbol for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
                             filtered_assets.append(asset)
+                    elif isinstance(asset, str):
+                        if not any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
+                            filtered_assets.append({'symbol': asset, 'name': asset, 'type': 'spot'})
             else:
                 filtered_assets = assets
             
@@ -1868,7 +1920,8 @@ class DynamicDataProvider(EnhancedDataProvider):
                 else:
                     formatted_result.append({
                         'symbol': asset,
-                        'name': asset
+                        'name': asset,
+                        'type': provider_key
                     })
             
             logger.info(f"✅ Found {len(formatted_result)} {asset_type or provider_key} assets")
@@ -1890,88 +1943,88 @@ class DynamicDataProvider(EnhancedDataProvider):
         
         emergency_assets = {
             "crypto": [
-                {"symbol": "BTC/USDT", "name": "Bitcoin"},
-                {"symbol": "ETH/USDT", "name": "Ethereum"},
-                {"symbol": "BNB/USDT", "name": "Binance Coin"},
-                {"symbol": "XRP/USDT", "name": "Ripple"},
-                {"symbol": "ADA/USDT", "name": "Cardano"},
-                {"symbol": "SOL/USDT", "name": "Solana"},
-                {"symbol": "DOT/USDT", "name": "Polkadot"},
-                {"symbol": "DOGE/USDT", "name": "Dogecoin"},
-                {"symbol": "AVAX/USDT", "name": "Avalanche"},
-                {"symbol": "MATIC/USDT", "name": "Polygon"}
+                {"symbol": "BTC/USDT", "name": "Bitcoin", "type": "spot"},
+                {"symbol": "ETH/USDT", "name": "Ethereum", "type": "spot"},
+                {"symbol": "BNB/USDT", "name": "Binance Coin", "type": "spot"},
+                {"symbol": "XRP/USDT", "name": "Ripple", "type": "spot"},
+                {"symbol": "ADA/USDT", "name": "Cardano", "type": "spot"},
+                {"symbol": "SOL/USDT", "name": "Solana", "type": "spot"},
+                {"symbol": "DOT/USDT", "name": "Polkadot", "type": "spot"},
+                {"symbol": "DOGE/USDT", "name": "Dogecoin", "type": "spot"},
+                {"symbol": "AVAX/USDT", "name": "Avalanche", "type": "spot"},
+                {"symbol": "MATIC/USDT", "name": "Polygon", "type": "spot"}
             ],
             "crypto_spot": [
-                {"symbol": "BTC/USDT", "name": "Bitcoin"},
-                {"symbol": "ETH/USDT", "name": "Ethereum"},
-                {"symbol": "BNB/USDT", "name": "Binance Coin"},
-                {"symbol": "XRP/USDT", "name": "Ripple"},
-                {"symbol": "ADA/USDT", "name": "Cardano"},
-                {"symbol": "SOL/USDT", "name": "Solana"},
-                {"symbol": "DOT/USDT", "name": "Polkadot"},
-                {"symbol": "DOGE/USDT", "name": "Dogecoin"},
-                {"symbol": "AVAX/USDT", "name": "Avalanche"},
-                {"symbol": "MATIC/USDT", "name": "Polygon"}
+                {"symbol": "BTC/USDT", "name": "Bitcoin", "type": "spot"},
+                {"symbol": "ETH/USDT", "name": "Ethereum", "type": "spot"},
+                {"symbol": "BNB/USDT", "name": "Binance Coin", "type": "spot"},
+                {"symbol": "XRP/USDT", "name": "Ripple", "type": "spot"},
+                {"symbol": "ADA/USDT", "name": "Cardano", "type": "spot"},
+                {"symbol": "SOL/USDT", "name": "Solana", "type": "spot"},
+                {"symbol": "DOT/USDT", "name": "Polkadot", "type": "spot"},
+                {"symbol": "DOGE/USDT", "name": "Dogecoin", "type": "spot"},
+                {"symbol": "AVAX/USDT", "name": "Avalanche", "type": "spot"},
+                {"symbol": "MATIC/USDT", "name": "Polygon", "type": "spot"}
             ],
             "crypto_future": [
-                {"symbol": "BTC/USDT:USDT", "name": "Bitcoin Futures"},
-                {"symbol": "ETH/USDT:USDT", "name": "Ethereum Futures"},
-                {"symbol": "BNB/USDT:USDT", "name": "Binance Coin Futures"},
-                {"symbol": "XRP/USDT:USDT", "name": "Ripple Futures"},
-                {"symbol": "ADA/USDT:USDT", "name": "Cardano Futures"},
-                {"symbol": "SOL/USDT:USDT", "name": "Solana Futures"},
-                {"symbol": "DOT/USDT:USDT", "name": "Polkadot Futures"},
-                {"symbol": "DOGE/USDT:USDT", "name": "Dogecoin Futures"},
-                {"symbol": "AVAX/USDT:USDT", "name": "Avalanche Futures"},
-                {"symbol": "MATIC/USDT:USDT", "name": "Polygon Futures"}
+                {"symbol": "BTC/USDT:USDT", "name": "Bitcoin Futures", "type": "future"},
+                {"symbol": "ETH/USDT:USDT", "name": "Ethereum Futures", "type": "future"},
+                {"symbol": "BNB/USDT:USDT", "name": "Binance Coin Futures", "type": "future"},
+                {"symbol": "XRP/USDT:USDT", "name": "Ripple Futures", "type": "future"},
+                {"symbol": "ADA/USDT:USDT", "name": "Cardano Futures", "type": "future"},
+                {"symbol": "SOL/USDT:USDT", "name": "Solana Futures", "type": "future"},
+                {"symbol": "DOT/USDT:USDT", "name": "Polkadot Futures", "type": "future"},
+                {"symbol": "DOGE/USDT:USDT", "name": "Dogecoin Futures", "type": "future"},
+                {"symbol": "AVAX/USDT:USDT", "name": "Avalanche Futures", "type": "future"},
+                {"symbol": "MATIC/USDT:USDT", "name": "Polygon Futures", "type": "future"}
             ],
             "forex": [
-                {"symbol": "EUR/USD", "name": "Euro/Dollar"},
-                {"symbol": "USD/JPY", "name": "Dollar/Yen"},
-                {"symbol": "GBP/USD", "name": "Pound/Dollar"},
-                {"symbol": "USD/CHF", "name": "Dollar/Franc"},
-                {"symbol": "AUD/USD", "name": "Aussie/Dollar"},
-                {"symbol": "USD/CAD", "name": "Dollar/Canadian"},
-                {"symbol": "NZD/USD", "name": "Kiwi/Dollar"},
-                {"symbol": "EUR/GBP", "name": "Euro/Pound"},
-                {"symbol": "EUR/JPY", "name": "Euro/Yen"},
-                {"symbol": "GBP/JPY", "name": "Pound/Yen"}
+                {"symbol": "EUR/USD", "name": "Euro/Dollar", "type": "forex"},
+                {"symbol": "USD/JPY", "name": "Dollar/Yen", "type": "forex"},
+                {"symbol": "GBP/USD", "name": "Pound/Dollar", "type": "forex"},
+                {"symbol": "USD/CHF", "name": "Dollar/Franc", "type": "forex"},
+                {"symbol": "AUD/USD", "name": "Aussie/Dollar", "type": "forex"},
+                {"symbol": "USD/CAD", "name": "Dollar/Canadian", "type": "forex"},
+                {"symbol": "NZD/USD", "name": "Kiwi/Dollar", "type": "forex"},
+                {"symbol": "EUR/GBP", "name": "Euro/Pound", "type": "forex"},
+                {"symbol": "EUR/JPY", "name": "Euro/Yen", "type": "forex"},
+                {"symbol": "GBP/JPY", "name": "Pound/Yen", "type": "forex"}
             ],
             "us_stocks": [
-                {"symbol": "AAPL", "name": "Apple Inc"},
-                {"symbol": "MSFT", "name": "Microsoft"},
-                {"symbol": "GOOGL", "name": "Google"},
-                {"symbol": "AMZN", "name": "Amazon"},
-                {"symbol": "TSLA", "name": "Tesla"},
-                {"symbol": "META", "name": "Meta Platforms"},
-                {"symbol": "NVDA", "name": "NVIDIA"},
-                {"symbol": "NFLX", "name": "Netflix"},
-                {"symbol": "JPM", "name": "JPMorgan Chase"},
-                {"symbol": "V", "name": "Visa"}
+                {"symbol": "AAPL", "name": "Apple Inc", "type": "stock"},
+                {"symbol": "MSFT", "name": "Microsoft", "type": "stock"},
+                {"symbol": "GOOGL", "name": "Google", "type": "stock"},
+                {"symbol": "AMZN", "name": "Amazon", "type": "stock"},
+                {"symbol": "TSLA", "name": "Tesla", "type": "stock"},
+                {"symbol": "META", "name": "Meta Platforms", "type": "stock"},
+                {"symbol": "NVDA", "name": "NVIDIA", "type": "stock"},
+                {"symbol": "NFLX", "name": "Netflix", "type": "stock"},
+                {"symbol": "JPM", "name": "JPMorgan Chase", "type": "stock"},
+                {"symbol": "V", "name": "Visa", "type": "stock"}
             ],
             "stocks": [
-                {"symbol": "AAPL", "name": "Apple Inc"},
-                {"symbol": "MSFT", "name": "Microsoft"},
-                {"symbol": "GOOGL", "name": "Google"},
-                {"symbol": "AMZN", "name": "Amazon"},
-                {"symbol": "TSLA", "name": "Tesla"},
-                {"symbol": "META", "name": "Meta Platforms"},
-                {"symbol": "NVDA", "name": "NVIDIA"},
-                {"symbol": "NFLX", "name": "Netflix"},
-                {"symbol": "JPM", "name": "JPMorgan Chase"},
-                {"symbol": "V", "name": "Visa"}
+                {"symbol": "AAPL", "name": "Apple Inc", "type": "stock"},
+                {"symbol": "MSFT", "name": "Microsoft", "type": "stock"},
+                {"symbol": "GOOGL", "name": "Google", "type": "stock"},
+                {"symbol": "AMZN", "name": "Amazon", "type": "stock"},
+                {"symbol": "TSLA", "name": "Tesla", "type": "stock"},
+                {"symbol": "META", "name": "Meta Platforms", "type": "stock"},
+                {"symbol": "NVDA", "name": "NVIDIA", "type": "stock"},
+                {"symbol": "NFLX", "name": "Netflix", "type": "stock"},
+                {"symbol": "JPM", "name": "JPMorgan Chase", "type": "stock"},
+                {"symbol": "V", "name": "Visa", "type": "stock"}
             ],
             "saham_id": [
-                {"symbol": "BBCA.JK", "name": "Bank BCA"},
-                {"symbol": "BBRI.JK", "name": "Bank BRI"},
-                {"symbol": "BMRI.JK", "name": "Bank Mandiri"},
-                {"symbol": "TLKM.JK", "name": "Telkom Indonesia"},
-                {"symbol": "ASII.JK", "name": "Astra International"},
-                {"symbol": "UNVR.JK", "name": "Unilever Indonesia"},
-                {"symbol": "ICBP.JK", "name": "Indofood CBP"},
-                {"symbol": "INDF.JK", "name": "Indofood"},
-                {"symbol": "WIKA.JK", "name": "Wijaya Karya"},
-                {"symbol": "PGAS.JK", "name": "Perusahaan Gas Negara"}
+                {"symbol": "BBCA.JK", "name": "Bank BCA", "type": "stock"},
+                {"symbol": "BBRI.JK", "name": "Bank BRI", "type": "stock"},
+                {"symbol": "BMRI.JK", "name": "Bank Mandiri", "type": "stock"},
+                {"symbol": "TLKM.JK", "name": "Telkom Indonesia", "type": "stock"},
+                {"symbol": "ASII.JK", "name": "Astra International", "type": "stock"},
+                {"symbol": "UNVR.JK", "name": "Unilever Indonesia", "type": "stock"},
+                {"symbol": "ICBP.JK", "name": "Indofood CBP", "type": "stock"},
+                {"symbol": "INDF.JK", "name": "Indofood", "type": "stock"},
+                {"symbol": "WIKA.JK", "name": "Wijaya Karya", "type": "stock"},
+                {"symbol": "PGAS.JK", "name": "Perusahaan Gas Negara", "type": "stock"}
             ]
         }
         
@@ -2154,58 +2207,44 @@ def test_dynamic_provider():
     spot_assets = provider.get_popular_assets(10, asset_type='spot')
     print(f"✅ Popular SPOT assets: {len(spot_assets)} found")
     for i, asset in enumerate(spot_assets[:5]):
-        if isinstance(asset, dict):
-            print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')})")
-        else:
-            print(f"   {i+1}. {asset}")
+        print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')}) - Type: {asset.get('type', 'N/A')}")
     
     # Test untuk crypto futures
     print("\n2. Testing CRYPTO FUTURES:")
     futures_assets = provider.get_popular_assets(10, asset_type='futures')
     print(f"✅ Popular FUTURES assets: {len(futures_assets)} found")
     for i, asset in enumerate(futures_assets[:5]):
-        if isinstance(asset, dict):
-            print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')})")
-        else:
-            print(f"   {i+1}. {asset}")
+        print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')}) - Type: {asset.get('type', 'N/A')}")
     
-    # Test untuk saham_id
-    print("\n3. Testing SAHAM_ID:")
-    provider_saham = DynamicDataProvider(market_type="saham_id")
+    # Test symbol detection
+    print("\n3. Testing SYMBOL DETECTION:")
+    test_symbols = [
+        "BTC/USDT:USDT",  # Futures
+        "ETH/USDT",       # Spot
+        "BTC-USD",        # Crypto (YFinance)
+        "EURUSD=X",       # Forex
+        "BBCA.JK",        # Saham ID
+        "AAPL"           # US Stock
+    ]
     
-    saham_assets = provider_saham.get_popular_assets(10)
-    print(f"✅ Popular SAHAM_ID assets: {len(saham_assets)} found")
-    for i, asset in enumerate(saham_assets[:5]):
-        if isinstance(asset, dict):
-            print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')})")
-        else:
-            print(f"   {i+1}. {asset}")
+    for symbol in test_symbols:
+        symbol_type = provider._detect_symbol_type(symbol)
+        print(f"   {symbol} -> {symbol_type}")
     
-    # Test OHLCV untuk BTC
+    # Test OHLCV untuk BTC Futures
     try:
-        print("\n4. Testing OHLCV for BTC/USDT:")
-        ohlcv = provider.get_ohlcv("BTC/USDT", '1h', 10)
+        print("\n4. Testing OHLCV for BTC/USDT:USDT (Futures):")
+        ohlcv = provider.get_ohlcv("BTC/USDT:USDT", '1h', 10)
         if ohlcv is not None:
-            print(f"✅ OHLCV data: {len(ohlcv)} rows for BTC/USDT")
+            print(f"✅ OHLCV data: {len(ohlcv)} rows for BTC/USDT:USDT")
             print(f"   Latest price: {ohlcv['close'].iloc[-1] if len(ohlcv) > 0 else 'N/A'}")
         else:
-            print("❌ No OHLCV data for BTC/USDT")
+            print("❌ No OHLCV data for BTC/USDT:USDT")
     except Exception as e:
         print(f"❌ OHLCV error: {e}")
     
-    # Test ticker
-    try:
-        print("\n5. Testing TICKER for BTC/USDT:")
-        ticker = provider.get_ticker("BTC/USDT")
-        if ticker:
-            print(f"✅ Ticker data: {ticker['last']} for BTC/USDT")
-        else:
-            print("❌ No ticker data for BTC/USDT")
-    except Exception as e:
-        print(f"❌ Ticker error: {e}")
-    
     # Test health metrics
-    print("\n6. Testing HEALTH METRICS:")
+    print("\n5. Testing HEALTH METRICS:")
     metrics = provider.get_health_metrics()
     print(f"✅ Health metrics available")
     print(f"   Error rate: {metrics.get('error_rate', 'N/A')}")
