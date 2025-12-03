@@ -1441,10 +1441,39 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
         """Analyze market data with enhanced features and futures support - FIXED VERSION"""
         try:
-            # PERBAIKAN 1: Pastikan symbol tidak None
-            if symbol is None:
-                logger.warning("Symbol is None in analyze(), using 'UNKNOWN'")
-                symbol = "UNKNOWN"
+            # PERBAIKAN KRITIS: Pastikan symbol selalu ada dan valid
+            if symbol is None or symbol == "UNKNOWN":
+                # Priority 1: Check if symbol is stored in DataFrame metadata
+                if hasattr(df, 'attrs') and 'symbol' in df.attrs:
+                    symbol = df.attrs['symbol']
+                    logger.info(f"Extracted symbol from DataFrame attrs: {symbol}")
+                # Priority 2: Try to infer from column names or data
+                elif 'symbol' in df.columns and not df.empty:
+                    symbol = df['symbol'].iloc[0]
+                    logger.info(f"Extracted symbol from DataFrame column: {symbol}")
+                # Priority 3: Create meaningful symbol based on price
+                else:
+                    current_price = df['close'].iloc[-1] if not df.empty else 0
+                    if current_price > 10000:
+                        symbol = "BTC/USDT"
+                    elif current_price > 1000:
+                        symbol = "ETH/USDT" 
+                    elif current_price > 100:
+                        symbol = "BNB/USDT"
+                    elif current_price > 10:
+                        symbol = "SOL/USDT"
+                    elif current_price > 1:
+                        symbol = "ADA/USDT"
+                    elif current_price > 0.1:
+                        symbol = "DOGE/USDT"
+                    elif current_price > 0.01:
+                        symbol = "SHIB/USDT"
+                    elif current_price > 0.001:
+                        symbol = "LOWCAP/USDT"
+                    else:
+                        symbol = "MICROCAP/USDT"
+                    
+                    logger.info(f"Created symbol based on price {current_price}: {symbol}")
             
             # CIRCUIT BREAKER 1: Validasi input
             if df is None or df.empty:
@@ -1563,12 +1592,12 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return analysis
             
         except Exception as e:
-            logger.error(f"Analysis error for {symbol}: {e}")
+            logger.error(f"Analysis error for {symbol if symbol else 'UNKNOWN'}: {e}")
             # PERBAIKAN: Gunakan current_price jika ada, jika tidak gunakan default
             current_price_val = 0
             try:
-                if 'current_price' in locals():
-                    current_price_val = current_price
+                if 'df' in locals() and df is not None and not df.empty:
+                    current_price_val = df['close'].iloc[-1] if 'close' in df.columns else 0
             except:
                 pass
             
