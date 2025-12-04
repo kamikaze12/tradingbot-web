@@ -2086,7 +2086,7 @@ class EnhancedTradingBot:
                 # Setup strategy dengan parameter trading_mode
                 self.strategy = TechnicalAnalysisStrategy(
                     market_type=self.mode,
-                    trading_mode=self.trading_type,  # 🚨 TAMBAHKAN INI
+                    trading_mode=self.trading_mode,  # 🚨 TAMBAHKAN INI
                     atr_multiplier=self.config.get("atr_multiplier", 1.0),
                     entry_range_pct=self.config.get("entry_range_pct", 0.02),
                 )
