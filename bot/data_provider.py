@@ -1568,7 +1568,8 @@ class DataProviderFactory:
             
         elif provider_type == 'dynamic':
             market_type = kwargs.get('market_type', 'crypto')
-            return DynamicDataProvider(market_type=market_type)
+            trading_mode = kwargs.get('trading_mode', 'spot')  # 🚨 TAMBAHKAN PARAMETER trading_mode
+            return DynamicDataProvider(market_type=market_type, trading_mode=trading_mode)
         
         elif provider_type == 'robust':
             primary_type = kwargs.get('primary_type', 'ccxt')
@@ -1594,9 +1595,10 @@ class DataProviderFactory:
 class DynamicDataProvider(EnhancedDataProvider):
     """Dynamic data provider dengan fallback yang benar - FIXED VERSION"""
     
-    def __init__(self, market_type="crypto"):
+    def __init__(self, market_type="crypto", trading_mode="spot"):  # 🚨 TAMBAHKAN PARAMETER trading_mode
         super().__init__()
         self.market_type = market_type
+        self.trading_mode = trading_mode  # 🚨 SIMPAN TRADING MODE
         
         # List exchange untuk dicoba secara berurutan
         self.exchange_list = ['binance', 'kucoin', 'bybit', 'okx']
@@ -1608,7 +1610,7 @@ class DynamicDataProvider(EnhancedDataProvider):
         # Coba setup CCXT provider dengan fallback yang benar
         self._setup_providers_with_fallback()
         
-        logger.info(f"DynamicDataProvider initialized for {market_type} market")
+        logger.info(f"DynamicDataProvider initialized for {market_type} market, trading_mode: {trading_mode}")
 
     def _setup_providers_with_fallback(self):
         """Setup providers dengan sistem fallback yang benar - FIXED"""
@@ -1699,10 +1701,14 @@ class DynamicDataProvider(EnhancedDataProvider):
 
     def _get_default_provider(self, market_type):
         """Get default provider berdasarkan market type - FIXED"""
+        # 🚨 PERBAIKAN: Prioritaskan trading_mode untuk crypto
+        if market_type in ['crypto', 'crypto_spot', 'crypto_future']:
+            if self.trading_mode.lower() in ['futures', 'future']:
+                return self.providers.get('crypto_future', self.providers.get('crypto_spot'))
+            else:
+                return self.providers.get('crypto_spot', self.providers.get('crypto_future'))
+        
         provider_map = {
-            'crypto': self.providers.get('crypto', None),
-            'crypto_spot': self.providers.get('crypto_spot', None),
-            'crypto_future': self.providers.get('crypto_future', None),
             'forex': self.providers.get('forex', None),
             'saham_id': self.providers.get('saham_id', None),
             'us_stocks': self.providers.get('us_stocks', None),
@@ -1834,6 +1840,13 @@ class DynamicDataProvider(EnhancedDataProvider):
     def get_popular_assets(self, limit: int = 100, asset_type: str = None) -> List:
         """Get popular assets dengan opsi pilih spot/futures - FIXED VERSION"""
         try:
+            # 🚨 PERBAIKAN: Prioritaskan trading_mode dari parameter constructor
+            effective_trading_mode = self.trading_mode
+            
+            # Jika asset_type ditentukan, gunakan itu
+            if asset_type:
+                effective_trading_mode = asset_type
+            
             # **PERBAIKAN: Jika market_type bukan crypto, langsung gunakan provider yang sesuai**
             if self.market_type not in ['crypto', 'crypto_spot', 'crypto_future']:
                 logger.info(f"📊 Getting {limit} {self.market_type} assets from YFinance")
@@ -1853,27 +1866,22 @@ class DynamicDataProvider(EnhancedDataProvider):
                 else:
                     return assets[:limit]
             
-            # **PERBAIKAN: Gunakan provider berdasarkan asset_type yang diminta**
+            # **PERBAIKAN: Gunakan provider berdasarkan effective_trading_mode**
             provider_key = None
             
-            if asset_type:
-                asset_type_lower = asset_type.lower()
-                if asset_type_lower in ['futures', 'future']:
-                    provider_key = 'crypto_future'
-                elif asset_type_lower in ['spot', 'spots']:
-                    provider_key = 'crypto_spot'
+            if effective_trading_mode.lower() in ['futures', 'future']:
+                provider_key = 'crypto_future'
+            elif effective_trading_mode.lower() in ['spot', 'spots']:
+                provider_key = 'crypto_spot'
             
-            # Jika tidak ada asset_type, gunakan berdasarkan market_type
+            # Jika tidak ada provider_key, gunakan default
             if not provider_key:
-                if self.market_type == 'crypto_future':
-                    provider_key = 'crypto_future'
-                else:
-                    provider_key = 'crypto_spot'  # default untuk crypto
+                provider_key = 'crypto_spot'  # default
             
             # Dapatkan provider
             provider = self.providers.get(provider_key, self.default_provider)
             
-            logger.info(f"📊 Getting {limit} {asset_type or provider_key} assets from {provider.__class__.__name__}")
+            logger.info(f"📊 Getting {limit} {effective_trading_mode} assets from {provider.__class__.__name__}")
             
             # Get assets dari provider
             assets = provider.get_popular_assets(limit)
@@ -1882,20 +1890,35 @@ class DynamicDataProvider(EnhancedDataProvider):
                 logger.warning(f"⚠️ No assets returned from {provider.__class__.__name__}")
                 return self._get_fallback_assets(limit)
             
-            # **PERBAIKAN: Filter assets berdasarkan type yang diminta**
+            # **PERBAIKAN: Filter assets berdasarkan trading_mode yang diminta**
             filtered_assets = []
             
-            if asset_type and asset_type.lower() in ['futures', 'future']:
+            if effective_trading_mode.lower() in ['futures', 'future']:
                 # Hanya ambil futures symbols
                 for asset in assets:
                     if isinstance(asset, dict):
                         symbol = asset.get('symbol', '')
+                        # Check jika sudah format futures atau perlu konversi
                         if any(marker in symbol for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
                             filtered_assets.append(asset)
+                        else:
+                            # Konversi ke format futures
+                            base_name = symbol.split('/')[0] if '/' in symbol else symbol
+                            futures_symbol = f"{symbol}:USDT" if '/USDT' in symbol else symbol
+                            filtered_assets.append({
+                                'symbol': futures_symbol,
+                                'name': base_name,
+                                'type': 'future'
+                            })
                     elif isinstance(asset, str):
-                        if any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
-                            filtered_assets.append({'symbol': asset, 'name': asset, 'type': 'future'})
-            elif asset_type and asset_type.lower() in ['spot', 'spots']:
+                        symbol = asset
+                        if any(marker in symbol for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
+                            filtered_assets.append({'symbol': symbol, 'name': symbol, 'type': 'future'})
+                        else:
+                            base_name = symbol.split('/')[0] if '/' in symbol else symbol
+                            futures_symbol = f"{symbol}:USDT" if '/USDT' in symbol else symbol
+                            filtered_assets.append({'symbol': futures_symbol, 'name': base_name, 'type': 'future'})
+            else:
                 # Hanya ambil spot symbols
                 for asset in assets:
                     if isinstance(asset, dict):
@@ -1903,11 +1926,10 @@ class DynamicDataProvider(EnhancedDataProvider):
                         if not any(marker in symbol for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
                             filtered_assets.append(asset)
                     elif isinstance(asset, str):
-                        if not any(marker in asset for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
-                            filtered_assets.append({'symbol': asset, 'name': asset, 'type': 'spot'})
-            else:
-                filtered_assets = assets
-            
+                        symbol = asset
+                        if not any(marker in symbol for marker in [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']):
+                            filtered_assets.append({'symbol': symbol, 'name': symbol, 'type': 'spot'})
+        
             # Jika setelah filtering kosong, return aslinya
             if not filtered_assets:
                 filtered_assets = assets
@@ -1921,10 +1943,10 @@ class DynamicDataProvider(EnhancedDataProvider):
                     formatted_result.append({
                         'symbol': asset,
                         'name': asset,
-                        'type': provider_key
+                        'type': effective_trading_mode
                     })
             
-            logger.info(f"✅ Found {len(formatted_result)} {asset_type or provider_key} assets")
+            logger.info(f"✅ Found {len(formatted_result)} {effective_trading_mode} assets")
             if formatted_result:
                 sample_size = min(5, len(formatted_result))
                 sample = [item['symbol'] for item in formatted_result[:sample_size]]
@@ -1940,6 +1962,9 @@ class DynamicDataProvider(EnhancedDataProvider):
     def _get_fallback_assets(self, limit: int):
         """Emergency fallback assets - ENHANCED"""
         logger.warning("🔄 Using emergency fallback assets")
+        
+        # 🚨 PERBAIKAN: Gunakan trading_mode yang benar untuk fallback
+        effective_trading_mode = self.trading_mode
         
         emergency_assets = {
             "crypto": [
@@ -2028,7 +2053,15 @@ class DynamicDataProvider(EnhancedDataProvider):
             ]
         }
         
-        assets = emergency_assets.get(self.market_type, [])
+        # Pilih assets berdasarkan market_type dan trading_mode
+        if self.market_type in ['crypto', 'crypto_spot', 'crypto_future']:
+            if effective_trading_mode.lower() in ['futures', 'future']:
+                assets = emergency_assets.get('crypto_future', [])
+            else:
+                assets = emergency_assets.get('crypto_spot', [])
+        else:
+            assets = emergency_assets.get(self.market_type, [])
+        
         return assets[:limit]
 
     def get_health_metrics(self) -> Dict:
@@ -2044,6 +2077,7 @@ class DynamicDataProvider(EnhancedDataProvider):
         
         base_metrics['providers'] = provider_metrics
         base_metrics['market_type'] = self.market_type
+        base_metrics['trading_mode'] = self.trading_mode  # 🚨 TAMBAHKAN trading_mode
         base_metrics['default_provider'] = self.default_provider.__class__.__name__
         
         # Tambah info apakah menggunakan CCXT atau YFinance
@@ -2202,7 +2236,7 @@ def test_dynamic_provider():
     
     # Test untuk crypto spot
     print("\n1. Testing CRYPTO SPOT:")
-    provider = DynamicDataProvider(market_type="crypto")
+    provider = DynamicDataProvider(market_type="crypto", trading_mode="spot")
     
     spot_assets = provider.get_popular_assets(10, asset_type='spot')
     print(f"✅ Popular SPOT assets: {len(spot_assets)} found")
@@ -2250,6 +2284,7 @@ def test_dynamic_provider():
     print(f"   Error rate: {metrics.get('error_rate', 'N/A')}")
     print(f"   Default provider: {metrics.get('default_provider', 'N/A')}")
     print(f"   Market type: {metrics.get('market_type', 'N/A')}")
+    print(f"   Trading mode: {metrics.get('trading_mode', 'N/A')}")  # 🚨 TAMBAHKAN trading_mode
     print(f"   Using CCXT: {metrics.get('using_ccxt', 'N/A')}")
     print(f"   Using YFinance: {metrics.get('using_yfinance', 'N/A')}")
 
