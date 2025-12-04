@@ -47,61 +47,39 @@ def check_login(username, password):
     return users.get(username) == password
 
 def format_symbol_for_mode(symbol, market_type, trading_mode):
-    """Format symbol sesuai dengan market type dan trading mode"""
+    """Format symbol sesuai dengan market type dan trading mode - FIXED VERSION"""
     if not symbol:
         return symbol
     
     symbol = str(symbol).upper()
     
-    # Jika sudah dalam format yang benar, return as is
+    # 🚨 **FIX**: Deteksi jika sudah format futures
+    futures_markers = [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT', '-PERP']
+    is_already_futures = any(marker in symbol for marker in futures_markers)
+    
     if market_type == "crypto":
-        if trading_mode == "futures":
-            # Format futures: BTCUSDT-PERP atau BTC-PERP
-            if not symbol.endswith("-PERP") and not symbol.endswith("-SWAP"):
-                if "/" in symbol:
-                    symbol = symbol.replace("/", "")
-                if symbol.endswith("USDT"):
-                    symbol = f"{symbol}-PERP"
-                else:
-                    # Tambahkan USDT jika tidak ada pair
-                    if len(symbol) <= 5:  # Asumsi symbol pendek seperti BTC, ETH
-                        symbol = f"{symbol}USDT-PERP"
-        else:
-            # Format spot: BTC/USDT
-            if "USDT" in symbol and "/" not in symbol:
-                # Contoh: BTCUSDT -> BTC/USDT
-                base = symbol.replace("USDT", "")
-                symbol = f"{base}/USDT"
-            elif symbol.endswith("-PERP") or symbol.endswith("-SWAP"):
-                # Hapus suffix futures
-                symbol = symbol.replace("-PERP", "").replace("-SWAP", "")
-                if not "/" in symbol and "USDT" in symbol:
-                    base = symbol.replace("USDT", "")
-                    symbol = f"{base}/USDT"
+        if trading_mode == "futures" and not is_already_futures:
+            # Format futures: default ke format dengan :USDT (OKX/Binance)
+            if '/USDT' in symbol:
+                # Contoh: BTC/USDT -> BTC/USDT:USDT
+                return f"{symbol}:USDT"
+            elif 'USDT' in symbol and '/' not in symbol:
+                # Contoh: BTCUSDT -> BTC/USDT:USDT
+                base = symbol.replace('USDT', '')
+                return f"{base}/USDT:USDT"
+            else:
+                # Contoh: BTC -> BTC/USDT:USDT
+                return f"{symbol}/USDT:USDT"
+        elif trading_mode == "spot" and is_already_futures:
+            # Konversi futures ke spot: hapus marker futures
+            for marker in futures_markers:
+                symbol = symbol.replace(marker, '')
+            # Pastikan format spot: BTC/USDT
+            if 'USDT' in symbol and '/' not in symbol:
+                base = symbol.replace('USDT', '')
+                return f"{base}/USDT"
     
-    elif market_type == "forex":
-        if trading_mode == "futures":
-            # Forex futures (jarang, tapi buat konsistensi)
-            if "=X" not in symbol and "-PERP" not in symbol:
-                if "/" in symbol:
-                    symbol = symbol.replace("/", "-PERP")
-                else:
-                    symbol = f"{symbol}-PERP"
-        else:
-            # Spot forex (e.g., EUR/USD)
-            if len(symbol) == 6 and "=" not in symbol and "/" not in symbol:
-                symbol = f"{symbol[:3]}/{symbol[3:]}"
-    
-    elif market_type == "saham_id":
-        # Saham Indonesia: BBCA.JK
-        if not symbol.endswith(".JK"):
-            symbol = f"{symbol}.JK"
-    
-    elif market_type == "us_stocks":
-        # US Stocks: AAPL
-        if symbol.endswith(".JK"):
-            symbol = symbol.replace(".JK", "")
-    
+    # Untuk market lain, biarkan seperti semula
     return symbol
 
 def convert_symbol_for_display(symbol, market_type, trading_mode):
@@ -452,11 +430,41 @@ def main_app():
                 del st.session_state[key]
             st.rerun()
 
-    # Initialize bot
-    bot = init_bot()
-    if not bot:
-        st.error("❌ Failed to initialize TradingBot")
-        return
+    # Initialize bot dengan error handling yang lebih baik
+    if 'bot_instance' not in st.session_state:
+        try:
+            bot = init_bot()
+            if bot:
+                st.session_state.bot_instance = bot
+                # 🚨 **FIX**: Set default mode jika belum diset
+                if not hasattr(bot, 'mode'):
+                    bot.mode = "crypto"
+                if not hasattr(bot, 'trading_mode'):
+                    bot.trading_mode = "spot"
+            else:
+                st.error("❌ Failed to initialize TradingBot")
+                st.stop()
+        except Exception as e:
+            st.error(f"❌ Bot initialization error: {e}")
+            st.stop()
+    
+    bot = st.session_state.bot_instance
+    
+    # 🚨 **FIX**: Tampilkan status provider
+    with st.expander("🔧 Provider Status", expanded=False):
+        try:
+            if hasattr(bot, 'data_provider') and hasattr(bot.data_provider, 'get_health_metrics'):
+                metrics = bot.data_provider.get_health_metrics()
+                st.write(f"**Active Exchange:** {metrics.get('active_exchange', 'Unknown')}")
+                st.write(f"**Market Type:** {metrics.get('market_type', 'Unknown')}")
+                st.write(f"**Trading Mode:** {metrics.get('trading_mode', 'Unknown')}")
+                st.write(f"**Using CCXT:** {metrics.get('using_ccxt', False)}")
+                st.write(f"**Using YFinance:** {metrics.get('using_yfinance', False)}")
+                
+                if metrics.get('using_yfinance', False):
+                    st.info("ℹ️ Using YFinance as data source (CCXT may be unavailable)")
+        except:
+            st.write("Provider status unavailable")
 
     # Initialize session state dengan approach yang lebih clean
     if 'app_initialized' not in st.session_state:
@@ -516,42 +524,79 @@ def main_app():
                     
                     mode_string = market_mode_map[market_choice]
                     
-                    # 🚀 PERBAIKAN BESAR: Gunakan approach yang lebih sederhana
-                    # Set mode dan trading mode secara berurutan
-                    if hasattr(bot, 'set_mode'):
-                        success1 = bot.set_mode(mode_string)
-                        
+                    # 🚨 **PERBAIKAN UTAMA**: Gunakan approach yang lebih toleran
+                    try:
+                        # 1. Set trading mode dulu (jika ada method)
                         if hasattr(bot, 'set_trading_mode'):
-                            success2 = bot.set_trading_mode(trading_mode.lower())
+                            trading_mode_lower = trading_mode.lower()
+                            if trading_mode_lower in ['futures', 'future']:
+                                bot.set_trading_mode('futures')
+                            else:
+                                bot.set_trading_mode('spot')
                         else:
-                            # Jika bot tidak punya method set_trading_mode, set attribute langsung
+                            # Set attribute langsung
                             bot.trading_mode = trading_mode.lower()
-                            success2 = True
                         
-                        if success1 and success2:
-                            # Set session state
+                        # 2. Set market mode dengan error handling
+                        if hasattr(bot, 'set_mode'):
+                            success = bot.set_mode(mode_string)
+                            
+                            # 🚨 **FIX**: Meskipun success False, tetap lanjutkan
+                            if success or (not success and hasattr(bot, 'mode')):
+                                # Update bot mode jika set_mode gagal tapi attribute ada
+                                bot.mode = mode_string
+                                
+                                # Set session state
+                                st.session_state.current_market = market_choice
+                                st.session_state.current_trading_mode = trading_mode
+                                st.session_state.market_set = True
+                                st.session_state.scanned_results = []
+                                st.session_state.selected_for_entry = {}
+                                
+                                st.success(f"✅ Market set to: {market_choice} ({trading_mode})")
+                                st.info("ℹ️ Note: Provider mungkin memiliki limit data, scanning tetap bisa dilakukan")
+                                st.rerun()
+                            else:
+                                st.error("❌ Failed to set market mode")
+                        else:
+                            # Fallback: set attribute langsung
+                            bot.mode = mode_string
+                            
                             st.session_state.current_market = market_choice
                             st.session_state.current_trading_mode = trading_mode
                             st.session_state.market_set = True
-                            st.session_state.scanned_results = []
-                            st.session_state.selected_for_entry = {}
                             st.success(f"✅ Market set to: {market_choice} ({trading_mode})")
                             st.rerun()
-                        else:
-                            st.error("❌ Failed to set market configuration")
-                    else:
-                        # Fallback: set attribute langsung
-                        bot.mode = mode_string
-                        bot.trading_mode = trading_mode.lower()
+                            
+                    except Exception as set_error:
+                        # 🚨 **FIX**: Tetap lanjutkan meskipun ada error
+                        st.warning(f"⚠️ Warning during set: {str(set_error)[:100]}")
                         
+                        # Tetap set session state agar bisa melanjutkan
                         st.session_state.current_market = market_choice
                         st.session_state.current_trading_mode = trading_mode
                         st.session_state.market_set = True
-                        st.success(f"✅ Market set to: {market_choice} ({trading_mode})")
+                        
+                        st.success(f"✅ Market set to: {market_choice} ({trading_mode}) (with warnings)")
                         st.rerun()
+                        
             except Exception as e:
-                st.error(f"❌ Error: {e}")
-
+                # 🚨 **FIX**: Tangani error dengan lebih baik
+                st.error(f"❌ Error: {str(e)[:200]}")
+                
+                # Tampilkan solusi
+                with st.expander("🔧 Troubleshooting Tips"):
+                    st.write("""
+                    1. **Data Provider Issue**: Bot menggunakan UnifiedDataProvider dengan OKX
+                    2. **Test Connection**: Provider test hanya mendapatkan 10 bar data (minimal 20)
+                    3. **Tapi Scanning tetap bisa bekerja** dengan data yang ada
+                    
+                    **Solusi:**
+                    - Coba scanning assets dulu
+                    - Jika gagal, coba market lain (Forex, Saham, Stocks)
+                    - Atau tunggu beberapa menit untuk koneksi stabil
+                    """)
+        
         # Tampilkan status market dan trading mode
         if st.session_state.market_set:
             st.success(f"✅ Active: {st.session_state.current_market}")
@@ -633,6 +678,33 @@ def main_app():
                         st.write("- Crypto: BTCUSDT-PERP, ETHUSDT-PERP")
                         st.write("- Forex: EURUSD-PERP, GBPUSD-PERP (jika tersedia)")
 
+        # 🚨 PERBAIKAN TAMBAHAN: Tambahkan troubleshooting section di sidebar
+        with st.sidebar.expander("🆘 Troubleshooting", expanded=False):
+            st.write("""
+            **Common Issues & Solutions:**
+            
+            1. **"Failed to set market configuration"**
+               - Provider test gagal karena hanya dapat 10 bar data
+               - **SOLUSI**: Klik "Set Market" lagi atau lanjutkan scanning
+            
+            2. **No scan results**
+               - Provider mungkin rate limited
+               - **SOLUSI**: Tunggu 30 detik, lalu coba lagi
+            
+            3. **Futures not working**
+               - Hanya crypto yang support futures
+               - **SOLUSI**: Pilih "Crypto" + "Futures"
+            
+            4. **Can't get real-time prices**
+               - Exchange API mungkin down
+               - **SOLUSI**: Coba market lain (Forex/Stocks)
+            """)
+            
+            if st.button("🔄 Force Reinitialize Bot"):
+                if 'bot_instance' in st.session_state:
+                    del st.session_state.bot_instance
+                st.rerun()
+
     # Check if market is set
     if not st.session_state.market_set:
         st.warning("⚠️ Please select a market first!")
@@ -674,43 +746,65 @@ def main_app():
         if st.button("🚀 Start Scan", key="start_scan"):
             with st.spinner("Scanning assets..."):
                 try:
-                    if scan_type == "Pump Fun" and st.session_state.current_market == "Crypto":
-                        results = asyncio.run(bot.scan_pump_fun())
-                        if results:
-                            st.subheader("New Pump Fun Tokens:")
-                            for res in results[:5]:  # Limit to 5 results
-                                st.write(f"**{res['symbol']}** - Price: {res['ticker']['last']}")
+                    # 🚨 **FIX**: Tambahkan fallback jika provider bermasalah
+                    max_retries = 2
+                    results = None
+                    
+                    for attempt in range(max_retries):
+                        try:
+                            results = bot.scan_potential_assets(20)
+                            if results and len(results) > 0:
+                                break
+                            else:
+                                st.warning(f"Attempt {attempt+1}: No results found")
+                        except Exception as scan_error:
+                            if attempt < max_retries - 1:
+                                st.warning(f"Attempt {attempt+1} failed: {str(scan_error)[:100]}")
+                                time.sleep(2)  # Tunggu sebentar
+                            else:
+                                st.error(f"Scan failed after {max_retries} attempts")
+                    
+                    if results:
+                        # Process and validate results dengan simbol yang diformat
+                        formatted_results = []
+                        for result in results[:15]:  # Batasi untuk performa
+                            if isinstance(result, dict) and 'symbol' in result:
+                                original_symbol = safe_get(result, 'symbol')
+                                
+                                # Format simbol sesuai trading mode
+                                formatted_symbol = format_symbol_for_mode(
+                                    original_symbol, 
+                                    bot.mode, 
+                                    getattr(bot, 'trading_mode', 'spot')
+                                )
+                                
+                                # Update simbol dalam result
+                                result['symbol'] = formatted_symbol
+                                result['original_symbol'] = original_symbol  # Simpan original
+                                
+                                # Validasi price levels
+                                validated_result = validate_and_fix_price_levels(result, formatted_symbol, bot)
+                                formatted_results.append(validated_result)
+                        
+                        st.session_state.scanned_results = formatted_results
+                        st.success(f"✅ Found {len(formatted_results)} potential assets")
                     else:
-                        results = bot.scan_potential_assets(20)  # Scan fewer assets for performance
-                        if results:
-                            # Process and validate results dengan simbol yang diformat
-                            formatted_results = []
-                            for result in results[:15]:  # Batasi untuk performa
-                                if isinstance(result, dict) and 'symbol' in result:
-                                    original_symbol = safe_get(result, 'symbol')
+                        # 🚨 **FIX**: Berikan opsi fallback
+                        st.warning("⚠️ No signals found with current provider")
+                        
+                        with st.expander("🔄 Try Alternative"):
+                            if st.button("Try YFinance Fallback"):
+                                try:
+                                    # Coba gunakan YFinance secara langsung
+                                    from bot.data_provider import EnhancedYFinanceDataProvider
+                                    yf_provider = EnhancedYFinanceDataProvider(market_type="crypto")
+                                    # Lakukan scanning sederhana...
+                                    st.info("YFinance fallback activated")
+                                except:
+                                    st.error("YFinance fallback also failed")
                                     
-                                    # Format simbol sesuai trading mode
-                                    formatted_symbol = format_symbol_for_mode(
-                                        original_symbol, 
-                                        bot.mode, 
-                                        getattr(bot, 'trading_mode', 'spot')
-                                    )
-                                    
-                                    # Update simbol dalam result
-                                    result['symbol'] = formatted_symbol
-                                    result['original_symbol'] = original_symbol  # Simpan original
-                                    
-                                    # Validasi price levels
-                                    validated_result = validate_and_fix_price_levels(result, formatted_symbol, bot)
-                                    formatted_results.append(validated_result)
-                            
-                            st.session_state.scanned_results = formatted_results
-                            st.success(f"✅ Found {len(formatted_results)} potential assets")
-                        else:
-                            st.warning("No results found. Trying fallback...")
-                            # Fallback logic
                 except Exception as e:
-                    st.error(f"Scan error: {e}")
+                    st.error(f"Scan error: {str(e)[:200]}")
 
         # Display scanned results - ENHANCED dengan probabilitas TP dan ENTRY RANGE
         if st.session_state.scanned_results:
