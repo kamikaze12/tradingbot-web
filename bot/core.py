@@ -2118,7 +2118,7 @@ class EnhancedTradingBot:
                 # Setup strategy
                 self.strategy = TechnicalAnalysisStrategy(
                     market_type=self.mode,
-                    trading_mode=self.trading_mode,
+                    trading_type=self.trading_mode,
                     atr_multiplier=self.config.get("atr_multiplier", 1.0),
                     entry_range_pct=self.config.get("entry_range_pct", 0.02),
                 )
@@ -2760,7 +2760,7 @@ class TradingCore:
         from .strategies import TechnicalAnalysisStrategy
         self.strategy = TechnicalAnalysisStrategy(
             market_type=self.config.get("market_type", "crypto"),
-            trading_mode=self.trading_type,
+            trading_type=self.trading_type,
             atr_multiplier=self.config.get("atr_multiplier", 1.0),
             entry_range_pct=self.config.get("entry_range_pct", 0.02)
         )
