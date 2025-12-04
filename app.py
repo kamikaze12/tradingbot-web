@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import random
 import sys
 import os
+import json
 
 # ✅ FIX: Add the project root to Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -19,13 +20,17 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-# Import TradingBot
+# Import TradingBot - FIXED IMPORT
 try:
     from bot.core import TradingBot
     print("✅ Successfully imported TradingBot from bot.core")
 except ImportError as e:
-    st.error(f"❌ Import Error: {e}")
-    st.stop()
+    try:
+        from core import TradingBot
+        print("✅ Successfully imported TradingBot from core")
+    except ImportError as e2:
+        st.error(f"❌ Import Error: {e2}")
+        st.stop()
 
 # ====================================
 # Setup
@@ -509,27 +514,41 @@ def main_app():
                         "US Stocks": "us_stocks"
                     }
                     
-                    # HANYA kirim mode string, bukan keyword arguments
                     mode_string = market_mode_map[market_choice]
-                    # Pastikan trading_mode sudah di-set di bot sebelum memanggil set_mode
-                    bot.set_trading_mode(trading_mode.lower())
-                    # Kemudian panggil set_mode
-                    success = bot.set_mode(mode_string)
                     
-                    
-                    if success:
-                        # Set trading mode secara terpisah
-                        bot.set_trading_mode(trading_mode.lower())
+                    # 🚀 PERBAIKAN BESAR: Gunakan approach yang lebih sederhana
+                    # Set mode dan trading mode secara berurutan
+                    if hasattr(bot, 'set_mode'):
+                        success1 = bot.set_mode(mode_string)
+                        
+                        if hasattr(bot, 'set_trading_mode'):
+                            success2 = bot.set_trading_mode(trading_mode.lower())
+                        else:
+                            # Jika bot tidak punya method set_trading_mode, set attribute langsung
+                            bot.trading_mode = trading_mode.lower()
+                            success2 = True
+                        
+                        if success1 and success2:
+                            # Set session state
+                            st.session_state.current_market = market_choice
+                            st.session_state.current_trading_mode = trading_mode
+                            st.session_state.market_set = True
+                            st.session_state.scanned_results = []
+                            st.session_state.selected_for_entry = {}
+                            st.success(f"✅ Market set to: {market_choice} ({trading_mode})")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to set market configuration")
+                    else:
+                        # Fallback: set attribute langsung
+                        bot.mode = mode_string
+                        bot.trading_mode = trading_mode.lower()
                         
                         st.session_state.current_market = market_choice
                         st.session_state.current_trading_mode = trading_mode
                         st.session_state.market_set = True
-                        st.session_state.scanned_results = []
-                        st.session_state.selected_for_entry = {}
                         st.success(f"✅ Market set to: {market_choice} ({trading_mode})")
                         st.rerun()
-                    else:
-                        st.error("❌ Failed to set market")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
 
@@ -540,24 +559,46 @@ def main_app():
                 mode_display = bot.trading_mode.upper()
                 st.info(f"📊 Mode: {mode_display}")
                 if bot.trading_mode == "futures":
-                    st.info(f"⚡ Leverage: {getattr(bot, 'leverage', 1)}x")
+                    # Cek leverage dari bot atau config
+                    leverage = getattr(bot, 'leverage', 1)
+                    if hasattr(bot, 'config') and 'leverage' in bot.config:
+                        leverage = bot.config['leverage']
+                    st.info(f"⚡ Leverage: {leverage}x")
         
         # Trading Mode Specific Controls
         if st.session_state.market_set and hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
             st.subheader("⚡ Futures Settings")
-            leverage_options = [1, 3, 5, 10, 20, 50]
+            leverage_options = [1, 3, 5, 10, 20, 50, 100]
+            current_leverage = getattr(bot, 'leverage', 1)
+            if hasattr(bot, 'config') and 'leverage' in bot.config:
+                current_leverage = bot.config['leverage']
+            
             selected_leverage = st.selectbox(
                 "Select Leverage:",
                 leverage_options,
-                index=leverage_options.index(getattr(bot, 'leverage', 1)) if hasattr(bot, 'leverage') else 0
+                index=leverage_options.index(current_leverage) if current_leverage in leverage_options else 0
             )
             
             if st.button("Apply Leverage", key="apply_leverage"):
                 try:
+                    # Simpan leverage ke bot dan config
+                    bot.leverage = selected_leverage
+                    if hasattr(bot, 'config'):
+                        bot.config['leverage'] = selected_leverage
+                    
+                    # Jika ada method set_leverage, panggil
                     if hasattr(bot, 'set_leverage'):
                         bot.set_leverage(selected_leverage)
-                        st.success(f"✅ Leverage set to {selected_leverage}x")
-                        st.rerun()
+                    
+                    # Simpan config ke file
+                    try:
+                        with open('config.json', 'w') as f:
+                            json.dump(bot.config, f, indent=2)
+                    except:
+                        pass
+                    
+                    st.success(f"✅ Leverage set to {selected_leverage}x")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"❌ Failed to set leverage: {e}")
         
@@ -586,10 +627,11 @@ def main_app():
                         st.write("- Crypto: BTC/USDT, ETH/USDT")
                         st.write("- Forex: EUR/USD, GBP/USD")
                         st.write("- Saham ID: BBCA.JK, TLKM.JK")
+                        st.write("- US Stocks: AAPL, TSLA")
                     else:
                         st.write("**Futures Trading Format:**")
                         st.write("- Crypto: BTCUSDT-PERP, ETHUSDT-PERP")
-                        st.write("- Forex: EURUSD-PERP, GBPUSD-PERP")
+                        st.write("- Forex: EURUSD-PERP, GBPUSD-PERP (jika tersedia)")
 
     # Check if market is set
     if not st.session_state.market_set:
@@ -700,7 +742,8 @@ def main_app():
                         # ✅ TAMPILKAN ENTRY RANGE DAN IDEAL ENTRY
                         st.write(f"📊 **Entry Range:** `{res.get('entry_range_low', 0):.5f} - {res.get('entry_range_high', 0):.5f}`")
                         st.write(f"🎯 **Ideal Entry:** `{res.get('best_entry', 0):.5f}`")
-                        st.write(f"📏 **Range Size:** `{res.get('range_size', 0):.1f}%`")
+                        if 'range_size' in res:
+                            st.write(f"📏 **Range Size:** `{res.get('range_size', 0):.1f}%`")
                         
                         # Display TP levels (sudah diurutkan oleh validate_and_fix_price_levels)
                         tp1, tp2, tp3 = safe_get(res, 'tp1', 0), safe_get(res, 'tp2', 0), safe_get(res, 'tp3', 0)
@@ -745,7 +788,7 @@ def main_app():
                 with col_entry1:
                     entry_price = st.number_input(
                         "Entry Price",
-                        value=float(current_price),
+                        value=float(analysis.get('best_entry', current_price)),
                         min_value=0.0001,
                         format="%.5f",
                         key=f"entry_{symbol}"
@@ -756,10 +799,12 @@ def main_app():
                     if hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
                         leverage = st.selectbox(
                             "Leverage",
-                            [1, 3, 5, 10, 20],
+                            [1, 3, 5, 10, 20, 50, 100],
                             index=0,
                             key=f"leverage_{symbol}"
                         )
+                    else:
+                        leverage = 1
                 
                 if st.button(f"✅ Add Position", key=f"add_{symbol}"):
                     try:
@@ -916,7 +961,8 @@ def main_app():
             with col_range3:
                 st.metric("Ideal Entry", f"{analysis.get('best_entry', 0):.5f}")
             
-            st.metric("Range Size", f"{analysis.get('range_size', 0):.1f}%")
+            if 'range_size' in analysis:
+                st.metric("Range Size", f"{analysis.get('range_size', 0):.1f}%")
             
             # Plot entry range jika available
             if PLOTLY_AVAILABLE:
@@ -961,7 +1007,8 @@ def main_app():
             if hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
                 leverage_custom = st.selectbox(
                     "Leverage:",
-                    [1, 3, 5, 10, 20],
+                    [1, 3, 5, 10, 20, 50, 100],
+                    index=0,
                     key="custom_leverage"
                 )
             else:
@@ -1054,7 +1101,8 @@ def main_app():
             with col_range3:
                 st.metric("Best Entry", f"{result.get('best_entry', 0):.5f}")
             
-            st.metric("Range Size", f"{result.get('range_size', 0):.1f}%")
+            if 'range_size' in result:
+                st.metric("Range Size", f"{result.get('range_size', 0):.1f}%")
             
             # Tampilkan probabilitas TP
             if 'tp_probabilities' in result:
@@ -1236,8 +1284,8 @@ def main_app():
                         with col1:
                             st.write(f"**{display_symbol}** - {action} {pl_emoji}")
                             
-                            # Tampilkan leverage untuk futures
-                            if leverage > 1:
+                            # 🔥 PERBAIKAN: Tampilkan leverage jika futures atau leverage > 1
+                            if (getattr(bot, 'trading_mode', 'spot') == 'futures' or leverage > 1):
                                 st.write(f"⚡ **Leverage:** {leverage}x")
                             
                             st.write(f"🏁 Entry: `{entry_price:.5f}`")
@@ -1435,7 +1483,7 @@ def main_app():
                             col_live1, col_live2, col_live3 = st.columns([2, 2, 1])
                             with col_live1:
                                 st.write(f"**{display_symbol}** - {action}")
-                                if leverage > 1:
+                                if (getattr(bot, 'trading_mode', 'spot') == 'futures' or leverage > 1):
                                     st.write(f"⚡ {leverage}x")
                                 st.write(f"🏁 Entry: `{entry_price:.5f}`")
                             with col_live2:
