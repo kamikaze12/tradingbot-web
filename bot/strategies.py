@@ -1375,47 +1375,49 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return 0.0
 
     def _should_skip_symbol(self, df, symbol):
-        """Tentukan apakah skip analisis untuk symbol ini - FIXED VERSION"""
-        try:
-            if df is None or df.empty:
-                return True
-                
-            # PERBAIKAN: Ganti logika yang menyebabkan ambiguity error
-            # Kondisi 1: Volatilitas terlalu rendah
-            volatility_too_low = df['close'].std() < df['close'].mean() * 0.001
-            
-            # Kondisi 2: Volume terlalu rendah
-            volume_too_low = df['volume'].mean() < 1000
-            
-            # Kondisi 3: Data tidak cukup
-            insufficient_data = len(df) < 50
-            
-            # PERBAIKAN: Kondisi 4: Harga stuck (5 bar berturut-turut tidak berubah)
-            price_diff = df['close'].diff().fillna(0)
-            price_stuck = False
-            if len(df) >= 5:
-                for i in range(len(df) - 4):
-                    if (price_diff.iloc[i:i+5] == 0).all():
-                        price_stuck = True
-                        break
-            
-            # PERBAIKAN: Kondisi 5: Harga terlalu rendah (untuk spot trading)
-            price_too_low = False
-            if self.trading_type == "spot":
-                current_price = df['close'].iloc[-1] if len(df) > 0 else 0
-                price_too_low = current_price < 0.001
-            
-            skip_conditions = [
-                volatility_too_low,
-                volume_too_low,
-                insufficient_data,
-                price_stuck,
-                price_too_low
-            ]
-            return any(skip_conditions)
-        except Exception as e:
-            logger.error(f"Error in _should_skip_symbol for {symbol}: {e}")
+        """Skip logic yang lebih pintar untuk futures"""
+        if df is None or df.empty or len(df) < 20:
             return True
+        
+        # Deteksi apakah ini futures
+        is_futures = any(x in symbol.upper() for x in [':USDT', 'PERP', 'FUTURES', '-USDT'])
+        
+        # Parameter berbeda untuk spot vs futures
+        if is_futures:
+            # Futures: lebih toleran terhadap harga rendah
+            min_volatility = 0.00001  # Sangat rendah untuk futures
+            min_volume = 100  # Volume bisa rendah untuk illiquid futures
+            min_price = 0.000001  # Harga bisa sangat rendah (micro contracts)
+        else:
+            # Spot: lebih strict
+            min_volatility = 0.001
+            min_volume = 1000
+            min_price = 0.001
+        
+        # Check conditions
+        volatility = df['close'].pct_change().std()
+        avg_volume = df['volume'].mean()
+        current_price = df['close'].iloc[-1] if len(df) > 0 else 0
+        
+        # Check untuk flatline (no price movement)
+        price_changes = df['close'].diff().abs().sum()
+        is_flatline = price_changes < (current_price * 0.0001 * len(df))
+        
+        skip_conditions = [
+            volatility < min_volatility,
+            avg_volume < min_volume,
+            current_price < min_price,
+            is_flatline,
+            df['close'].isna().any(),
+            (df['high'] < df['low']).any()  # Invalid OHLC data
+        ]
+        
+        should_skip = any(skip_conditions)
+        
+        if should_skip and is_futures:
+            logger.debug(f"⏭️ Skipping futures {symbol}: volatility={volatility:.6f}, volume={avg_volume:.0f}, price={current_price:.6f}")
+        
+        return should_skip
     
     def _get_safe_neutral_signal(self, symbol: str = None) -> Dict[str, Any]:
         """Return safe neutral signal when skipping analysis - FIXED"""
