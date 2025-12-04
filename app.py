@@ -150,17 +150,10 @@ def login_section():
 
 @st.cache_resource
 def init_bot():
-    """Initialize TradingBot dengan parameter yang sesuai"""
+    """Initialize TradingBot"""
     try:
-        # Coba initialize dengan default parameters
-        try:
-            bot = TradingBot(trading_mode="spot")  # Default mode
-            print("✅ TradingBot initialized with trading_mode parameter")
-        except TypeError:
-            # Fallback untuk constructor lama
-            bot = TradingBot()
-            print("✅ TradingBot initialized with legacy constructor")
-        
+        bot = TradingBot()
+        print("✅ TradingBot initialized successfully")
         st.success("✅ TradingBot initialized successfully")
         return bot
     except Exception as e:
@@ -508,22 +501,24 @@ def main_app():
                 if market_choice != "Crypto" and trading_mode == "Futures":
                     st.error("❌ Futures mode hanya tersedia untuk Crypto")
                 else:
-                    # Set market mode DENGAN trading_mode
-                    market_type_map = {
+                    # Set market mode menggunakan parameter yang benar
+                    market_mode_map = {
                         "Crypto": "crypto",
                         "Forex": "forex", 
                         "Saham Indonesia": "saham_id",
                         "US Stocks": "us_stocks"
                     }
                     
-                    success = bot.set_mode(
-                        market_type=market_type_map[market_choice],
-                        trading_mode=trading_mode.lower()  # "Spot" -> "spot", "Futures" -> "futures"
-                    )
+                    # HANYA kirim mode string, bukan keyword arguments
+                    mode_string = market_mode_map[market_choice]
+                    success = bot.set_mode(mode_string)
                     
                     if success:
+                        # Set trading mode secara terpisah
+                        bot.set_trading_mode(trading_mode.lower())
+                        
                         st.session_state.current_market = market_choice
-                        st.session_state.current_trading_mode = trading_mode  # ✅ Simpan trading mode
+                        st.session_state.current_trading_mode = trading_mode
                         st.session_state.market_set = True
                         st.session_state.scanned_results = []
                         st.session_state.selected_for_entry = {}
