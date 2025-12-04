@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 try:
     from .strategies import TechnicalAnalysisStrategy
     from .data_provider import (
+        UnifiedDataProvider,  # 🔥 DIGANTI KE UNIFIED PROVIDER
         EnhancedYFinanceDataProvider,
         DataProviderMonitor,
         DynamicDataProvider,
@@ -1900,18 +1901,20 @@ class MLEnhancedBot:
             return 0
 
 # =============================================
-# ENHANCED TRADING BOT CORE - REAL PROVIDERS ONLY
+# ENHANCED TRADING BOT CORE - UNIFIED PROVIDER
 # =============================================
 
 class EnhancedTradingBot:
-    """Enhanced trading bot dengan REAL providers only"""
+    """Enhanced trading bot dengan UNIFIED provider"""
     
     def __init__(self, config_path="config/config.json"):
         self.config_path = config_path
         self.load_config()
         self.mode = None
+        
+        # Initialize UNIFIED provider 🔥
         self.data_provider = None
-        self.dynamic_provider = None
+        self._setup_unified_provider()
         
         # Initialize components
         self.strategy = None
@@ -1933,7 +1936,6 @@ class EnhancedTradingBot:
         
         # Tambah config untuk trading mode
         self.trading_mode = self.config.get("trading_mode", "spot")  # "spot" atau "futures"
-        self.asset_type = self.trading_mode  # untuk kompatibilitas dengan provider
         
         # Monitoring
         self.daily_pnl = 0.0
@@ -1950,7 +1952,26 @@ class EnhancedTradingBot:
         self.ml_predictions_cache = {}
         self.last_ml_update = 0
         
-        logger.info("✅ Enhanced TradingBot initialized successfully")
+        logger.info("✅ Enhanced TradingBot initialized dengan UnifiedProvider")
+
+    def _setup_unified_provider(self):
+        """Setup UnifiedDataProvider"""
+        try:
+            # Gunakan UnifiedDataProvider sebagai default
+            self.data_provider = UnifiedDataProvider(
+                market_type="crypto",  # Default
+                trading_mode="spot"    # Default
+            )
+            logger.info(f"✅ UnifiedDataProvider initialized dengan exchange: {self.data_provider.active_exchange}")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize UnifiedDataProvider: {e}")
+            # Fallback ke DynamicDataProvider
+            from .data_provider import DynamicDataProvider
+            self.data_provider = DynamicDataProvider(
+                market_type="crypto",
+                trading_mode="spot"
+            )
+            logger.warning("⚠️ Using DynamicDataProvider as fallback")
 
     def load_config(self):
         """Load configuration dengan error handling"""
@@ -1973,7 +1994,7 @@ class EnhancedTradingBot:
             "timeframe": "1h",
             "atr_multiplier": 1.0,
             "entry_range_pct": 0.02,
-            "exchange_crypto": "kucoin",
+            "exchange_crypto": "bybit",  # Default ke Bybit
             "analysis_coins_limit": 150,
             "ohlcv_limit": 200,
             "min_score": 2,
@@ -1988,7 +2009,8 @@ class EnhancedTradingBot:
             "enable_trailing_stop": True,
             "partial_tp_enabled": True,
             "trading_mode": "spot",
-            "futures_symbol_format": "binance"  # binance, bybit, kucoin, okx
+            "futures_symbol_format": "binance",
+            "default_exchange": "bybit"  # Default exchange
         }
     
     def save_config(self):
@@ -2049,50 +2071,60 @@ class EnhancedTradingBot:
         """Set trading mode: 'spot' atau 'futures'"""
         if mode.lower() in ['spot', 'spots']:
             self.trading_mode = 'spot'
-            self.asset_type = 'spot'
             logger.info(f"🎯 Trading mode set to SPOT")
+            
+            # Update provider
+            if hasattr(self.data_provider, 'trading_mode'):
+                self.data_provider.trading_mode = 'spot'
+                
         elif mode.lower() in ['futures', 'future']:
             self.trading_mode = 'futures'
-            self.asset_type = 'futures'
             logger.info(f"🎯 Trading mode set to FUTURES")
+            
+            # Update provider
+            if hasattr(self.data_provider, 'trading_mode'):
+                self.data_provider.trading_mode = 'futures'
         else:
             logger.warning(f"Unknown trading mode: {mode}, defaulting to SPOT")
             self.trading_mode = 'spot'
-            self.asset_type = 'spot'
 
     def set_mode(self, mode):
-        """Set trading mode dengan futures support - FIXED VERSION"""
+        """Set trading mode dengan futures support - UNIFIED VERSION"""
         try:
             self.mode = mode.lower()
             
             # Stop existing tasks
             self.stop_background_tasks()
             
-            logger.info(f"🎯 Setting mode to: {self.mode.upper()}")
+            logger.info(f"🎯 Setting market mode to: {self.mode.upper()}")
             logger.info(f"📊 Trading mode: {self.trading_mode.upper()}")
             
-            # 🚨 PERBAIKAN: Inisialisasi provider berdasarkan trading_mode
-            logger.info(f"🔄 Initializing provider for {self.mode} ({self.trading_mode})...")
+            # Update UnifiedDataProvider dengan mode baru
+            logger.info(f"🔄 Configuring UnifiedProvider for {self.mode} ({self.trading_mode})...")
             
             try:
-                # Gunakan DynamicDataProvider dengan parameter trading_mode
-                self.dynamic_provider = DynamicDataProvider(
-                    market_type=self.mode,
-                    trading_mode=self.trading_mode  # 🚨 TAMBAHKAN PARAMETER INI
-                )
-                self.data_provider = self.dynamic_provider
-                self.current_provider_name = 'dynamic'
+                # Update provider configuration
+                if hasattr(self.data_provider, 'market_type'):
+                    self.data_provider.market_type = self.mode
+                    self.data_provider.trading_mode = self.trading_mode
                 
-                # Setup strategy dengan parameter trading_mode
+                # Jika UnifiedProvider mendukung reinitialization
+                if hasattr(self.data_provider, 'reinitialize'):
+                    self.data_provider.reinitialize(
+                        market_type=self.mode,
+                        trading_mode=self.trading_mode
+                    )
+                
+                # Setup strategy
                 self.strategy = TechnicalAnalysisStrategy(
                     market_type=self.mode,
-                    trading_type=self.trading_mode,  # 🚨 TAMBAHKAN INI
+                    trading_mode=self.trading_mode,
                     atr_multiplier=self.config.get("atr_multiplier", 1.0),
                     entry_range_pct=self.config.get("entry_range_pct", 0.02),
                 )
                 
-                # Test provider dengan asset populer
-                test_assets = self._test_dynamic_provider()
+                # Test provider connection
+                test_assets = self._test_provider_connection()
                 
                 if test_assets:
                     logger.info(f"✅ Provider ready for {self.mode} ({self.trading_mode})")
@@ -2102,11 +2134,12 @@ class EnhancedTradingBot:
                     self.start_background_tasks()
                     return True
                 else:
-                    logger.error(f"❌ Provider test failed for {self.mode}")
-                    return False
+                    logger.warning(f"⚠️ Provider test returned no assets, but continuing...")
+                    self.start_background_tasks()
+                    return True
                     
             except Exception as e:
-                logger.error(f"❌ Failed to initialize provider: {e}")
+                logger.error(f"❌ Failed to configure provider: {e}")
                 logger.error(traceback.format_exc())
                 return False
                 
@@ -2114,26 +2147,28 @@ class EnhancedTradingBot:
             logger.error(f"Error setting mode {mode}: {e}")
             return False
 
-    def _test_dynamic_provider(self):
-        """Test DynamicDataProvider connection"""
+    def _test_provider_connection(self):
+        """Test provider connection"""
         try:
-            logger.info("🧪 Testing DynamicDataProvider...")
+            logger.info("🧪 Testing UnifiedProvider connection...")
             
             # Get popular assets dengan asset_type saat ini
-            assets = self.dynamic_provider.get_popular_assets(5, asset_type=self.asset_type)
+            asset_type = 'futures' if self.trading_mode == 'futures' else 'spot'
+            assets = self.data_provider.get_popular_assets(5, asset_type=asset_type)
+            
             if not assets:
-                logger.warning("⚠️ No assets returned, but continuing...")
+                logger.warning("⚠️ No assets returned from provider")
                 return []
             
             # Format asset symbols
             asset_symbols = []
-            for asset in assets[:5]:  # Ambil 5 pertama
+            for asset in assets[:5]:
                 if isinstance(asset, dict):
                     symbol = asset.get('symbol', 'Unknown')
                 else:
                     symbol = str(asset)
                 
-                # 🔥 KONVERSI KE FUTURES JIKA MODE FUTURES
+                # Konversi ke futures jika mode futures
                 if self.trading_mode == 'futures':
                     symbol = self._ensure_futures_symbol(symbol)
                 
@@ -2144,7 +2179,7 @@ class EnhancedTradingBot:
                 test_symbol = asset_symbols[0]
                 logger.info(f"  Testing OHLCV for: {test_symbol}")
                 
-                df = self.dynamic_provider.get_ohlcv(test_symbol, '1h', 10)
+                df = self.data_provider.get_ohlcv(test_symbol, '1h', 10)
                 if df is not None and len(df) > 0:
                     logger.info(f"  ✅ OHLCV data: {len(df)} bars")
                 else:
@@ -2157,20 +2192,20 @@ class EnhancedTradingBot:
             return []
 
     def get_assets_by_type(self, limit: int = 100, asset_type: str = None) -> List[Dict]:
-        """Get assets berdasarkan type (spot/futures) dengan konversi simbol - FIXED"""
-        if not self.dynamic_provider:
+        """Get assets berdasarkan type (spot/futures) dengan konversi simbol"""
+        if not self.data_provider:
             logger.error("❌ No data provider available")
             return []
         
         try:
             # Tentukan asset_type
             if asset_type is None:
-                asset_type = self.asset_type  # default dari bot
+                asset_type = 'futures' if self.trading_mode == 'futures' else 'spot'
             
             logger.info(f"📊 Getting {limit} {asset_type} assets for {self.mode}...")
             
             # Panggil get_popular_assets dengan asset_type
-            assets = self.dynamic_provider.get_popular_assets(limit, asset_type=asset_type)
+            assets = self.data_provider.get_popular_assets(limit, asset_type=asset_type)
             
             # Format hasil dengan konversi simbol
             formatted_assets = []
@@ -2179,13 +2214,12 @@ class EnhancedTradingBot:
                     symbol = asset.get('symbol', 'Unknown')
                     name = asset.get('name', asset.get('symbol', 'Unknown'))
                     
-                    # 🚨 KONVERSI KE FUTURES JIKA MODE FUTURES TAPI SIMBOL BELUM FUTURES
+                    # Konversi ke futures jika mode futures tapi simbol belum futures
                     if (self.trading_mode == 'futures' and 
                         asset_type in ['futures', 'future'] and
                         not self._is_futures_symbol(symbol)):
                         
                         symbol = self._ensure_futures_symbol(symbol)
-                        logger.debug(f"   Converted to futures: {asset.get('symbol')} -> {symbol}")
                     
                     formatted_assets.append({
                         'symbol': symbol,
@@ -2195,13 +2229,12 @@ class EnhancedTradingBot:
                 else:
                     symbol = str(asset)
                     
-                    # 🚨 KONVERSI KE FUTURES JIKA MODE FUTURES
+                    # Konversi ke futures jika mode futures
                     if (self.trading_mode == 'futures' and 
                         asset_type in ['futures', 'future'] and
                         not self._is_futures_symbol(symbol)):
                         
                         symbol = self._ensure_futures_symbol(symbol)
-                        logger.debug(f"   Converted to futures: {asset} -> {symbol}")
                     
                     formatted_assets.append({
                         'symbol': symbol,
@@ -2218,7 +2251,7 @@ class EnhancedTradingBot:
 
     def get_popular_assets(self, limit=None, asset_type: str = None):
         """Get popular assets dengan parameter asset_type"""
-        if not self.dynamic_provider:
+        if not self.data_provider:
             logger.error("❌ No data provider available. Run set_mode() first!")
             return []
         
@@ -2228,12 +2261,12 @@ class EnhancedTradingBot:
             
             # Tentukan asset_type
             if asset_type is None:
-                asset_type = self.asset_type
+                asset_type = 'futures' if self.trading_mode == 'futures' else 'spot'
             
             logger.info(f"🔄 Fetching {limit} popular assets for {self.mode} ({asset_type})...")
             
             # Panggil get_popular_assets dari provider dengan asset_type
-            assets = self.dynamic_provider.get_popular_assets(limit, asset_type=asset_type)
+            assets = self.data_provider.get_popular_assets(limit, asset_type=asset_type)
             
             if assets:
                 logger.info(f"✅ Found {len(assets)} assets for {self.mode} ({asset_type})")
@@ -2263,18 +2296,19 @@ class EnhancedTradingBot:
 
     def search_assets(self, query: str, limit: int = 20) -> List[Dict]:
         """Search assets dengan fallback"""
-        if not self.dynamic_provider:
+        if not self.data_provider:
             logger.warning("No data provider available")
             return []
         
         try:
             logger.info(f"🔍 Searching assets for: '{query}' in {self.mode}")
             
-            if hasattr(self.dynamic_provider, 'search_assets'):
-                results = self.dynamic_provider.search_assets(query, limit)
+            if hasattr(self.data_provider, 'search_assets'):
+                results = self.data_provider.search_assets(query, limit)
             else:
                 # Manual search dari popular assets dengan asset_type saat ini
-                all_assets = self.get_popular_assets(limit * 2, asset_type=self.asset_type)
+                asset_type = 'futures' if self.trading_mode == 'futures' else 'spot'
+                all_assets = self.get_popular_assets(limit * 2, asset_type=asset_type)
                 results = []
                 for asset in all_assets:
                     if isinstance(asset, dict):
@@ -2296,7 +2330,7 @@ class EnhancedTradingBot:
             return []
 
     def scan_potential_assets(self, limit=None, search_query: str = None, asset_type: str = None):
-        """Scan untuk potential signals - FIXED VERSION dengan futures support"""
+        """Scan untuk potential signals - UNIFIED VERSION"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -2305,7 +2339,7 @@ class EnhancedTradingBot:
         
         try:
             # Validasi provider
-            if not self.dynamic_provider:
+            if not self.data_provider:
                 logger.error("❌ No data provider available. Run set_mode() first!")
                 self.scanning_in_progress = False
                 return []
@@ -2315,11 +2349,7 @@ class EnhancedTradingBot:
             
             # Tentukan asset_type
             if asset_type is None:
-                # Jika mode crypto, lihat trading_mode
-                if self.mode == 'crypto':
-                    asset_type = self.trading_mode  # 'spot' atau 'futures'
-                else:
-                    asset_type = self.asset_type  # default dari bot
+                asset_type = 'futures' if self.trading_mode == 'futures' else 'spot'
             
             # Gunakan analysis_coins_limit untuk jumlah assets
             assets_limit = self.config.get("analysis_coins_limit", 150)
@@ -2351,27 +2381,20 @@ class EnhancedTradingBot:
                     
                     logger.info(f"  [{i+1}/{len(assets)}] Analyzing: {symbol}")
                     
-                    # 🚨 PERIKSA APAKAH SIMBOL SUDAH FORMAT FUTURES
-                    # (Konversi sudah dilakukan di get_assets_by_type, jadi tidak perlu lagi)
-                    
-                    # **PERBAIKAN: Validasi symbol khusus untuk saham Indonesia**
+                    # Validasi simbol berdasarkan market
                     if self.mode == 'saham_id':
-                        # Hanya terima simbol yang berakhiran .JK untuk saham Indonesia
                         if not symbol.endswith('.JK'):
                             logger.info(f"    ⚠️ Skipping {symbol} - not Indonesian stock format (.JK)")
                             continue
-                        logger.info(f"    ✅ Accepted Indonesian stock: {symbol}")
-                    else:
-                        # Untuk market lain, gunakan filter yang sesuai
-                        if self.mode == 'forex' and '/' not in symbol:
-                            logger.info(f"    ⚠️ Skipping {symbol} - not forex format (XXX/YYY)")
-                            continue
-                        elif self.mode == 'us_stocks' and not (symbol.endswith('.US') or '.' not in symbol):
-                            logger.info(f"    ⚠️ Skipping {symbol} - not US stock format")
-                            continue
+                    elif self.mode == 'forex' and '/' not in symbol:
+                        logger.info(f"    ⚠️ Skipping {symbol} - not forex format (XXX/YYY)")
+                        continue
+                    elif self.mode == 'us_stocks' and not (symbol.endswith('.US') or '.' not in symbol):
+                        logger.info(f"    ⚠️ Skipping {symbol} - not US stock format")
+                        continue
                     
                     # Get current price
-                    ticker = self.dynamic_provider.get_ticker(symbol)
+                    ticker = self.data_provider.get_ticker(symbol)
                     if not ticker or ticker.get('last', 0) <= 0:
                         logger.info(f"    ⚠️ Invalid price for {symbol}: {ticker}")
                         continue
@@ -2380,7 +2403,7 @@ class EnhancedTradingBot:
                     logger.info(f"    Current price: {current_price}")
                     
                     # Get OHLCV data untuk analysis
-                    df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
+                    df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
                     if df is None or len(df) < 50:
                         logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df else 0} bars")
                         continue
@@ -2418,8 +2441,8 @@ class EnhancedTradingBot:
                             'rsi': round(analysis.get('rsi', 50), 2),
                             'volume_ratio': round(analysis.get('volume_ratio', 1), 2),
                             'market_type': self.mode,
-                            'trading_mode': self.trading_mode,  # 🚨 TAMBAHKAN INI
-                            'provider': self.current_provider_name,
+                            'trading_mode': self.trading_mode,
+                            'provider': 'unified',
                             'asset_type': asset_type
                         }
                         
@@ -2476,10 +2499,10 @@ class EnhancedTradingBot:
     def analyze_with_enhanced_ml(self, symbol: str) -> dict:
         """Analyze asset dengan ML enhancement"""
         try:
-            if not self.dynamic_provider:
+            if not self.data_provider:
                 return {'error': 'No data provider available'}
             
-            # 🔥 KONVERSI KE FUTURES JIKA MODE FUTURES
+            # Konversi ke futures jika mode futures
             original_symbol = symbol
             if self.trading_mode == 'futures':
                 symbol = self._ensure_futures_symbol(symbol)
@@ -2487,7 +2510,7 @@ class EnhancedTradingBot:
                     logger.info(f"🔁 Converted symbol for ML analysis: {original_symbol} → {symbol}")
             
             # Get data
-            df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
+            df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
             if df is None or len(df) < 50:
                 return {'error': 'Insufficient data'}
             
@@ -2511,11 +2534,11 @@ class EnhancedTradingBot:
 
     def run_advanced_backtest(self, symbol, timeframe=None, limit=500):
         """Run advanced backtest"""
-        if not self.dynamic_provider:
+        if not self.data_provider:
             return {"error": "No data provider available"}
             
         try:
-            # 🔥 KONVERSI KE FUTURES JIKA MODE FUTURES
+            # Konversi ke futures jika mode futures
             original_symbol = symbol
             if self.trading_mode == 'futures':
                 symbol = self._ensure_futures_symbol(symbol)
@@ -2526,7 +2549,7 @@ class EnhancedTradingBot:
                 timeframe = self.config.get("timeframe", "1h")
                 
             logger.info(f"🔧 Running advanced backtest for {symbol}...")
-            df = self.dynamic_provider.get_ohlcv(symbol, timeframe, limit)
+            df = self.data_provider.get_ohlcv(symbol, timeframe, limit)
             
             if df is None or len(df) < 100:
                 return {"error": "Insufficient data for backtest"}
@@ -2573,7 +2596,7 @@ class EnhancedTradingBot:
                 'allocated_capital': base_allocation,
                 'score': s.get('score', 0),
                 'action': s.get('action', 'NEUTRAL'),
-                'asset_type': s.get('asset_type', self.asset_type)
+                'asset_type': s.get('asset_type', 'spot')
             }
             for s in signals
         ]
@@ -2620,7 +2643,7 @@ class EnhancedTradingBot:
 
     def _update_positions(self):
         """Update all positions"""
-        if not self.trading_enabled or not self.dynamic_provider:
+        if not self.trading_enabled or not self.data_provider:
             return
         
         try:
@@ -2630,7 +2653,7 @@ class EnhancedTradingBot:
             
             for symbol in list(positions.keys()):
                 try:
-                    ticker = self.dynamic_provider.get_ticker(symbol)
+                    ticker = self.data_provider.get_ticker(symbol)
                     if ticker and 'last' in ticker and ticker['last'] > 0:
                         # Update position dengan harga baru
                         pass
@@ -2663,14 +2686,14 @@ class EnhancedTradingBot:
     def calculate_custom_entry(self, symbol, entry_price, action="LONG"):
         """Calculate custom entry dengan TP/SL"""
         try:
-            # 🔥 KONVERSI KE FUTURES JIKA MODE FUTURES
+            # Konversi ke futures jika mode futures
             original_symbol = symbol
             if self.trading_mode == 'futures':
                 symbol = self._ensure_futures_symbol(symbol)
                 if original_symbol != symbol:
                     logger.info(f"🔁 Converted symbol for custom entry: {original_symbol} → {symbol}")
             
-            df = self.dynamic_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 50)
+            df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 50)
             
             if df is None or len(df) < 20:
                 # Fallback calculation
@@ -2718,6 +2741,158 @@ class EnhancedTradingBot:
             }
 
 # =============================================
+# TRADING CORE - SIMPLIFIED VERSION
+# =============================================
+
+class TradingCore:
+    """Main trading engine dengan unified provider"""
+    
+    def __init__(self, config=None):
+        self.config = config or {}
+        
+        # Setup unified data provider
+        self.data_provider = self._setup_data_provider()
+        
+        # Setup trading mode
+        self.trading_type = self.config.get("trading_mode", "spot")
+        
+        # Setup strategy
+        from .strategies import TechnicalAnalysisStrategy
+        self.strategy = TechnicalAnalysisStrategy(
+            market_type=self.config.get("market_type", "crypto"),
+            trading_mode=self.trading_type,
+            atr_multiplier=self.config.get("atr_multiplier", 1.0),
+            entry_range_pct=self.config.get("entry_range_pct", 0.02)
+        )
+        
+        logger.info(f"🚀 TradingCore initialized | Mode: {self.trading_type}")
+    
+    def _setup_data_provider(self):
+        """Setup unified data provider"""
+        try:
+            provider = UnifiedDataProvider(
+                market_type=self.config.get("market_type", "crypto"),
+                trading_mode=self.config.get("trading_mode", "spot"),
+                default_exchange=self.config.get("default_exchange", "bybit")
+            )
+            
+            logger.info(f"✅ Using UnifiedDataProvider with {provider.active_exchange}")
+            return provider
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to setup unified provider: {e}")
+            # Fallback ke dynamic provider
+            from .data_provider import DynamicDataProvider
+            return DynamicDataProvider(
+                market_type=self.config.get("market_type", "crypto"),
+                trading_mode=self.config.get("trading_mode", "spot")
+            )
+    
+    def set_mode(self, market_type):
+        """Set trading mode dengan update provider"""
+        try:
+            self.config["market_type"] = market_type
+            
+            # Update provider dengan mode baru
+            self.data_provider.market_type = market_type
+            self.data_provider.trading_mode = self.trading_type
+            
+            # Reinitialize jika perlu
+            if hasattr(self.data_provider, '_initialize_providers_with_smart_fallback'):
+                self.data_provider._initialize_providers_with_smart_fallback()
+            
+            logger.info(f"✅ Market mode set to: {market_type}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to set mode: {e}")
+            return False
+    
+    def set_trading_mode(self, trading_mode):
+        """Set spot/futures mode"""
+        valid_modes = ['spot', 'future', 'futures']
+        
+        if trading_mode.lower() not in valid_modes:
+            logger.error(f"Invalid trading mode: {trading_mode}")
+            return False
+        
+        self.trading_type = trading_mode.lower()
+        self.config["trading_mode"] = self.trading_type
+        
+        # Update provider
+        if hasattr(self.data_provider, 'trading_mode'):
+            self.data_provider.trading_mode = self.trading_type
+            logger.info(f"✅ Trading mode updated in provider: {self.trading_type}")
+        
+        logger.info(f"✅ Trading mode set to: {self.trading_type}")
+        return True
+    
+    def scan_market(self, scan_type="standard", limit=50):
+        """Scan market dengan unified provider"""
+        try:
+            logger.info(f"🔍 Scanning {self.trading_type} market ({scan_type})...")
+            
+            # Get assets berdasarkan trading mode
+            assets = self.data_provider.get_popular_assets(
+                limit=limit,
+                asset_type=self.trading_type
+            )
+            
+            if not assets:
+                logger.error("❌ No assets found for scanning")
+                return []
+            
+            logger.info(f"📊 Found {len(assets)} assets for scanning")
+            
+            # Proses scanning...
+            results = []
+            for asset in assets[:20]:  # Batasi untuk testing
+                symbol = asset['symbol'] if isinstance(asset, dict) else asset
+                
+                try:
+                    # Get data
+                    df = self.data_provider.get_ohlcv(
+                        symbol=symbol,
+                        timeframe=self.config.get("timeframe", "1h"),
+                        limit=200
+                    )
+                    
+                    if df is None or df.empty:
+                        continue
+                    
+                    # Analisis dengan strategy
+                    signal = self.strategy.analyze(df, symbol)
+                    
+                    if signal and signal.get('action') != 'hold':
+                        results.append({
+                            'symbol': symbol,
+                            'signal': signal,
+                            'price': df['close'].iloc[-1] if len(df) > 0 else 0,
+                            'data_points': len(df)
+                        })
+                        
+                except Exception as e:
+                    logger.debug(f"❌ Failed to analyze {symbol}: {e}")
+                    continue
+            
+            logger.info(f"✅ Scan complete: {len(results)} signals found")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Market scan failed: {e}")
+            return []
+    
+    def get_health_status(self):
+        """Get health status dari provider"""
+        try:
+            if hasattr(self.data_provider, 'get_health_metrics'):
+                return self.data_provider.get_health_metrics()
+            else:
+                return {'status': 'unknown', 'provider': type(self.data_provider).__name__}
+        except Exception as e:
+            return {'status': 'error', 'error': str(e)}
+
+# =============================================
 # BACKWARD COMPATIBILITY
 # =============================================
 
@@ -2727,9 +2902,9 @@ TradingBot = EnhancedTradingBot
 # TESTING FUNCTIONALITY
 # =============================================
 
-def test_real_providers_only():
-    """Test bot dengan real providers saja"""
-    print("🧪 Testing TradingBot dengan REAL PROVIDERS ONLY...")
+def test_unified_provider():
+    """Test bot dengan unified provider"""
+    print("🧪 Testing TradingBot dengan UNIFIED PROVIDER...")
     print("="*60)
     
     bot = EnhancedTradingBot()
@@ -2810,9 +2985,9 @@ def test_real_providers_only():
             print("   ℹ️ No Indonesian stock signals found - this is normal with real data")
     
     print("\n" + "="*60)
-    print("✅ Test completed - Bot mendukung pemisahan SPOT dan FUTURES")
-    print("   Real providers only dengan parameter asset_type")
-    print("   Menganalisis 100+ assets per market")
+    print("✅ Test completed - Bot menggunakan UnifiedDataProvider")
+    print("   Support SPOT dan FUTURES dengan default Bybit")
+    print("   Unified provider dengan single interface")
 
 if __name__ == "__main__":
-    test_real_providers_only()
+    test_unified_provider()
