@@ -2000,29 +2000,23 @@ class EnhancedTradingBot:
         except Exception as e:
             logger.error(f"Error saving config: {e}")
 
-    def set_trading_mode(self, mode: str):
-        """Set trading mode: 'spot' atau 'futures'"""
-        if mode.lower() in ['spot', 'spots']:
-            self.trading_mode = 'spot'
-            self.asset_type = 'spot'
-            logger.info(f"🎯 Trading mode set to SPOT")
-        elif mode.lower() in ['futures', 'future']:
-            self.trading_mode = 'futures'
-            self.asset_type = 'futures'
-            logger.info(f"🎯 Trading mode set to FUTURES")
-        else:
-            logger.warning(f"Unknown trading mode: {mode}, defaulting to SPOT")
-            self.trading_mode = 'spot'
-            self.asset_type = 'spot'
+    def _is_futures_symbol(self, symbol: str) -> bool:
+        """Check if symbol is in futures format"""
+        if not symbol:
+            return False
+        
+        symbol_upper = symbol.upper()
+        futures_markers = [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']
+        
+        return any(marker in symbol_upper for marker in futures_markers)
 
     def _ensure_futures_symbol(self, symbol: str) -> str:
-        """Konversi simbol spot ke futures jika mode futures aktif"""
+        """Konversi simbol spot ke futures jika mode futures aktif - ENHANCED"""
         if self.trading_mode != 'futures':
             return symbol
 
         # Jika sudah format futures, return as-is
-        futures_markers = [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']
-        if any(marker in symbol.upper() for marker in futures_markers):
+        if self._is_futures_symbol(symbol):
             return symbol
 
         # Konversi berdasarkan exchange
@@ -2040,54 +2034,34 @@ class EnhancedTradingBot:
             return symbol.replace('/', '-')
         elif exchange == 'gateio':
             return f"{symbol}_PERP"
+        elif exchange == 'mexc':
+            return f"{symbol.replace('/', '_')}_PERP"
+        elif exchange == 'huobi':
+            return f"{symbol.replace('/', '-C')}"
 
         # Default: tambahkan :USDT
         if '/USDT' in symbol:
             return f"{symbol}:USDT"
+        else:
+            return symbol
 
-        return symbol
-
-    def get_assets_by_type(self, limit: int = 100, asset_type: str = None) -> List[Dict]:
-        """Get assets berdasarkan type (spot/futures) dengan limit yang benar"""
-        if not self.dynamic_provider:
-            logger.error("❌ No data provider available")
-            return []
-        
-        try:
-            # Tentukan asset_type
-            if asset_type is None:
-                asset_type = self.asset_type  # default dari bot
-            
-            logger.info(f"📊 Getting {limit} {asset_type} assets for {self.mode}...")
-            
-            # Panggil get_popular_assets dengan asset_type
-            assets = self.dynamic_provider.get_popular_assets(limit, asset_type=asset_type)
-            
-            # Format hasil
-            formatted_assets = []
-            for asset in assets:
-                if isinstance(asset, dict):
-                    formatted_assets.append({
-                        'symbol': asset.get('symbol', 'Unknown'),
-                        'name': asset.get('name', asset.get('symbol', 'Unknown')),
-                        'type': asset_type
-                    })
-                else:
-                    formatted_assets.append({
-                        'symbol': str(asset),
-                        'name': str(asset),
-                        'type': asset_type
-                    })
-            
-            logger.info(f"✅ Found {len(formatted_assets)} {asset_type} assets")
-            return formatted_assets[:limit]
-            
-        except Exception as e:
-            logger.error(f"❌ Error getting {asset_type} assets: {e}")
-            return []
+    def set_trading_mode(self, mode: str):
+        """Set trading mode: 'spot' atau 'futures'"""
+        if mode.lower() in ['spot', 'spots']:
+            self.trading_mode = 'spot'
+            self.asset_type = 'spot'
+            logger.info(f"🎯 Trading mode set to SPOT")
+        elif mode.lower() in ['futures', 'future']:
+            self.trading_mode = 'futures'
+            self.asset_type = 'futures'
+            logger.info(f"🎯 Trading mode set to FUTURES")
+        else:
+            logger.warning(f"Unknown trading mode: {mode}, defaulting to SPOT")
+            self.trading_mode = 'spot'
+            self.asset_type = 'spot'
 
     def set_mode(self, mode):
-        """Set trading mode - NO EMERGENCY MODE"""
+        """Set trading mode dengan futures support - FIXED VERSION"""
         try:
             self.mode = mode.lower()
             
@@ -2097,18 +2071,22 @@ class EnhancedTradingBot:
             logger.info(f"🎯 Setting mode to: {self.mode.upper()}")
             logger.info(f"📊 Trading mode: {self.trading_mode.upper()}")
             
-            # SELALU gunakan DynamicDataProvider sebagai default
-            logger.info("🔄 Initializing DynamicDataProvider...")
+            # 🚨 PERBAIKAN: Inisialisasi provider berdasarkan trading_mode
+            logger.info(f"🔄 Initializing provider for {self.mode} ({self.trading_mode})...")
             
             try:
-                # Inisialisasi DynamicDataProvider
-                self.dynamic_provider = DynamicDataProvider(market_type=self.mode)
+                # Gunakan DynamicDataProvider dengan parameter trading_mode
+                self.dynamic_provider = DynamicDataProvider(
+                    market_type=self.mode,
+                    trading_mode=self.trading_mode  # 🚨 TAMBAHKAN PARAMETER INI
+                )
                 self.data_provider = self.dynamic_provider
                 self.current_provider_name = 'dynamic'
                 
-                # Setup strategy
+                # Setup strategy dengan parameter trading_mode
                 self.strategy = TechnicalAnalysisStrategy(
                     market_type=self.mode,
+                    trading_mode=self.trading_mode,  # 🚨 TAMBAHKAN INI
                     atr_multiplier=self.config.get("atr_multiplier", 1.0),
                     entry_range_pct=self.config.get("entry_range_pct", 0.02),
                 )
@@ -2117,21 +2095,21 @@ class EnhancedTradingBot:
                 test_assets = self._test_dynamic_provider()
                 
                 if test_assets:
-                    logger.info(f"✅ DynamicDataProvider ready for {self.mode}")
+                    logger.info(f"✅ Provider ready for {self.mode} ({self.trading_mode})")
                     logger.info(f"📋 Sample assets: {test_assets[:3]}")
                     
                     # Start background tasks
                     self.start_background_tasks()
                     return True
                 else:
-                    logger.error(f"❌ DynamicDataProvider test failed for {self.mode}")
+                    logger.error(f"❌ Provider test failed for {self.mode}")
                     return False
                     
             except Exception as e:
-                logger.error(f"❌ Failed to initialize DynamicDataProvider: {e}")
-                logger.error("DynamicDataProvider should handle fallback internally")
+                logger.error(f"❌ Failed to initialize provider: {e}")
+                logger.error(traceback.format_exc())
                 return False
-            
+                
         except Exception as e:
             logger.error(f"Error setting mode {mode}: {e}")
             return False
@@ -2176,6 +2154,66 @@ class EnhancedTradingBot:
             
         except Exception as e:
             logger.warning(f"⚠️ Provider test had issues: {e}")
+            return []
+
+    def get_assets_by_type(self, limit: int = 100, asset_type: str = None) -> List[Dict]:
+        """Get assets berdasarkan type (spot/futures) dengan konversi simbol - FIXED"""
+        if not self.dynamic_provider:
+            logger.error("❌ No data provider available")
+            return []
+        
+        try:
+            # Tentukan asset_type
+            if asset_type is None:
+                asset_type = self.asset_type  # default dari bot
+            
+            logger.info(f"📊 Getting {limit} {asset_type} assets for {self.mode}...")
+            
+            # Panggil get_popular_assets dengan asset_type
+            assets = self.dynamic_provider.get_popular_assets(limit, asset_type=asset_type)
+            
+            # Format hasil dengan konversi simbol
+            formatted_assets = []
+            for asset in assets:
+                if isinstance(asset, dict):
+                    symbol = asset.get('symbol', 'Unknown')
+                    name = asset.get('name', asset.get('symbol', 'Unknown'))
+                    
+                    # 🚨 KONVERSI KE FUTURES JIKA MODE FUTURES TAPI SIMBOL BELUM FUTURES
+                    if (self.trading_mode == 'futures' and 
+                        asset_type in ['futures', 'future'] and
+                        not self._is_futures_symbol(symbol)):
+                        
+                        symbol = self._ensure_futures_symbol(symbol)
+                        logger.debug(f"   Converted to futures: {asset.get('symbol')} -> {symbol}")
+                    
+                    formatted_assets.append({
+                        'symbol': symbol,
+                        'name': name,
+                        'type': asset_type
+                    })
+                else:
+                    symbol = str(asset)
+                    
+                    # 🚨 KONVERSI KE FUTURES JIKA MODE FUTURES
+                    if (self.trading_mode == 'futures' and 
+                        asset_type in ['futures', 'future'] and
+                        not self._is_futures_symbol(symbol)):
+                        
+                        symbol = self._ensure_futures_symbol(symbol)
+                        logger.debug(f"   Converted to futures: {asset} -> {symbol}")
+                    
+                    formatted_assets.append({
+                        'symbol': symbol,
+                        'name': str(asset),
+                        'type': asset_type
+                    })
+            
+            logger.info(f"✅ Found {len(formatted_assets)} {asset_type} assets")
+            return formatted_assets[:limit]
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting {asset_type} assets: {e}")
             return []
 
     def get_popular_assets(self, limit=None, asset_type: str = None):
@@ -2313,12 +2351,8 @@ class EnhancedTradingBot:
                     
                     logger.info(f"  [{i+1}/{len(assets)}] Analyzing: {symbol}")
                     
-                    # 🔥 KONVERSI KE FUTURES JIKA MODE FUTURES
-                    original_symbol = symbol
-                    if self.trading_mode == 'futures' and asset_type in ['futures', 'future']:
-                        symbol = self._ensure_futures_symbol(symbol)
-                        if original_symbol != symbol:
-                            logger.info(f"    🔄 Converted {original_symbol} → {symbol}")
+                    # 🚨 PERIKSA APAKAH SIMBOL SUDAH FORMAT FUTURES
+                    # (Konversi sudah dilakukan di get_assets_by_type, jadi tidak perlu lagi)
                     
                     # **PERBAIKAN: Validasi symbol khusus untuk saham Indonesia**
                     if self.mode == 'saham_id':
@@ -2384,6 +2418,7 @@ class EnhancedTradingBot:
                             'rsi': round(analysis.get('rsi', 50), 2),
                             'volume_ratio': round(analysis.get('volume_ratio', 1), 2),
                             'market_type': self.mode,
+                            'trading_mode': self.trading_mode,  # 🚨 TAMBAHKAN INI
                             'provider': self.current_provider_name,
                             'asset_type': asset_type
                         }
@@ -2410,7 +2445,7 @@ class EnhancedTradingBot:
                 signals.sort(key=lambda x: abs(x['score']), reverse=True)
                 logger.info("🏆 Top signals:")
                 for i, signal in enumerate(signals[:min(10, len(signals))]):
-                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']}")
+                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']} | Mode: {signal.get('trading_mode', 'N/A')}")
             else:
                 logger.info("ℹ️ No signals found with current criteria")
             
