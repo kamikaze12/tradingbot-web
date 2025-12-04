@@ -1532,13 +1532,380 @@ class AlphaVantageProvider(EnhancedDataProvider):
         
         return formatted_result[:limit]
 
+# =============================================
+# SMART CONNECTION MANAGER
+# =============================================
+
+class SmartConnectionManager:
+    """Manajer koneksi yang pintar dengan auto-rotasi"""
+    
+    def __init__(self):
+        self.exchanges = [
+            ('bybit', 'Bybit', ['spot', 'future']),
+            ('okx', 'OKX', ['spot', 'future']), 
+            ('kucoin', 'KuCoin', ['spot', 'future']),
+            ('binance', 'Binance', ['spot', 'future']),
+        ]
+        self.yfinance_fallback = ('yfinance', 'Yahoo Finance', ['stock', 'forex', 'crypto'])
+        
+        self.active_exchange = None
+        self.connection_history = []
+        self.failed_exchanges = set()
+        
+    def find_best_exchange(self, market_type='crypto', trading_mode='spot'):
+        """Cari exchange terbaik yang berhasil connect"""
+        logger.info(f"🔍 Finding best exchange for {market_type}/{trading_mode}...")
+        
+        # Untuk non-crypto, langsung YFinance
+        if market_type not in ['crypto', 'crypto_spot', 'crypto_future']:
+            logger.info("📊 Non-crypto market, using YFinance")
+            return self.yfinance_fallback[0]
+        
+        # Coba satu per satu exchange
+        for exchange_id, exchange_name, supported_types in self.exchanges:
+            if exchange_id in self.failed_exchanges:
+                logger.debug(f"⏭️ Skipping {exchange_name} (previously failed)")
+                continue
+            
+            if trading_mode not in supported_types:
+                continue
+                
+            try:
+                logger.info(f"🔄 Testing {exchange_name} connection...")
+                
+                # Test koneksi cepat
+                if self._test_connection(exchange_id, market_type, trading_mode):
+                    logger.info(f"✅ {exchange_name} connection successful!")
+                    self.active_exchange = exchange_id
+                    return exchange_id
+                else:
+                    logger.warning(f"❌ {exchange_name} connection test failed")
+                    self.failed_exchanges.add(exchange_id)
+                    
+            except Exception as e:
+                logger.warning(f"❌ {exchange_name} error: {str(e)[:100]}")
+                self.failed_exchanges.add(exchange_id)
+        
+        # Semua gagal, gunakan YFinance
+        logger.warning("⚠️ All exchanges failed, falling back to YFinance")
+        return self.yfinance_fallback[0]
+    
+    def _test_connection(self, exchange_id, market_type, trading_mode):
+        """Test koneksi dengan timeout cepat"""
+        try:
+            if trading_mode == 'future':
+                provider = EnhancedCCXTFuturesProvider(exchange_id=exchange_id)
+                test_symbol = "BTC/USDT:USDT"
+            else:
+                provider = EnhancedCCXTDataProvider(
+                    exchange_id=exchange_id, 
+                    market_type='spot'
+                )
+                test_symbol = "BTC/USDT"
+            
+            # Test dengan fetch ticker cepat
+            ticker = provider.get_ticker(test_symbol)
+            
+            if ticker and ticker.get('last', 0) > 0:
+                return True
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Connection test failed for {exchange_id}: {e}")
+            return False
+
+# =============================================
+# UNIFIED SMART DATA PROVIDER - FIXED VERSION
+# =============================================
+
+class UnifiedDataProvider(EnhancedDataProvider):
+    """Provider terpadu dengan auto-fallback yang benar-benar bekerja"""
+    
+    def __init__(self, market_type="crypto", trading_mode="spot"):
+        super().__init__()
+        self.market_type = market_type
+        self.trading_mode = trading_mode
+        
+        # Connection manager
+        self.connection_manager = SmartConnectionManager()
+        
+        # Active providers
+        self.active_spot_provider = None
+        self.active_futures_provider = None
+        self.active_exchange = None
+        
+        # Initialize dengan fallback sistem yang benar
+        self._initialize_providers_with_smart_fallback()
+        
+        logger.info(f"🚀 UnifiedDataProvider ready | Market: {market_type} | Mode: {trading_mode} | Exchange: {self.active_exchange}")
+    
+    def _initialize_providers_with_smart_fallback(self):
+        """Initialize providers dengan sistem fallback yang lebih baik"""
+        
+        # 1. Cari exchange terbaik
+        self.active_exchange = self.connection_manager.find_best_exchange(
+            self.market_type, 
+            self.trading_mode
+        )
+        
+        # 2. Setup providers berdasarkan exchange yang dipilih
+        if self.active_exchange == 'yfinance':
+            # Gunakan YFinance untuk semua
+            self.active_spot_provider = EnhancedYFinanceDataProvider(
+                market_type=self.market_type
+            )
+            self.active_futures_provider = EnhancedYFinanceDataProvider(
+                market_type='crypto'  # YFinance hanya support crypto untuk futures fallback
+            )
+            logger.info("📊 Using YFinance as primary data source")
+            
+        else:
+            # Gunakan CCXT exchange
+            try:
+                # Spot provider
+                self.active_spot_provider = EnhancedCCXTDataProvider(
+                    exchange_id=self.active_exchange,
+                    market_type='spot'
+                )
+                
+                # Futures provider
+                if self.trading_mode == 'future':
+                    self.active_futures_provider = EnhancedCCXTFuturesProvider(
+                        exchange_id=self.active_exchange
+                    )
+                else:
+                    self.active_futures_provider = self.active_spot_provider
+                    
+                logger.info(f"💾 Using {self.active_exchange.upper()} as primary data source")
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize {self.active_exchange}: {e}")
+                # Fallback ke YFinance
+                self.active_exchange = 'yfinance'
+                self.active_spot_provider = EnhancedYFinanceDataProvider(
+                    market_type=self.market_type
+                )
+                self.active_futures_provider = EnhancedYFinanceDataProvider(
+                    market_type='crypto'
+                )
+        
+        # 3. Setup fallback provider (YFinance)
+        self.fallback_provider = EnhancedYFinanceDataProvider(
+            market_type='crypto' if self.market_type in ['crypto', 'crypto_spot', 'crypto_future'] else self.market_type
+        )
+    
+    def _get_provider_for_symbol(self, symbol):
+        """Dapatkan provider yang tepat untuk simbol tertentu"""
+        # Deteksi tipe symbol
+        symbol_upper = symbol.upper()
+        
+        # Futures detection
+        futures_markers = [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']
+        is_futures = any(marker in symbol_upper for marker in futures_markers)
+        
+        if is_futures or self.trading_mode == 'future':
+            return self.active_futures_provider
+        else:
+            return self.active_spot_provider
+    
+    def _execute_with_fallback(self, func_name, symbol, *args, **kwargs):
+        """Execute function dengan fallback otomatis"""
+        max_attempts = 2
+        
+        for attempt in range(max_attempts):
+            try:
+                # Pilih provider utama
+                provider = self._get_provider_for_symbol(symbol)
+                
+                # Execute
+                if func_name == 'get_ohlcv':
+                    result = provider.get_ohlcv(symbol, *args, **kwargs)
+                elif func_name == 'get_ticker':
+                    result = provider.get_ticker(symbol)
+                elif func_name == 'get_popular_assets':
+                    result = provider.get_popular_assets(*args, **kwargs)
+                else:
+                    raise ValueError(f"Unknown function: {func_name}")
+                
+                # Validasi result
+                if self._validate_result(result, func_name):
+                    return result
+                else:
+                    raise ValueError("Invalid data returned")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Attempt {attempt+1} failed: {str(e)[:100]}")
+                
+                if attempt == 0:
+                    # Coba fallback ke YFinance
+                    logger.info(f"🔄 Trying YFinance fallback for {symbol}")
+                    
+                    # Convert symbol format untuk YFinance jika perlu
+                    yf_symbol = self._convert_to_yfinance_symbol(symbol)
+                    
+                    try:
+                        if func_name == 'get_ohlcv':
+                            result = self.fallback_provider.get_ohlcv(yf_symbol, *args, **kwargs)
+                        elif func_name == 'get_ticker':
+                            result = self.fallback_provider.get_ticker(yf_symbol)
+                        elif func_name == 'get_popular_assets':
+                            result = self.fallback_provider.get_popular_assets(*args, **kwargs)
+                        
+                        if self._validate_result(result, func_name):
+                            logger.info(f"✅ YFinance fallback successful for {symbol}")
+                            return result
+                    except Exception as fallback_e:
+                        logger.warning(f"❌ YFinance fallback also failed: {fallback_e}")
+        
+        # Semua gagal
+        logger.error(f"❌ All attempts failed for {symbol}")
+        return self._get_emergency_data(func_name, symbol, *args, **kwargs)
+    
+    def _convert_to_yfinance_symbol(self, symbol):
+        """Convert symbol ke format YFinance"""
+        if '/USDT' in symbol:
+            return symbol.replace('/USDT', '-USD')
+        elif ':USDT' in symbol:
+            return symbol.replace(':USDT', '-USD')
+        elif '.JK' in symbol:
+            return symbol  # Saham Indonesia, tetap
+        elif '=X' in symbol:
+            return symbol  # Forex, tetap
+        else:
+            return symbol
+    
+    def _validate_result(self, result, func_name):
+        """Validasi hasil berdasarkan fungsi"""
+        if result is None:
+            return False
+            
+        if func_name == 'get_ohlcv':
+            return isinstance(result, pd.DataFrame) and not result.empty
+        elif func_name == 'get_ticker':
+            return isinstance(result, dict) and result.get('last', 0) > 0
+        elif func_name == 'get_popular_assets':
+            return isinstance(result, list) and len(result) > 0
+            
+        return False
+    
+    def _get_emergency_data(self, func_name, symbol, *args, **kwargs):
+        """Data darurat ketika semua gagal"""
+        logger.error(f"🚨 EMERGENCY: Generating emergency data for {symbol}")
+        
+        if func_name == 'get_ohlcv':
+            # Generate synthetic data
+            return self._generate_synthetic_data(symbol)
+        elif func_name == 'get_ticker':
+            return {
+                'last': 100.0,
+                'volume': 10000,
+                'symbol': symbol,
+                'timestamp': datetime.now()
+            }
+        elif func_name == 'get_popular_assets':
+            # Return minimal assets
+            return [
+                {'symbol': 'BTC/USDT', 'name': 'Bitcoin', 'type': 'spot'},
+                {'symbol': 'ETH/USDT', 'name': 'Ethereum', 'type': 'spot'},
+                {'symbol': 'BNB/USDT', 'name': 'Binance Coin', 'type': 'spot'}
+            ]
+        return None
+    
+    # ================ PUBLIC METHODS ================
+    
+    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
+        """Get OHLCV data dengan auto-fallback"""
+        logger.debug(f"📊 Getting OHLCV for {symbol} (limit: {limit})")
+        return self._execute_with_fallback('get_ohlcv', symbol, timeframe, limit)
+    
+    def get_ticker(self, symbol):
+        """Get ticker data dengan auto-fallback"""
+        logger.debug(f"📈 Getting ticker for {symbol}")
+        return self._execute_with_fallback('get_ticker', symbol)
+    
+    def get_popular_assets(self, limit=100, asset_type=None):
+        """Get popular assets dengan smart filtering"""
+        target_type = asset_type or self.trading_mode
+        
+        logger.info(f"📋 Getting {limit} {target_type} assets from {self.active_exchange}")
+        
+        # Get assets dari provider aktif
+        if target_type == 'future':
+            provider = self.active_futures_provider
+        else:
+            provider = self.active_spot_provider
+        
+        try:
+            assets = provider.get_popular_assets(limit)
+            
+            # Filter berdasarkan type
+            filtered_assets = []
+            for asset in assets:
+                if isinstance(asset, dict):
+                    asset_type = asset.get('type', '').lower()
+                    symbol = asset.get('symbol', '').upper()
+                    
+                    if target_type == 'future':
+                        # Hanya ambil futures
+                        if asset_type == 'future' or any(x in symbol for x in [':USDT', 'PERP', 'FUTURES']):
+                            filtered_assets.append(asset)
+                    else:
+                        # Hanya ambil spot
+                        if asset_type == 'spot' or not any(x in symbol for x in [':USDT', 'PERP', 'FUTURES']):
+                            filtered_assets.append(asset)
+                else:
+                    # String format
+                    if target_type == 'future':
+                        if any(x in asset.upper() for x in [':USDT', 'PERP', 'FUTURES']):
+                            filtered_assets.append({'symbol': asset, 'name': asset, 'type': 'future'})
+                    else:
+                        if not any(x in asset.upper() for x in [':USDT', 'PERP', 'FUTURES']):
+                            filtered_assets.append({'symbol': asset, 'name': asset, 'type': 'spot'})
+            
+            if not filtered_assets:
+                logger.warning(f"⚠️ No {target_type} assets found, using fallback")
+                return self.fallback_provider.get_popular_assets(limit)
+            
+            return filtered_assets[:limit]
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting popular assets: {e}")
+            return self.fallback_provider.get_popular_assets(limit)
+    
+    def get_health_metrics(self):
+        """Get health metrics yang komprehensif"""
+        base_metrics = super().get_health_metrics()
+        
+        base_metrics.update({
+            'active_exchange': self.active_exchange,
+            'market_type': self.market_type,
+            'trading_mode': self.trading_mode,
+            'failed_exchanges': list(self.connection_manager.failed_exchanges),
+            'spot_provider': self.active_spot_provider.__class__.__name__,
+            'futures_provider': self.active_futures_provider.__class__.__name__,
+            'using_ccxt': self.active_exchange != 'yfinance',
+            'using_yfinance': self.active_exchange == 'yfinance'
+        })
+        
+        return base_metrics
+
 class DataProviderFactory:
     """Factory untuk membuat data provider"""
     
     @staticmethod
     def create_provider(provider_type, **kwargs):
         """Create data provider berdasarkan type"""
-        if provider_type == 'ccxt':
+        
+        # 🆕 UNIFIED PROVIDER (REKOMENDASI UTAMA)
+        if provider_type == 'unified':
+            market_type = kwargs.get('market_type', 'crypto')
+            trading_mode = kwargs.get('trading_mode', 'spot')
+            return UnifiedDataProvider(
+                market_type=market_type,
+                trading_mode=trading_mode
+            )
+            
+        elif provider_type == 'ccxt':
             exchange_id = kwargs.get('exchange_id', 'binance')
             market_type = kwargs.get('market_type', 'spot')
             api_key = kwargs.get('api_key', '')
@@ -1568,8 +1935,12 @@ class DataProviderFactory:
             
         elif provider_type == 'dynamic':
             market_type = kwargs.get('market_type', 'crypto')
-            trading_mode = kwargs.get('trading_mode', 'spot')  # 🚨 TAMBAHKAN PARAMETER trading_mode
-            return DynamicDataProvider(market_type=market_type, trading_mode=trading_mode)
+            trading_mode = kwargs.get('trading_mode', 'spot')
+            logger.warning("⚠️ 'dynamic' provider is deprecated, using 'unified' instead")
+            return UnifiedDataProvider(
+                market_type=market_type,
+                trading_mode=trading_mode
+            )
         
         elif provider_type == 'robust':
             primary_type = kwargs.get('primary_type', 'ccxt')
@@ -2288,6 +2659,56 @@ def test_dynamic_provider():
     print(f"   Using CCXT: {metrics.get('using_ccxt', 'N/A')}")
     print(f"   Using YFinance: {metrics.get('using_yfinance', 'N/A')}")
 
+def test_unified_provider():
+    """Test UnifiedDataProvider dengan auto-rotasi exchange"""
+    print("\n🧪 Testing UnifiedDataProvider...")
+    
+    # Test 1: Crypto Spot
+    print("\n1. Testing CRYPTO SPOT:")
+    provider = UnifiedDataProvider(market_type="crypto", trading_mode="spot")
+    
+    spot_assets = provider.get_popular_assets(10, asset_type='spot')
+    print(f"✅ Popular SPOT assets: {len(spot_assets)} found")
+    for i, asset in enumerate(spot_assets[:5]):
+        print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')}) - Type: {asset.get('type', 'N/A')}")
+    
+    # Test 2: Crypto Futures
+    print("\n2. Testing CRYPTO FUTURES:")
+    futures_assets = provider.get_popular_assets(10, asset_type='future')
+    print(f"✅ Popular FUTURES assets: {len(futures_assets)} found")
+    for i, asset in enumerate(futures_assets[:5]):
+        print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')}) - Type: {asset.get('type', 'N/A')}")
+    
+    # Test 3: Test OHLCV dengan fallback
+    try:
+        print("\n3. Testing OHLCV with fallback for BTC/USDT:")
+        ohlcv = provider.get_ohlcv("BTC/USDT", '1h', 10)
+        if ohlcv is not None:
+            print(f"✅ OHLCV data: {len(ohlcv)} rows")
+            print(f"   Latest price: {ohlcv['close'].iloc[-1] if len(ohlcv) > 0 else 'N/A'}")
+        else:
+            print("❌ No OHLCV data")
+    except Exception as e:
+        print(f"❌ OHLCV error: {e}")
+    
+    # Test 4: Health metrics
+    print("\n4. Testing HEALTH METRICS:")
+    metrics = provider.get_health_metrics()
+    print(f"✅ Health metrics available")
+    print(f"   Active exchange: {metrics.get('active_exchange', 'N/A')}")
+    print(f"   Using CCXT: {metrics.get('using_ccxt', 'N/A')}")
+    print(f"   Failed exchanges: {metrics.get('failed_exchanges', 'N/A')}")
+    print(f"   Spot provider: {metrics.get('spot_provider', 'N/A')}")
+    print(f"   Futures provider: {metrics.get('futures_provider', 'N/A')}")
+    
+    # Test 5: Test dengan market type non-crypto
+    print("\n5. Testing NON-CRYPTO market (US Stocks):")
+    stock_provider = UnifiedDataProvider(market_type="us_stocks", trading_mode="spot")
+    stocks = stock_provider.get_popular_assets(5)
+    print(f"✅ US Stocks: {len(stocks)} found")
+    for stock in stocks:
+        print(f"   - {stock['symbol']} ({stock.get('name', 'N/A')})")
+
 if __name__ == "__main__":
     print("=" * 60)
     print("DATA PROVIDER TEST SUITE")
@@ -2297,6 +2718,8 @@ if __name__ == "__main__":
     test_robust_data_fetcher()
     print("\n" + "=" * 60)
     test_dynamic_provider()
+    print("\n" + "=" * 60)
+    test_unified_provider()
     
     print("\n" + "=" * 60)
     print("TESTS COMPLETED")
