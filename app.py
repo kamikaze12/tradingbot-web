@@ -511,7 +511,11 @@ def main_app():
                     
                     # HANYA kirim mode string, bukan keyword arguments
                     mode_string = market_mode_map[market_choice]
+                    # Pastikan trading_mode sudah di-set di bot sebelum memanggil set_mode
+                    bot.set_trading_mode(trading_mode.lower())
+                    # Kemudian panggil set_mode
                     success = bot.set_mode(mode_string)
+                    
                     
                     if success:
                         # Set trading mode secara terpisah
