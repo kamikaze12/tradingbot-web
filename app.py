@@ -34,12 +34,92 @@ load_dotenv()
 st.set_page_config(page_title="TradingBot Pro", layout="wide")
 
 # ====================================
-# Login System
+# Helper Functions - ENHANCED
 # ====================================
 def check_login(username, password):
     """Simple login system"""
     users = {"muraga": "namikaze", "user2": "password2", "user3": "password3", "admin": "admin123"}
     return users.get(username) == password
+
+def format_symbol_for_mode(symbol, market_type, trading_mode):
+    """Format symbol sesuai dengan market type dan trading mode"""
+    if not symbol:
+        return symbol
+    
+    symbol = str(symbol).upper()
+    
+    # Jika sudah dalam format yang benar, return as is
+    if market_type == "crypto":
+        if trading_mode == "futures":
+            # Format futures: BTCUSDT-PERP atau BTC-PERP
+            if not symbol.endswith("-PERP") and not symbol.endswith("-SWAP"):
+                if "/" in symbol:
+                    symbol = symbol.replace("/", "")
+                if symbol.endswith("USDT"):
+                    symbol = f"{symbol}-PERP"
+                else:
+                    # Tambahkan USDT jika tidak ada pair
+                    if len(symbol) <= 5:  # Asumsi symbol pendek seperti BTC, ETH
+                        symbol = f"{symbol}USDT-PERP"
+        else:
+            # Format spot: BTC/USDT
+            if "USDT" in symbol and "/" not in symbol:
+                # Contoh: BTCUSDT -> BTC/USDT
+                base = symbol.replace("USDT", "")
+                symbol = f"{base}/USDT"
+            elif symbol.endswith("-PERP") or symbol.endswith("-SWAP"):
+                # Hapus suffix futures
+                symbol = symbol.replace("-PERP", "").replace("-SWAP", "")
+                if not "/" in symbol and "USDT" in symbol:
+                    base = symbol.replace("USDT", "")
+                    symbol = f"{base}/USDT"
+    
+    elif market_type == "forex":
+        if trading_mode == "futures":
+            # Forex futures (jarang, tapi buat konsistensi)
+            if "=X" not in symbol and "-PERP" not in symbol:
+                if "/" in symbol:
+                    symbol = symbol.replace("/", "-PERP")
+                else:
+                    symbol = f"{symbol}-PERP"
+        else:
+            # Spot forex (e.g., EUR/USD)
+            if len(symbol) == 6 and "=" not in symbol and "/" not in symbol:
+                symbol = f"{symbol[:3]}/{symbol[3:]}"
+    
+    elif market_type == "saham_id":
+        # Saham Indonesia: BBCA.JK
+        if not symbol.endswith(".JK"):
+            symbol = f"{symbol}.JK"
+    
+    elif market_type == "us_stocks":
+        # US Stocks: AAPL
+        if symbol.endswith(".JK"):
+            symbol = symbol.replace(".JK", "")
+    
+    return symbol
+
+def convert_symbol_for_display(symbol, market_type, trading_mode):
+    """Convert symbol untuk display yang user-friendly"""
+    if not symbol:
+        return symbol
+    
+    symbol = str(symbol)
+    
+    if trading_mode == "futures":
+        if symbol.endswith("-PERP"):
+            return f"{symbol.replace('-PERP', '')} (Futures)"
+        elif symbol.endswith("-SWAP"):
+            return f"{symbol.replace('-SWAP', '')} (Swap)"
+    
+    # Format spot lebih rapi
+    if market_type == "crypto" and "/" in symbol:
+        return symbol
+    
+    if market_type == "forex" and "/" in symbol:
+        return symbol
+    
+    return symbol
 
 def login_section():
     """Display login form"""
@@ -70,9 +150,17 @@ def login_section():
 
 @st.cache_resource
 def init_bot():
-    """Initialize TradingBot"""
+    """Initialize TradingBot dengan parameter yang sesuai"""
     try:
-        bot = TradingBot()
+        # Coba initialize dengan default parameters
+        try:
+            bot = TradingBot(trading_mode="spot")  # Default mode
+            print("✅ TradingBot initialized with trading_mode parameter")
+        except TypeError:
+            # Fallback untuk constructor lama
+            bot = TradingBot()
+            print("✅ TradingBot initialized with legacy constructor")
+        
         st.success("✅ TradingBot initialized successfully")
         return bot
     except Exception as e:
@@ -381,6 +469,7 @@ def main_app():
         st.session_state.selected_analysis = None
         st.session_state.selected_for_entry = {}
         st.session_state.current_market = None
+        st.session_state.current_trading_mode = None  # ✅ Tambah untuk trading mode
         st.session_state.market_set = False
         # State-state tambahan dari app (1).py
         st.session_state.live_monitoring = False
@@ -390,7 +479,7 @@ def main_app():
         st.session_state.risk_assessments = {}
         st.session_state.latest_results = []  # untuk auto rescan
 
-    # Sidebar - ENHANCED
+    # Sidebar - ENHANCED dengan Trading Mode Support
     with st.sidebar:
         st.header("🎯 Market Selection")
         
@@ -412,25 +501,29 @@ def main_app():
         if market_choice in ["Forex", "Saham Indonesia", "US Stocks"]:
             st.warning("⚠️ **SHORT TRADING NOT AVAILABLE** - Only LONG signals will be generated")
 
-        # Set Market Button - FIXED APPROACH
+        # Set Market Button - FIXED APPROACH dengan trading_mode
         if st.button("🎯 Set Market", key="set_market_btn"):
             try:
                 # Validasi Futures hanya untuk Crypto
                 if market_choice != "Crypto" and trading_mode == "Futures":
                     st.error("❌ Futures mode hanya tersedia untuk Crypto")
                 else:
-                    # Set market mode
-                    if market_choice == "Crypto":
-                        success = bot.set_mode("crypto")
-                    elif market_choice == "Forex":
-                        success = bot.set_mode("forex")
-                    elif market_choice == "Saham Indonesia":
-                        success = bot.set_mode("saham_id")
-                    elif market_choice == "US Stocks":
-                        success = bot.set_mode("us_stocks")
+                    # Set market mode DENGAN trading_mode
+                    market_type_map = {
+                        "Crypto": "crypto",
+                        "Forex": "forex", 
+                        "Saham Indonesia": "saham_id",
+                        "US Stocks": "us_stocks"
+                    }
+                    
+                    success = bot.set_mode(
+                        market_type=market_type_map[market_choice],
+                        trading_mode=trading_mode.lower()  # "Spot" -> "spot", "Futures" -> "futures"
+                    )
                     
                     if success:
                         st.session_state.current_market = market_choice
+                        st.session_state.current_trading_mode = trading_mode  # ✅ Simpan trading mode
                         st.session_state.market_set = True
                         st.session_state.scanned_results = []
                         st.session_state.selected_for_entry = {}
@@ -441,9 +534,33 @@ def main_app():
             except Exception as e:
                 st.error(f"❌ Error: {e}")
 
-        # Tampilkan status
+        # Tampilkan status market dan trading mode
         if st.session_state.market_set:
             st.success(f"✅ Active: {st.session_state.current_market}")
+            if hasattr(bot, 'trading_mode'):
+                mode_display = bot.trading_mode.upper()
+                st.info(f"📊 Mode: {mode_display}")
+                if bot.trading_mode == "futures":
+                    st.info(f"⚡ Leverage: {getattr(bot, 'leverage', 1)}x")
+        
+        # Trading Mode Specific Controls
+        if st.session_state.market_set and hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
+            st.subheader("⚡ Futures Settings")
+            leverage_options = [1, 3, 5, 10, 20, 50]
+            selected_leverage = st.selectbox(
+                "Select Leverage:",
+                leverage_options,
+                index=leverage_options.index(getattr(bot, 'leverage', 1)) if hasattr(bot, 'leverage') else 0
+            )
+            
+            if st.button("Apply Leverage", key="apply_leverage"):
+                try:
+                    if hasattr(bot, 'set_leverage'):
+                        bot.set_leverage(selected_leverage)
+                        st.success(f"✅ Leverage set to {selected_leverage}x")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Failed to set leverage: {e}")
         
         # Refresh data - 🔥 PERBAIKAN: Refresh yang benar-benar bekerja
         if st.button("🔄 Refresh All Data", key="refresh_data"):
@@ -460,6 +577,20 @@ def main_app():
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Refresh error: {e}")
+        
+        # Info tentang simbol berdasarkan mode
+        if st.session_state.market_set:
+            with st.expander("ℹ️ Symbol Format Info"):
+                if hasattr(bot, 'trading_mode'):
+                    if bot.trading_mode == "spot":
+                        st.write("**Spot Trading Format:**")
+                        st.write("- Crypto: BTC/USDT, ETH/USDT")
+                        st.write("- Forex: EUR/USD, GBP/USD")
+                        st.write("- Saham ID: BBCA.JK, TLKM.JK")
+                    else:
+                        st.write("**Futures Trading Format:**")
+                        st.write("- Crypto: BTCUSDT-PERP, ETHUSDT-PERP")
+                        st.write("- Forex: EURUSD-PERP, GBPUSD-PERP")
 
     # Check if market is set
     if not st.session_state.market_set:
@@ -473,25 +604,32 @@ def main_app():
         
         **Note:** 
         - Futures trading only available for Crypto
-        - Short trading only available for Crypto
+        - Short trading only available for Crypto Futures
+        - Leverage available for Futures trading
         """)
         return
 
-    # Main Tabs - ENHANCED: 8 tabs seperti di app (1).py
+    # Main Tabs - ENHANCED: 8 tabs dengan trading mode support
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "📊 Scan Assets", "🔍 Analyze", "🎯 Custom Entry", "💼 Positions", 
         "📈 History", "📡 Live Scanner", "🤖 ML Backtest", "⚖️ Portfolio"
     ])
 
-    # Tab 1: Scan Assets - ENHANCED dengan Entry Range
+    # Tab 1: Scan Assets - ENHANCED dengan Entry Range dan Symbol Conversion
     with tab1:
         st.subheader("Scan Potential Assets")
+        
+        # Tampilkan mode aktif
+        if hasattr(bot, 'trading_mode'):
+            mode_badge = "🔄 SPOT" if bot.trading_mode == "spot" else "⚡ FUTURES"
+            st.info(f"**Mode:** {mode_badge} | **Market:** {st.session_state.current_market}")
         
         if st.session_state.current_market == "Crypto":
             scan_type = st.radio("Scan Type:", ["Standard", "Pump Fun"], key="scan_type")
         else:
             scan_type = "Standard"
         
+        # 🔥 PERBAIKAN: Scan dengan simbol yang diformat sesuai mode
         if st.button("🚀 Start Scan", key="start_scan"):
             with st.spinner("Scanning assets..."):
                 try:
@@ -504,16 +642,32 @@ def main_app():
                     else:
                         results = bot.scan_potential_assets(20)  # Scan fewer assets for performance
                         if results:
-                            # Process and validate results
-                            for i, result in enumerate(results[:10]):
-                                symbol = safe_get(result, 'symbol')
-                                results[i] = validate_and_fix_price_levels(result, symbol, bot)
+                            # Process and validate results dengan simbol yang diformat
+                            formatted_results = []
+                            for result in results[:15]:  # Batasi untuk performa
+                                if isinstance(result, dict) and 'symbol' in result:
+                                    original_symbol = safe_get(result, 'symbol')
+                                    
+                                    # Format simbol sesuai trading mode
+                                    formatted_symbol = format_symbol_for_mode(
+                                        original_symbol, 
+                                        bot.mode, 
+                                        getattr(bot, 'trading_mode', 'spot')
+                                    )
+                                    
+                                    # Update simbol dalam result
+                                    result['symbol'] = formatted_symbol
+                                    result['original_symbol'] = original_symbol  # Simpan original
+                                    
+                                    # Validasi price levels
+                                    validated_result = validate_and_fix_price_levels(result, formatted_symbol, bot)
+                                    formatted_results.append(validated_result)
                             
-                            st.session_state.scanned_results = results[:10]
-                            st.success(f"✅ Found {len(results)} potential assets")
+                            st.session_state.scanned_results = formatted_results
+                            st.success(f"✅ Found {len(formatted_results)} potential assets")
                         else:
                             st.warning("No results found. Trying fallback...")
-                            # Fallback logic here
+                            # Fallback logic
                 except Exception as e:
                     st.error(f"Scan error: {e}")
 
@@ -524,11 +678,24 @@ def main_app():
                 if isinstance(res, dict) and 'symbol' in res:
                     col1, col2 = st.columns([3, 1])
                     with col1:
+                        symbol = safe_get(res, 'symbol')
                         action = safe_get(res, 'action', 'NEUTRAL')
                         action_color = "🟢" if action == "LONG" else "🔴" if action == "SHORT" else "⚪"
-                        st.write(f"{i}. {action_color} **{safe_get(res, 'symbol')}** - {action} (Score: {safe_get(res, 'score', 0)})")
                         
-                        current_price = get_valid_price(res, safe_get(res, 'symbol'), bot)
+                        # Tampilkan simbol dengan format display
+                        display_symbol = convert_symbol_for_display(
+                            symbol, 
+                            bot.mode, 
+                            getattr(bot, 'trading_mode', 'spot')
+                        )
+                        
+                        st.write(f"{i}. {action_color} **{display_symbol}** - {action} (Score: {safe_get(res, 'score', 0)})")
+                        
+                        # Tampilkan original simbol jika berbeda
+                        if 'original_symbol' in res and res['original_symbol'] != symbol:
+                            st.caption(f"Original: {res['original_symbol']}")
+                        
+                        current_price = get_valid_price(res, symbol, bot)
                         st.write(f"💰 Current Price: `{current_price:.5f}`")
                         
                         # ✅ TAMPILKAN ENTRY RANGE DAN IDEAL ENTRY
@@ -554,30 +721,55 @@ def main_app():
                     
                     with col2:
                         if st.button(f"Select", key=f"select_{i}"):
-                            symbol = safe_get(res, 'symbol')
                             st.session_state.selected_for_entry[symbol] = res
-                            st.success(f"Selected {symbol}!")
+                            st.success(f"Selected {display_symbol}!")
                             st.rerun()
 
             # Entry section for selected assets
             for symbol, analysis in list(st.session_state.selected_for_entry.items()):
                 st.markdown("---")
-                st.subheader(f"Entry for {symbol}")
+                
+                # Tampilkan simbol dengan format display
+                display_symbol = convert_symbol_for_display(
+                    symbol, 
+                    bot.mode, 
+                    getattr(bot, 'trading_mode', 'spot')
+                )
+                
+                st.subheader(f"Entry for {display_symbol}")
                 
                 analysis = validate_and_fix_price_levels(analysis, symbol, bot)
                 current_price = get_valid_price(analysis, symbol, bot)
                 
-                entry_price = st.number_input(
-                    "Entry Price",
-                    value=float(current_price),
-                    min_value=0.0001,
-                    format="%.5f",
-                    key=f"entry_{symbol}"
-                )
+                # 🔥 PERBAIKAN: Entry dengan leverage untuk futures
+                col_entry1, col_entry2 = st.columns([2, 1])
+                with col_entry1:
+                    entry_price = st.number_input(
+                        "Entry Price",
+                        value=float(current_price),
+                        min_value=0.0001,
+                        format="%.5f",
+                        key=f"entry_{symbol}"
+                    )
+                
+                with col_entry2:
+                    # Jika futures mode, tampilkan leverage
+                    if hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
+                        leverage = st.selectbox(
+                            "Leverage",
+                            [1, 3, 5, 10, 20],
+                            index=0,
+                            key=f"leverage_{symbol}"
+                        )
                 
                 if st.button(f"✅ Add Position", key=f"add_{symbol}"):
                     try:
-                        # Save position logic here
+                        # Prepare additional data untuk futures
+                        additional_data = {}
+                        if hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
+                            additional_data['leverage'] = leverage
+                        
+                        # Save position logic
                         position_id = bot.db.save_position(
                             symbol=symbol,
                             market_type=bot.mode,
@@ -587,6 +779,7 @@ def main_app():
                             tp2=safe_get(analysis, "tp2", 0),
                             tp3=safe_get(analysis, "tp3", 0),
                             sl=safe_get(analysis, "sl", 0),
+                            **additional_data
                         )
                         
                         if position_id:
@@ -599,7 +792,7 @@ def main_app():
                     except Exception as e:
                         st.error(f"Error: {e}")
 
-            # Auto Rescan Section - DARI APP (1).PY
+            # Auto Rescan Section
             st.markdown("---")
             if st.checkbox("🔄 Auto Rescan (30s)"):
                 if "scheduler_thread" not in st.session_state:
@@ -616,28 +809,61 @@ def main_app():
                             if 'detected_patterns' in res and res['detected_patterns']:
                                 st.write(f"📊 Pola: {', '.join(res['detected_patterns'])}")
 
-    # Tab 2: Analyze Asset - ENHANCED dengan Entry Range
+    # Tab 2: Analyze Asset - ENHANCED dengan Entry Range dan Symbol Conversion
     with tab2:
         st.subheader("Analyze Specific Asset")
         
-        symbol_input = st.text_input("Enter symbol:", key="analyze_symbol")
+        # Info mode
+        if hasattr(bot, 'trading_mode'):
+            mode_status = "🔄 Spot" if bot.trading_mode == "spot" else "⚡ Futures"
+            st.caption(f"Mode: {mode_status}")
+        
+        col_analyze1, col_analyze2 = st.columns([2, 1])
+        with col_analyze1:
+            symbol_input = st.text_input("Enter symbol:", key="analyze_symbol", placeholder="BTC or BTC/USDT or BTCUSDT-PERP")
+        
+        with col_analyze2:
+            # Contoh simbol berdasarkan mode
+            with st.expander("Examples"):
+                if hasattr(bot, 'trading_mode'):
+                    if bot.trading_mode == "spot":
+                        st.write("Spot Examples:")
+                        st.write("- BTC/USDT")
+                        st.write("- ETH/USDT")
+                        st.write("- EUR/USD")
+                    else:
+                        st.write("Futures Examples:")
+                        st.write("- BTCUSDT-PERP")
+                        st.write("- ETHUSDT-PERP")
+                        st.write("- BTC-PERP")
         
         if st.button("Analyze", key="analyze_btn"):
             if symbol_input:
                 with st.spinner("Analyzing..."):
                     try:
                         symbol = symbol_input.upper()
-                        if st.session_state.current_market == "Crypto":
-                            symbol = f"{symbol}/USDT"
                         
-                        analysis = bot.analyze_asset(symbol)
+                        # 🔥 PERBAIKAN: Format simbol sebelum analisis
+                        formatted_symbol = format_symbol_for_mode(
+                            symbol, 
+                            bot.mode,
+                            getattr(bot, 'trading_mode', 'spot')
+                        )
+                        
+                        st.info(f"Analyzing: {formatted_symbol}")
+                        
+                        analysis = bot.analyze_asset(formatted_symbol)
                         if analysis:
-                            analysis = validate_and_fix_price_levels(analysis, symbol, bot)
+                            analysis = validate_and_fix_price_levels(analysis, formatted_symbol, bot)
+                            
+                            # Tambahkan simbol yang diformat
+                            analysis['formatted_symbol'] = formatted_symbol
+                            analysis['original_input'] = symbol
                             
                             # Hitung probabilitas TP
                             tp1, tp2, tp3 = safe_get(analysis, 'tp1', 0), safe_get(analysis, 'tp2', 0), safe_get(analysis, 'tp3', 0)
                             action = safe_get(analysis, 'action', 'LONG')
-                            current_price = get_valid_price(analysis, symbol, bot)
+                            current_price = get_valid_price(analysis, formatted_symbol, bot)
                             
                             analysis['tp_probabilities'] = calculate_tp_probability(
                                 current_price, tp1, tp2, tp3, safe_get(analysis, 'sl', 0), action
@@ -652,7 +878,17 @@ def main_app():
         
         if st.session_state.selected_analysis:
             analysis = st.session_state.selected_analysis
-            st.subheader(f"Analysis: {safe_get(analysis, 'symbol')}")
+            symbol_display = convert_symbol_for_display(
+                analysis.get('formatted_symbol', analysis.get('symbol', '')),
+                bot.mode,
+                getattr(bot, 'trading_mode', 'spot')
+            )
+            
+            st.subheader(f"Analysis: {symbol_display}")
+            
+            # Tampilkan info simbol
+            if 'original_input' in analysis and analysis['original_input'] != analysis.get('formatted_symbol', ''):
+                st.caption(f"Original input: {analysis['original_input']}")
             
             col1, col2 = st.columns(2)
             with col1:
@@ -689,47 +925,108 @@ def main_app():
                 if fig_range:
                     st.plotly_chart(fig_range, use_container_width=True)
 
-    # Tab 3: Custom Entry - DARI APP (1).PY dengan Entry Range
+    # Tab 3: Custom Entry - DENGAN Trading Mode Support
     with tab3:
         st.subheader("🎯 Custom Entry")
         
-        symbol_custom = st.text_input("Masukkan simbol aset:", key="custom_symbol")
-        entry_price_custom = st.number_input("Harga Entry:", value=0.0, step=0.0001, key="custom_entry")
-        action_custom = st.selectbox("Action:", ["LONG", "SHORT"], key="custom_action")
+        # Mode info
+        if hasattr(bot, 'trading_mode'):
+            mode_display = "🔄 Spot" if bot.trading_mode == "spot" else "⚡ Futures"
+            st.info(f"**Trading Mode:** {mode_display}")
+        
+        col_symbol, col_action = st.columns([2, 1])
+        with col_symbol:
+            symbol_custom = st.text_input("Masukkan simbol aset:", key="custom_symbol", 
+                                         placeholder="BTC untuk auto-format")
+        with col_action:
+            action_custom = st.selectbox("Action:", ["LONG", "SHORT"], key="custom_action")
+        
+        # 🔥 PERBAIKAN: Format simbol otomatis
+        formatted_custom_symbol = None
+        if symbol_custom:
+            formatted_custom_symbol = format_symbol_for_mode(
+                symbol_custom.upper(),
+                bot.mode,
+                getattr(bot, 'trading_mode', 'spot')
+            )
+            
+            if formatted_custom_symbol != symbol_custom.upper():
+                st.info(f"Simbol akan diformat menjadi: **{formatted_custom_symbol}**")
+        
+        col_price, col_leverage = st.columns([2, 1])
+        with col_price:
+            entry_price_custom = st.number_input("Harga Entry:", value=0.0, step=0.0001, key="custom_entry")
+        
+        with col_leverage:
+            # Tampilkan leverage untuk futures
+            if hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
+                leverage_custom = st.selectbox(
+                    "Leverage:",
+                    [1, 3, 5, 10, 20],
+                    key="custom_leverage"
+                )
+            else:
+                leverage_custom = 1
+                st.text("Leverage: 1x (Spot)")
         
         if st.button("🧮 Hitung TP/SL", key="calculate_custom"):
             if symbol_custom and entry_price_custom > 0:
                 with st.spinner("Menghitung..."):
-                    result = bot.calculate_custom_entry(symbol_custom, entry_price_custom, action_custom)
-                    if result:
-                        # Validasi dan perbaiki price levels
-                        result = validate_and_fix_price_levels(result, symbol_custom, bot)
+                    try:
+                        # Gunakan simbol yang sudah diformat
+                        symbol_to_use = formatted_custom_symbol if formatted_custom_symbol else symbol_custom.upper()
                         
-                        # Urutkan TP levels sesuai action
-                        if action_custom == "LONG":
-                            tp1, tp2, tp3 = sorted([result['tp1'], result['tp2'], result['tp3']])
-                        else:  # SHORT
-                            tp1, tp2, tp3 = sorted([result['tp1'], result['tp2'], result['tp3']], reverse=True)
-                        
-                        result['tp1'], result['tp2'], result['tp3'] = tp1, tp2, tp3
-                        
-                        # Hitung probabilitas TP
-                        result['tp_probabilities'] = calculate_tp_probability(
-                            entry_price_custom,
-                            result['tp1'], result['tp2'], result['tp3'],
-                            result['sl'], action_custom
-                        )
-                        st.session_state.custom_result = result
-                        st.success("Perhitungan selesai!")
-                    else:
-                        st.error("Tidak dapat menghitung TP/SL. Pastikan simbol valid.")
+                        result = bot.calculate_custom_entry(symbol_to_use, entry_price_custom, action_custom)
+                        if result:
+                            # Validasi dan perbaiki price levels
+                            result = validate_and_fix_price_levels(result, symbol_to_use, bot)
+                            
+                            # Tambahkan info trading mode
+                            result['trading_mode'] = getattr(bot, 'trading_mode', 'spot')
+                            result['leverage'] = leverage_custom
+                            
+                            # Urutkan TP levels sesuai action
+                            if action_custom == "LONG":
+                                tp1, tp2, tp3 = sorted([result['tp1'], result['tp2'], result['tp3']])
+                            else:  # SHORT
+                                tp1, tp2, tp3 = sorted([result['tp1'], result['tp2'], result['tp3']], reverse=True)
+                            
+                            result['tp1'], result['tp2'], result['tp3'] = tp1, tp2, tp3
+                            
+                            # Hitung probabilitas TP
+                            result['tp_probabilities'] = calculate_tp_probability(
+                                entry_price_custom,
+                                result['tp1'], result['tp2'], result['tp3'],
+                                result['sl'], action_custom
+                            )
+                            st.session_state.custom_result = result
+                            st.success("Perhitungan selesai!")
+                        else:
+                            st.error("Tidak dapat menghitung TP/SL. Pastikan simbol valid.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
             else:
                 st.warning("Masukkan simbol dan harga entry yang valid.")
         
         # Tampilkan hasil custom entry
         if st.session_state.custom_result:
             result = st.session_state.custom_result
-            st.subheader(f"📊 Hasil untuk {result['symbol']}")
+            symbol_display = convert_symbol_for_display(
+                result['symbol'],
+                bot.mode,
+                result.get('trading_mode', 'spot')
+            )
+            
+            st.subheader(f"📊 Hasil untuk {symbol_display}")
+            
+            # Tampilkan mode dan leverage
+            col_mode, col_lev = st.columns(2)
+            with col_mode:
+                mode_badge = "🔄 SPOT" if result.get('trading_mode') == 'spot' else "⚡ FUTURES"
+                st.metric("Mode", mode_badge)
+            with col_lev:
+                if result.get('trading_mode') == 'futures':
+                    st.metric("Leverage", f"{result.get('leverage', 1)}x")
             
             col1, col2 = st.columns(2)
             with col1:
@@ -785,7 +1082,12 @@ def main_app():
                     tp1, tp2, tp3 = sorted([result['tp1'], result['tp2'], result['tp3']])
                 else:  # SHORT
                     tp1, tp2, tp3 = sorted([result['tp1'], result['tp2'], result['tp3']], reverse=True)
-                    
+                
+                # Prepare additional data
+                additional_data = {}
+                if result.get('trading_mode') == 'futures':
+                    additional_data['leverage'] = result.get('leverage', 1)
+                
                 position_id = bot.db.save_position(
                     symbol=result['symbol'],
                     market_type=bot.mode,
@@ -797,17 +1099,23 @@ def main_app():
                     sl=result['sl'],
                     entry_low=result.get('entry_range_low', result['entry_price'] * 0.99),
                     entry_high=result.get('entry_range_high', result['entry_price'] * 1.01),
+                    **additional_data
                 )
                 if position_id:
-                    st.success(f"Posisi {result['symbol']} ditambahkan!")
+                    st.success(f"Posisi {symbol_display} ditambahkan!")
                     st.session_state.positions_data = bot.get_active_positions()
                     st.rerun()
                 else:
                     st.error("Gagal tambah posisi.")
 
-    # 🔥 TAB 4: POSITIONS - FULLY FIXED VERSION
+    # 🔥 TAB 4: POSITIONS - FULLY FIXED VERSION dengan Trading Mode Support
     with tab4:
         st.subheader("💼 Active Positions")
+        
+        # Mode info
+        if hasattr(bot, 'trading_mode'):
+            mode_display = "🔄 Spot" if bot.trading_mode == "spot" else "⚡ Futures"
+            st.info(f"**Trading Mode:** {mode_display}")
         
         # 🔥 PERBAIKAN: Refresh yang benar-benar bekerja
         col_refresh, col_auto = st.columns([1, 3])
@@ -860,6 +1168,9 @@ def main_app():
                         entry_low = float(pos[12]) if len(pos) > 12 and pos[12] else 0
                         entry_high = float(pos[13]) if len(pos) > 13 and pos[13] else 0
                         
+                        # Ambil leverage jika ada
+                        leverage = float(pos[14]) if len(pos) > 14 and pos[14] else 1
+                        
                     else:
                         position_id = safe_get(pos, 'id')
                         symbol = safe_get(pos, 'symbol')
@@ -884,6 +1195,7 @@ def main_app():
                         # Validasi Entry Range
                         entry_low = float(safe_get(pos, 'entry_low', 0))
                         entry_high = float(safe_get(pos, 'entry_high', 0))
+                        leverage = float(safe_get(pos, 'leverage', 1))
                     
                     # 🔥 PERBAIKAN: Jika entry range tidak valid, hitung ulang
                     if entry_low <= 0 or entry_high <= 0 or entry_low == entry_high:
@@ -911,12 +1223,24 @@ def main_app():
                         current_price, tp1, tp2, tp3, sl, action
                     )
                     
+                    # 🔥 PERBAIKAN: Tampilkan simbol dengan format display
+                    display_symbol = convert_symbol_for_display(
+                        symbol,
+                        bot.mode,
+                        getattr(bot, 'trading_mode', 'spot')
+                    )
+                    
                     # Tampilkan position card
                     with st.container():
                         col1, col2, col3 = st.columns([3, 2, 1])
                         
                         with col1:
-                            st.write(f"**{symbol}** - {action} {pl_emoji}")
+                            st.write(f"**{display_symbol}** - {action} {pl_emoji}")
+                            
+                            # Tampilkan leverage untuk futures
+                            if leverage > 1:
+                                st.write(f"⚡ **Leverage:** {leverage}x")
+                            
                             st.write(f"🏁 Entry: `{entry_price:.5f}`")
                             st.write(f"📊 Current: `{current_price:.5f}`")
                             st.write(f"💰 P/L: <span style='color:{pl_color}; font-weight:bold'>{pl_pct:+.2f}%</span>", unsafe_allow_html=True)
@@ -940,13 +1264,13 @@ def main_app():
                                     # Gunakan harga current untuk close
                                     success = bot.close_position(position_id, current_price)
                                     if success:
-                                        st.success(f"✅ {symbol} position closed at {current_price:.5f}!")
+                                        st.success(f"✅ {display_symbol} position closed at {current_price:.5f}!")
                                         # Refresh data
                                         time.sleep(1)
                                         st.session_state.positions_data = bot.get_active_positions()
                                         st.rerun()
                                     else:
-                                        st.error(f"❌ Failed to close {symbol}")
+                                        st.error(f"❌ Failed to close {display_symbol}")
                                 except Exception as close_error:
                                     st.error(f"❌ Close error: {close_error}")
                     
@@ -956,6 +1280,7 @@ def main_app():
                     updated_positions.append({
                         'id': position_id,
                         'symbol': symbol,
+                        'display_symbol': display_symbol,
                         'action': action,
                         'entry_price': entry_price,
                         'current_price': current_price,
@@ -965,7 +1290,8 @@ def main_app():
                         'sl': sl,
                         'entry_low': entry_low,
                         'entry_high': entry_high,
-                        'best_entry': best_entry
+                        'best_entry': best_entry,
+                        'leverage': leverage
                     })
                     
                 except Exception as e:
@@ -979,7 +1305,7 @@ def main_app():
                 time.sleep(15)
                 st.rerun()
 
-    # Tab 5: History - SAMA SEBELUMNYA
+    # Tab 5: History - DENGAN Symbol Conversion
     with tab5:
         st.subheader("📈 Trade History")
         
@@ -1005,19 +1331,31 @@ def main_app():
                         exit_price = safe_get(trade, 'exit_price')
                         profit_loss = safe_get(trade, 'profit_loss')
                     
+                    # 🔥 PERBAIKAN: Format simbol untuk display
+                    display_symbol = convert_symbol_for_display(
+                        symbol,
+                        bot.mode,
+                        getattr(bot, 'trading_mode', 'spot')
+                    )
+                    
                     color = "green" if profit_loss > 0 else "red"
                     emoji = "✅" if profit_loss > 0 else "❌"
                     
-                    st.write(f"{emoji} **{symbol}** - {action}")
+                    st.write(f"{emoji} **{display_symbol}** - {action}")
                     st.write(f"Entry: `{entry_price:.5f}` | Exit: `{exit_price:.5f}`")
                     st.write(f"P/L: <span style='color:{color}'>{profit_loss:.5f}</span>", unsafe_allow_html=True)
                     st.markdown("---")
                 except Exception as e:
                     st.error(f"History error: {e}")
 
-    # 🔥 TAB 6: LIVE SCANNER - FULLY FIXED VERSION
+    # 🔥 TAB 6: LIVE SCANNER - FULLY FIXED VERSION dengan Trading Mode
     with tab6:
         st.subheader("📡 Live Scanner")
+        
+        # Mode info
+        if hasattr(bot, 'trading_mode'):
+            mode_display = "🔄 Spot" if bot.trading_mode == "spot" else "⚡ Futures"
+            st.info(f"**Trading Mode:** {mode_display}")
         
         # 🔥 PERBAIKAN: State management yang lebih baik
         col1, col2 = st.columns([1, 3])
@@ -1059,18 +1397,28 @@ def main_app():
                             latest_price = float(ticker['last'])
                             entry_price = float(safe_get(pos, 'entry_price'))
                             action = safe_get(pos, 'action')
+                            leverage = safe_get(pos, 'leverage', 1)
+                            
+                            # 🔥 PERBAIKAN: Format simbol untuk display
+                            display_symbol = convert_symbol_for_display(
+                                symbol,
+                                bot.mode,
+                                getattr(bot, 'trading_mode', 'spot')
+                            )
                             
                             # Update posisi dengan harga terbaru
                             pos_dict = {
                                 'id': safe_get(pos, 'id'),
                                 'symbol': symbol,
+                                'display_symbol': display_symbol,
                                 'action': action,
                                 'entry_price': entry_price,
                                 'current_price': latest_price,
                                 'tp1': float(safe_get(pos, 'tp1', 0)),
                                 'tp2': float(safe_get(pos, 'tp2', 0)),
                                 'tp3': float(safe_get(pos, 'tp3', 0)),
-                                'sl': float(safe_get(pos, 'sl', 0))
+                                'sl': float(safe_get(pos, 'sl', 0)),
+                                'leverage': leverage
                             }
                             
                             live_updated_positions.append(pos_dict)
@@ -1087,7 +1435,9 @@ def main_app():
                             # Tampilkan data live
                             col_live1, col_live2, col_live3 = st.columns([2, 2, 1])
                             with col_live1:
-                                st.write(f"**{symbol}** - {action}")
+                                st.write(f"**{display_symbol}** - {action}")
+                                if leverage > 1:
+                                    st.write(f"⚡ {leverage}x")
                                 st.write(f"🏁 Entry: `{entry_price:.5f}`")
                             with col_live2:
                                 st.write(f"{emoji} Live: `{latest_price:.5f}`")
@@ -1118,9 +1468,14 @@ def main_app():
         else:
             st.info("👉 Klik 'Mulai Live Monitoring' untuk memantau harga real-time.")
 
-    # Tab 7: ML Backtest - DARI APP (1).PY
+    # Tab 7: ML Backtest - DENGAN Symbol Conversion
     with tab7:
         st.subheader("🤖 ML Backtest & Analysis")
+        
+        # Mode info
+        if hasattr(bot, 'trading_mode'):
+            mode_display = "🔄 Spot" if bot.trading_mode == "spot" else "⚡ Futures"
+            st.info(f"**Trading Mode:** {mode_display}")
         
         col1, col2 = st.columns([2, 1])
         with col1:
@@ -1128,24 +1483,27 @@ def main_app():
         with col2:
             backtest_days = st.selectbox("Period:", [30, 90, 180, 365], index=2)
         
+        # 🔥 PERBAIKAN: Format simbol sebelum backtest
+        formatted_backtest_symbol = None
+        if backtest_symbol:
+            formatted_backtest_symbol = format_symbol_for_mode(
+                backtest_symbol.upper(),
+                bot.mode,
+                getattr(bot, 'trading_mode', 'spot')
+            )
+            
+            if formatted_backtest_symbol != backtest_symbol.upper():
+                st.info(f"Simbol akan diformat: **{formatted_backtest_symbol}**")
+        
         col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("🚀 Run Backtest", key="run_backtest"):
                 if backtest_symbol:
                     with st.spinner("Running comprehensive backtest..."):
-                        symbol = backtest_symbol.upper()
-                        if bot.mode == "crypto":
-                            symbol = f"{symbol}/USDT"
-                        elif bot.mode == "forex":
-                            if symbol == "XAU":
-                                symbol = "GC=F"
-                            elif len(symbol) == 6:
-                                symbol = f"{symbol}=X"
-                        elif bot.mode == "saham_id":
-                            symbol = f"{symbol}.JK"
+                        symbol_to_use = formatted_backtest_symbol if formatted_backtest_symbol else backtest_symbol.upper()
                         
                         if hasattr(bot, 'run_comprehensive_backtest'):
-                            results = bot.run_comprehensive_backtest(symbol, backtest_days)
+                            results = bot.run_comprehensive_backtest(symbol_to_use, backtest_days)
                         else:
                             results = {"error": "Backtest feature not available"}
                         st.session_state.backtest_results = results
@@ -1155,14 +1513,12 @@ def main_app():
             if st.button("📊 Enhanced Analysis", key="enhanced_analysis"):
                 if backtest_symbol:
                     with st.spinner("Running enhanced analysis..."):
-                        symbol = backtest_symbol.upper()
-                        if bot.mode == "crypto":
-                            symbol = f"{symbol}/USDT"
+                        symbol_to_use = formatted_backtest_symbol if formatted_backtest_symbol else backtest_symbol.upper()
                         
                         if hasattr(bot, 'analyze_with_ml'):
-                            analysis = bot.analyze_with_ml(symbol)
+                            analysis = bot.analyze_with_ml(symbol_to_use)
                         else:
-                            analysis = bot.analyze_asset(symbol)
+                            analysis = bot.analyze_asset(symbol_to_use)
                         if analysis:
                             st.session_state.selected_analysis = analysis
                             st.success("Enhanced analysis completed!")
@@ -1216,9 +1572,14 @@ def main_app():
         elif st.session_state.backtest_results and 'error' in st.session_state.backtest_results:
             st.error(f"Backtest Error: {st.session_state.backtest_results['error']}")
 
-    # Tab 8: Portfolio Optimization - DARI APP (1).PY
+    # Tab 8: Portfolio Optimization - DENGAN Trading Mode Support
     with tab8:
         st.subheader("⚖️ Portfolio Optimization")
+        
+        # Mode info
+        if hasattr(bot, 'trading_mode'):
+            mode_display = "🔄 Spot" if bot.trading_mode == "spot" else "⚡ Futures"
+            st.info(f"**Trading Mode:** {mode_display}")
         
         col1, col2 = st.columns([2, 1])
         with col1:
@@ -1274,8 +1635,15 @@ def main_app():
             st.subheader("📋 Position Details")
             allocation_data = []
             for signal in allocations.get('signals', []):
+                # Format simbol untuk display
+                display_symbol = convert_symbol_for_display(
+                    signal['symbol'],
+                    bot.mode,
+                    getattr(bot, 'trading_mode', 'spot')
+                )
+                
                 allocation_data.append({
-                    'Symbol': signal['symbol'],
+                    'Symbol': display_symbol,
                     'Score': signal['score'],
                     'Risk': signal['risk_category'],
                     'Allocation %': f"{signal['allocation_percent']:.2%}",
@@ -1288,7 +1656,8 @@ def main_app():
                 
                 if PLOTLY_AVAILABLE:
                     fig = go.Figure(data=[go.Pie(
-                        labels=[s['symbol'] for s in allocations['signals']],
+                        labels=[convert_symbol_for_display(s['symbol'], bot.mode, getattr(bot, 'trading_mode', 'spot')) 
+                               for s in allocations['signals']],
                         values=[s['allocated_capital'] for s in allocations['signals']],
                         hole=.3
                     )])
@@ -1302,6 +1671,7 @@ def main_app():
         - Diversification scoring
         - Dynamic allocation optimization
         - Correlation analysis
+        - Futures margin calculations (if applicable)
         """)
 
 def main():
