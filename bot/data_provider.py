@@ -1363,7 +1363,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 'MABA.JK', 'MAGP.JK', 'MAIN.JK', 'MAMI.JK', 'MAPA.JK',
                 'MAPB.JK', 'MAPI.JK', 'MASA.JK', 'MAYA.JK', 'MBAP.JK',
                 'MBSS.JK', 'MBTO.JK', 'MCAS.JK', 'MCOL.JK', 'MCOR.JK',
-                'MDIA.JK', 'MDKA.JK', 'MDKI.JK', 'MDLN.JK', 'MDRN.JK,
+                'MDIA.JK', 'MDKA.JK', 'MDKI.JK', 'MDLN.JK', 'MDRN.JK',
                 'MEDC.JK', 'MEGA.JK', 'MERK.JK', 'META.JK', 'MFMI.JK',
                 'MGNA.JK', 'MICE.JK', 'MIDI.JK', 'MIKA.JK', 'MINA.JK',
                 'MIRA.JK', 'MITI.JK', 'MKNT.JK', 'MKPI.JK', 'MLBI.JK',
