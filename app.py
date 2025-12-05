@@ -441,6 +441,16 @@ def main_app():
                     bot.mode = "crypto"
                 if not hasattr(bot, 'trading_mode'):
                     bot.trading_mode = "spot"
+                    
+                # **PERBAIKAN: Auto-check provider dan fallback jika perlu**
+                try:
+                    health = bot.data_provider.get_health_metrics()
+                    if health.get('using_yfinance', False):
+                        st.info("ℹ️ Using YFinance as data source (auto-fallback)")
+                    else:
+                        st.success(f"✅ Using {health.get('active_exchange', 'CCXT')}")
+                except:
+                    st.warning("⚠️ Provider status unknown")
             else:
                 st.error("❌ Failed to initialize TradingBot")
                 st.stop()
@@ -603,49 +613,6 @@ def main_app():
             if hasattr(bot, 'trading_mode'):
                 mode_display = bot.trading_mode.upper()
                 st.info(f"📊 Mode: {mode_display}")
-                if bot.trading_mode == "futures":
-                    # Cek leverage dari bot atau config
-                    leverage = getattr(bot, 'leverage', 1)
-                    if hasattr(bot, 'config') and 'leverage' in bot.config:
-                        leverage = bot.config['leverage']
-                    st.info(f"⚡ Leverage: {leverage}x")
-        
-        # Trading Mode Specific Controls
-        if st.session_state.market_set and hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
-            st.subheader("⚡ Futures Settings")
-            leverage_options = [1, 3, 5, 10, 20, 50, 100]
-            current_leverage = getattr(bot, 'leverage', 1)
-            if hasattr(bot, 'config') and 'leverage' in bot.config:
-                current_leverage = bot.config['leverage']
-            
-            selected_leverage = st.selectbox(
-                "Select Leverage:",
-                leverage_options,
-                index=leverage_options.index(current_leverage) if current_leverage in leverage_options else 0
-            )
-            
-            if st.button("Apply Leverage", key="apply_leverage"):
-                try:
-                    # Simpan leverage ke bot dan config
-                    bot.leverage = selected_leverage
-                    if hasattr(bot, 'config'):
-                        bot.config['leverage'] = selected_leverage
-                    
-                    # Jika ada method set_leverage, panggil
-                    if hasattr(bot, 'set_leverage'):
-                        bot.set_leverage(selected_leverage)
-                    
-                    # Simpan config ke file
-                    try:
-                        with open('config.json', 'w') as f:
-                            json.dump(bot.config, f, indent=2)
-                    except:
-                        pass
-                    
-                    st.success(f"✅ Leverage set to {selected_leverage}x")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Failed to set leverage: {e}")
         
         # Refresh data - 🔥 PERBAIKAN: Refresh yang benar-benar bekerja
         if st.button("🔄 Refresh All Data", key="refresh_data"):
@@ -891,21 +858,14 @@ def main_app():
                 with col_entry2:
                     # Jika futures mode, tampilkan leverage
                     if hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
-                        leverage = st.selectbox(
-                            "Leverage",
-                            [1, 3, 5, 10, 20, 50, 100],
-                            index=0,
-                            key=f"leverage_{symbol}"
-                        )
-                    else:
-                        leverage = 1
+                        st.info("⚡ Futures Mode: Leverage 1x (fixed)")
                 
                 if st.button(f"✅ Add Position", key=f"add_{symbol}"):
                     try:
                         # Prepare additional data untuk futures
                         additional_data = {}
                         if hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
-                            additional_data['leverage'] = leverage
+                            additional_data['leverage'] = 1  # Fixed leverage
                         
                         # Save position logic
                         position_id = bot.db.save_position(
@@ -1099,14 +1059,8 @@ def main_app():
         with col_leverage:
             # Tampilkan leverage untuk futures
             if hasattr(bot, 'trading_mode') and bot.trading_mode == "futures":
-                leverage_custom = st.selectbox(
-                    "Leverage:",
-                    [1, 3, 5, 10, 20, 50, 100],
-                    index=0,
-                    key="custom_leverage"
-                )
+                st.info("⚡ Futures Mode: Leverage 1x (fixed)")
             else:
-                leverage_custom = 1
                 st.text("Leverage: 1x (Spot)")
         
         if st.button("🧮 Hitung TP/SL", key="calculate_custom"):
@@ -1123,7 +1077,7 @@ def main_app():
                             
                             # Tambahkan info trading mode
                             result['trading_mode'] = getattr(bot, 'trading_mode', 'spot')
-                            result['leverage'] = leverage_custom
+                            result['leverage'] = 1  # Fixed leverage
                             
                             # Urutkan TP levels sesuai action
                             if action_custom == "LONG":
@@ -1139,6 +1093,7 @@ def main_app():
                                 result['tp1'], result['tp2'], result['tp3'],
                                 result['sl'], action_custom
                             )
+                            
                             st.session_state.custom_result = result
                             st.success("Perhitungan selesai!")
                         else:
@@ -1227,7 +1182,7 @@ def main_app():
                 # Prepare additional data
                 additional_data = {}
                 if result.get('trading_mode') == 'futures':
-                    additional_data['leverage'] = result.get('leverage', 1)
+                    additional_data['leverage'] = 1  # Fixed leverage
                 
                 position_id = bot.db.save_position(
                     symbol=result['symbol'],
