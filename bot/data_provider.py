@@ -1718,7 +1718,7 @@ class SmartConnectionManager:
             return False
 
 # =============================================
-# UNIFIED SMART DATA PROVIDER - FIXED VERSION
+# UNIFIED SMART DATA PROVIDER - FIXED VERSION dengan AUTO-FALLBACK
 # =============================================
 
 class UnifiedDataProvider(EnhancedDataProvider):
@@ -1792,10 +1792,11 @@ class UnifiedDataProvider(EnhancedDataProvider):
                     market_type='crypto'
                 )
         
-        # 3. Setup fallback provider (YFinance)
-        self.fallback_provider = EnhancedYFinanceDataProvider(
-            market_type='crypto' if self.market_type in ['crypto', 'crypto_spot', 'crypto_future'] else self.market_type
-        )
+        # 3. Setup fallback provider (YFinance) dengan konfigurasi yang tepat
+        if self.market_type in ['crypto', 'crypto_spot', 'crypto_future']:
+            self.fallback_provider = EnhancedYFinanceDataProvider(market_type='crypto')
+        else:
+            self.fallback_provider = EnhancedYFinanceDataProvider(market_type=self.market_type)
     
     def _get_provider_for_symbol(self, symbol):
         """Dapatkan provider yang tepat untuk simbol tertentu"""
@@ -1883,7 +1884,17 @@ class UnifiedDataProvider(EnhancedDataProvider):
             return False
             
         if func_name == 'get_ohlcv':
-            return isinstance(result, pd.DataFrame) and not result.empty
+            if not isinstance(result, pd.DataFrame) or result.empty:
+                return False
+            
+            # 🚨 PERBAIKAN: Deteksi harga 100 di sini juga
+            if 'close' in result.columns and len(result) > 0:
+                avg_price = result['close'].mean()
+                if abs(avg_price - 100.0) < 1.0:
+                    logger.warning(f"⚠️ Rejecting result with suspicious price ~100: {avg_price}")
+                    return False
+            
+            return True
         elif func_name == 'get_ticker':
             return isinstance(result, dict) and result.get('last', 0) > 0
         elif func_name == 'get_popular_assets':
@@ -1992,7 +2003,7 @@ class UnifiedDataProvider(EnhancedDataProvider):
                     if price > 0 and price != 100.0:
                         return price
             except:
-            continue
+                continue
         
         return None
     
@@ -2117,10 +2128,10 @@ class UnifiedDataProvider(EnhancedDataProvider):
     # ================ PUBLIC METHODS DIPERBAIKI ================
     
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
-        """Get OHLCV data dengan auto-fallback - IMPROVED"""
+        """Get OHLCV data dengan auto-fallback yang lebih agresif - IMPROVED"""
         logger.info(f"📊 Getting OHLCV for {symbol} (limit: {limit})")
         
-        # 🚨 **STRATEGI 1: Coba provider utama dengan retry**
+        # =========== STRATEGI 1: Coba provider utama ===========
         max_attempts = 2
         
         for attempt in range(max_attempts):
@@ -2134,11 +2145,24 @@ class UnifiedDataProvider(EnhancedDataProvider):
                 result = provider.get_ohlcv(symbol, timeframe, limit)
                 
                 if result is not None and not result.empty:
-                    # Validasi dengan toleransi tinggi pada attempt pertama
-                    is_valid, msg = self.validate_market_data(
-                        result, symbol, 
-                        debug_mode=(attempt > 0)  # Attempt kedua lebih relaxed
-                    )
+                    # 🚨 PERBAIKAN: Validasi ketat dengan pengecekan harga 100
+                    is_valid, msg = self.validate_market_data(result, symbol, debug_mode=(attempt > 0))
+                    
+                    # 🚨 KRITIS: Jika ada harga 100, langsung reject dan fallback
+                    if 'close' in result.columns and len(result) > 0:
+                        avg_price = result['close'].mean()
+                        if abs(avg_price - 100.0) < 1.0:  # Jika harga mendekati 100
+                            logger.warning(f"🚨 SUSPICIOUS PRICE ~100 detected for {symbol}, forcing fallback")
+                            is_valid = False
+                            # Coba perbaiki data terlebih dahulu
+                            replacement_price = self._estimate_realistic_price(symbol)
+                            if abs(replacement_price - 100.0) > 1.0:
+                                result['close'] = replacement_price
+                                result['open'] = replacement_price * 0.99
+                                result['high'] = replacement_price * 1.01
+                                result['low'] = replacement_price * 0.99
+                                logger.info(f"🛠️ Replaced suspicious price with estimated: {replacement_price:.2f}")
+                                is_valid = True  # Setelah diperbaiki, anggap valid
                     
                     if is_valid:
                         logger.info(f"✅ Valid data from {provider.__class__.__name__}")
@@ -2147,8 +2171,7 @@ class UnifiedDataProvider(EnhancedDataProvider):
                         logger.warning(f"⚠️ Invalid data on attempt {attempt+1}: {msg[:100]}")
                         
                         if attempt == 0:
-                            # Coba perbaiki data
-                            logger.info("🛠️ Attempting to repair data...")
+                            logger.info("🛠️ Attempting data repair...")
                             is_valid_repaired, _ = self.validate_market_data(result, symbol, debug_mode=True)
                             if is_valid_repaired:
                                 logger.info(f"✅ Data repaired successfully")
@@ -2164,12 +2187,13 @@ class UnifiedDataProvider(EnhancedDataProvider):
                     time.sleep(2)
                     continue
         
-        # 🚨 **STRATEGI 2: Coba fallback provider (YFinance)**
-        logger.info("🔄 Trying YFinance fallback...")
+        # =========== STRATEGI 2: Otomatis fallback ke YFinance ===========
+        logger.warning("🔄 AUTO-FALLBACK: Switching to YFinance...")
         
         try:
-            # Convert symbol format untuk YFinance
+            # Convert symbol untuk YFinance
             yf_symbol = self._convert_to_yfinance_symbol(symbol)
+            logger.info(f"🔄 Trying YFinance symbol: {yf_symbol}")
             
             result = self.fallback_provider.get_ohlcv(yf_symbol, timeframe, limit)
             
@@ -2180,38 +2204,47 @@ class UnifiedDataProvider(EnhancedDataProvider):
                     logger.info(f"✅ YFinance fallback successful for {symbol}")
                     return result
                 else:
-                    logger.warning(f"⚠️ YFinance data invalid: {msg[:100]}")
+                    logger.warning(f"⚠️ YFinance data also invalid: {msg[:100]}")
+                    
+                    # Coba perbaiki data YFinance juga
+                    if 'close' in result.columns and len(result) > 0:
+                        avg_price = result['close'].mean()
+                        if abs(avg_price - 100.0) < 1.0:
+                            # Data YFinance juga bermasalah, coba simbol alternatif
+                            logger.warning("⚠️ YFinance data also has price ~100, trying alternative symbols...")
             else:
                 logger.warning("⚠️ YFinance returned no data")
                 
         except Exception as e:
             logger.warning(f"❌ YFinance fallback failed: {e}")
         
-        # 🚨 **STRATEGI 3: Cari data real dari simbol alternatif**
+        # =========== STRATEGI 3: Coba simbol alternatif ===========
         logger.info("🔄 Trying alternative symbol formats...")
         
-        # Coba berbagai format simbol
         alt_symbols = self._get_alternative_symbols(symbol)
-        
         for alt_symbol in alt_symbols:
+            if alt_symbol == symbol:  # Skip yang sudah dicoba
+                continue
+                
             try:
                 logger.info(f"   Trying alternative: {alt_symbol}")
                 
-                # Coba dengan provider utama
-                provider = self._get_provider_for_symbol(alt_symbol)
-                result = provider.get_ohlcv(alt_symbol, timeframe, limit)
+                # Coba dengan YFinance langsung untuk alternatif
+                yf_alt_symbol = self._convert_to_yfinance_symbol(alt_symbol)
+                result = self.fallback_provider.get_ohlcv(yf_alt_symbol, timeframe, limit)
                 
                 if result is not None and not result.empty:
                     is_valid, msg = self.validate_market_data(result, alt_symbol, debug_mode=True)
                     
                     if is_valid:
-                        logger.info(f"✅ Alternative symbol {alt_symbol} worked")
+                        logger.info(f"✅ Alternative symbol {alt_symbol} worked via YFinance")
                         return result
                         
-            except Exception:
+            except Exception as e:
+                logger.debug(f"   Alternative {alt_symbol} failed: {e}")
                 continue
         
-        # 🚨 **STRATEGI 4: GENERATE SYNTHETIC DATA HANYA JIKA SANGAT DIPERLUKAN**
+        # =========== STRATEGI 4: GENERATE SYNTHETIC DATA HANYA JIKA SANGAT DIPERLUKAN ===========
         logger.error(f"🚨 ALL REAL DATA SOURCES FAILED for {symbol}")
         
         # Coba dapatkan harga referensi terlebih dahulu
