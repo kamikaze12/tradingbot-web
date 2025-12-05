@@ -23,37 +23,101 @@ except ImportError:
 
 # Import TradingBot dengan error handling yang lebih baik
 def import_trading_bot():
-    """Import TradingBot dengan multiple fallback options"""
+    """Import TradingBot dengan cara yang lebih reliable"""
+    import sys
+    import os
+    
+    # Debug: Tampilkan struktur
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    print(f"📁 Current directory: {current_dir}")
+    print(f"📁 Contents: {os.listdir(current_dir)}")
+    
+    if os.path.exists(os.path.join(current_dir, 'bot')):
+        print(f"📁 Bot folder contents: {os.listdir(os.path.join(current_dir, 'bot'))}")
+    
     try:
+        # OPTION 1: Import langsung dari bot.core
+        print("🔄 Trying import from bot.core...")
+        sys.path.insert(0, current_dir)  # Tambahkan direktori root ke path
         from bot.core import TradingBot
         print("✅ Successfully imported TradingBot from bot.core")
         return TradingBot
-    except ImportError as e:
-        print(f"❌ Import from bot.core failed: {e}")
+    except ImportError as e1:
+        print(f"❌ Import from bot.core failed: {e1}")
         try:
+            # OPTION 2: Import dari core langsung (jika core.py ada di root)
+            print("🔄 Trying import from core directly...")
             from core import TradingBot
             print("✅ Successfully imported TradingBot from core")
             return TradingBot
         except ImportError as e2:
             print(f"❌ Import from core failed: {e2}")
+            # OPTION 3: Coba import dengan pendekatan berbeda
             try:
-                # Coba import relatif
-                from .core import TradingBot
-                print("✅ Successfully imported TradingBot from .core")
+                print("🔄 Trying manual import...")
+                # Import modul bot.core secara manual
+                import importlib
+                module = importlib.import_module('bot.core')
+                TradingBot = getattr(module, 'TradingBot')
+                print("✅ Successfully imported TradingBot via importlib")
                 return TradingBot
-            except ImportError as e3:
-                print(f"❌ All import attempts failed: {e3}")
-                st.error(f"""
-                ❌ **TradingBot Import Error**
-                
-                **Possible solutions:**
-                1. Ensure `bot/core.py` or `core.py` exists in the project
-                2. Check if TradingBot class is defined in the module
-                3. Verify Python path includes the project directory
-                
-                **Error details:** {e3}
-                """)
+            except Exception as e3:
+                print(f"❌ All import methods failed: {e3}")
+                import traceback
+                traceback.print_exc()
                 return None
+
+def init_bot():
+    """Initialize TradingBot dengan error handling yang lebih baik"""
+    try:
+        # Import TradingBot class
+        TradingBotClass = import_trading_bot()
+        if TradingBotClass is None:
+            st.error("""
+            ❌ **TradingBot Import Failed**
+            
+            **Possible issues:**
+            1. File `core.py` tidak ditemukan dalam folder `bot`
+            2. Ada syntax error di `bot/core.py`
+            3. Class `TradingBot` tidak didefinisikan di `core.py`
+            
+            **Please check:**
+            - Folder `bot` harus berisi: `__init__.py`, `core.py`, `data_provider.py`, `notifier.py`, `strategies.py`
+            - File `core.py` harus memiliki class `TradingBot` atau `EnhancedTradingBot`
+            """)
+            return None
+        
+        print(f"🔄 Initializing TradingBot instance...")
+        
+        # Coba inisialisasi dengan berbagai parameter
+        try:
+            # Coba tanpa parameter
+            bot = TradingBotClass()
+        except TypeError as e:
+            print(f"⚠️ First initialization failed: {e}")
+            # Coba dengan config path
+            try:
+                bot = TradingBotClass(config_path="config/config.json")
+            except:
+                # Coba kosong
+                bot = TradingBotClass({})
+        
+        print("✅ TradingBot initialized successfully")
+        return bot
+        
+    except Exception as e:
+        st.error(f"""
+        ❌ **Failed to initialize TradingBot**
+        
+        **Error:** {str(e)}
+        
+        **Debug Information:**
+        - Current Directory: {os.getcwd()}
+        - Python Path: {sys.path}
+        """)
+        import traceback
+        print(f"DEBUG - Full traceback:\n{traceback.format_exc()}")
+        return None
 
 # ====================================
 # Setup
@@ -153,57 +217,6 @@ def login_section():
         - Username: `user3` | Password: `password3`
         - Username: `admin` | Password: `admin123`
         """)
-
-def init_bot():
-    """Initialize TradingBot dengan error handling yang lebih baik"""
-    try:
-        # Import TradingBot class
-        TradingBotClass = import_trading_bot()
-        if TradingBotClass is None:
-            return None
-        
-        print(f"🔄 Initializing TradingBot with class: {TradingBotClass}")
-        
-        # Cek apakah TradingBotClass memang callable
-        if not callable(TradingBotClass):
-            st.error(f"❌ TradingBot class is not callable: {type(TradingBotClass)}")
-            return None
-        
-        # Coba inisialisasi
-        bot = TradingBotClass()
-        print("✅ TradingBot initialized successfully")
-        return bot
-        
-    except TypeError as e:
-        if "'NoneType' object is not callable" in str(e):
-            st.error("""
-            ❌ **TradingBot Initialization Error**
-            
-            **Root Cause:** The TradingBot class could not be properly imported or is None.
-            
-            **Solutions:**
-            1. Check if `bot/core.py` or `core.py` exists and contains `TradingBot` class
-            2. Verify the class is properly defined: `class TradingBot:`
-            3. Check for syntax errors in the TradingBot module
-            4. Ensure all dependencies are installed
-            """)
-        else:
-            st.error(f"❌ TypeError during bot initialization: {e}")
-        return None
-        
-    except Exception as e:
-        st.error(f"""
-        ❌ **Failed to initialize TradingBot**
-        
-        **Error:** {str(e)}
-        
-        **Debug Information:**
-        - Python Path: {sys.path}
-        - Working Directory: {os.getcwd()}
-        - File Location: {__file__}
-        """)
-        print(f"DEBUG - Full traceback:\n{traceback.format_exc()}")
-        return None
 
 def safe_get(data, key, default=0):
     """Safe dictionary access dengan fallback"""
