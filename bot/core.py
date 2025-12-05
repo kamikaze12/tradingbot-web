@@ -75,19 +75,30 @@ SoundNotifier = None
 DatabaseHandler = None
 SolanaPumpFunProvider = None
 EnhancedDexScreenerProvider = None
+get_trading_data = None
+create_strategy_for_symbol = None
 
 try:
     print("✅ Mencoba import strategies...")
-    from strategies import TechnicalAnalysisStrategy  # HAPUS titik di depan
+    from strategies import TechnicalAnalysisStrategy, get_trading_data, create_strategy_for_symbol
     print("  ✅ TechnicalAnalysisStrategy berhasil diimport")
+    print("  ✅ get_trading_data dan create_strategy_for_symbol berhasil diimport")
 except ImportError as e1:
     print(f"  ❌ Gagal import strategies: {e1}")
-    # Buat dummy class
+    # Buat dummy class dan fungsi
     class TechnicalAnalysisStrategy:
         def __init__(self, *args, **kwargs):
             logger.warning("TechnicalAnalysisStrategy dummy digunakan")
         def analyze(self, *args, **kwargs):
             return {'action': 'NEUTRAL', 'score': 0}
+    
+    def get_trading_data(symbol, provider=None):
+        logger.warning("get_trading_data dummy digunakan")
+        return None
+    
+    def create_strategy_for_symbol(symbol, **kwargs):
+        logger.warning("create_strategy_for_symbol dummy digunakan")
+        return TechnicalAnalysisStrategy()
 
 try:
     print("✅ Mencoba import DatabaseHandler...")
@@ -2376,13 +2387,36 @@ class EnhancedTradingBot:
                         trading_mode=self.trading_mode
                     )
                 
-                # Setup strategy
-                self.strategy = TechnicalAnalysisStrategy(
-                    market_type=self.mode,
-                    trading_type=self.trading_mode,
-                    atr_multiplier=self.config.get("atr_multiplier", 1.0),
-                    entry_range_pct=self.config.get("entry_range_pct", 0.02),
-                )
+                # Setup strategy menggunakan create_strategy_for_symbol jika tersedia
+                if create_strategy_for_symbol is not None:
+                    # Coba gunakan strategi otomatis untuk simbol sample
+                    sample_symbol = "BTC/USDT" if self.mode == 'crypto' else "AAPL" if self.mode == 'us_stocks' else "BBCA.JK"
+                    if self.trading_mode == 'futures':
+                        sample_symbol = self._ensure_futures_symbol(sample_symbol)
+                    
+                    try:
+                        self.strategy = create_strategy_for_symbol(
+                            sample_symbol,
+                            market_type=self.mode,
+                            trading_mode=self.trading_mode
+                        )
+                        logger.info(f"✅ Created auto-detected strategy for {self.mode} ({self.trading_mode})")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Auto strategy creation failed: {e}, falling back to TechnicalAnalysisStrategy")
+                        self.strategy = TechnicalAnalysisStrategy(
+                            market_type=self.mode,
+                            trading_type=self.trading_mode,
+                            atr_multiplier=self.config.get("atr_multiplier", 1.0),
+                            entry_range_pct=self.config.get("entry_range_pct", 0.02),
+                        )
+                else:
+                    # Fallback ke TechnicalAnalysisStrategy
+                    self.strategy = TechnicalAnalysisStrategy(
+                        market_type=self.mode,
+                        trading_type=self.trading_mode,
+                        atr_multiplier=self.config.get("atr_multiplier", 1.0),
+                        entry_range_pct=self.config.get("entry_range_pct", 0.02),
+                    )
                 
                 # Test provider connection
                 test_assets = self._test_provider_connection()
@@ -2435,12 +2469,16 @@ class EnhancedTradingBot:
                 
                 asset_symbols.append(symbol)
             
-            # Test OHLCV untuk asset pertama
+            # Test OHLCV untuk asset pertama menggunakan get_trading_data jika tersedia
             if asset_symbols:
                 test_symbol = asset_symbols[0]
                 logger.info(f"  Testing OHLCV for: {test_symbol}")
                 
-                df = self.data_provider.get_ohlcv(test_symbol, '1h', 10)
+                # Gunakan get_trading_data jika tersedia untuk membersihkan data
+                if get_trading_data is not None:
+                    df = get_trading_data(test_symbol, self.data_provider)
+                else:
+                    df = self.data_provider.get_ohlcv(test_symbol, '1h', 10)
                 
                 # Validasi data dengan debug mode
                 if df is not None and len(df) > 0:
@@ -2597,7 +2635,7 @@ class EnhancedTradingBot:
             return []
 
     def scan_potential_assets(self, limit=None, search_query: str = None, asset_type: str = None):
-        """Scan untuk potential signals - UNIFIED VERSION"""
+        """Scan untuk potential signals - MENGGUNAKAN get_trading_data"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -2670,8 +2708,13 @@ class EnhancedTradingBot:
                     current_price = ticker['last']
                     logger.info(f"    Current price: {current_price}")
                     
-                    # Get OHLCV data untuk analysis
-                    df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
+                    # Get OHLCV data untuk analysis MENGGUNAKAN get_trading_data
+                    if get_trading_data is not None:
+                        df = get_trading_data(symbol, self.data_provider)
+                        logger.info(f"    ✅ Menggunakan get_trading_data untuk membersihkan data")
+                    else:
+                        df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
+                        logger.info(f"    ℹ️ get_trading_data tidak tersedia, menggunakan data langsung")
                     
                     # Validasi data sebelum analisis
                     if df is None or len(df) < 50:
@@ -2781,7 +2824,7 @@ class EnhancedTradingBot:
         return analysis
 
     def analyze_with_enhanced_ml(self, symbol: str) -> dict:
-        """Analyze asset dengan ML enhancement"""
+        """Analyze asset dengan ML enhancement - MENGGUNAKAN get_trading_data"""
         try:
             if not self.data_provider:
                 return {'error': 'No data provider available'}
@@ -2793,8 +2836,13 @@ class EnhancedTradingBot:
                 if original_symbol != symbol:
                     logger.info(f"🔁 Converted symbol for ML analysis: {original_symbol} → {symbol}")
             
-            # Get data
-            df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
+            # Get data menggunakan get_trading_data jika tersedia
+            if get_trading_data is not None:
+                logger.info(f"🔍 Menggunakan get_trading_data untuk membersihkan data {symbol}")
+                df = get_trading_data(symbol, self.data_provider)
+            else:
+                df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
+            
             if df is None or len(df) < 50:
                 return {'error': 'Insufficient data'}
             
@@ -2838,7 +2886,12 @@ class EnhancedTradingBot:
                 timeframe = self.config.get("timeframe", "1h")
                 
             logger.info(f"🔧 Running advanced backtest for {symbol}...")
-            df = self.data_provider.get_ohlcv(symbol, timeframe, limit)
+            
+            # Get data menggunakan get_trading_data jika tersedia
+            if get_trading_data is not None:
+                df = get_trading_data(symbol, self.data_provider)
+            else:
+                df = self.data_provider.get_ohlcv(symbol, timeframe, limit)
             
             if df is None or len(df) < 100:
                 return {"error": "Insufficient data for backtest"}
@@ -2987,7 +3040,11 @@ class EnhancedTradingBot:
                 if original_symbol != symbol:
                     logger.info(f"🔁 Converted symbol for custom entry: {original_symbol} → {symbol}")
             
-            df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 50)
+            # Get data menggunakan get_trading_data jika tersedia
+            if get_trading_data is not None:
+                df = get_trading_data(symbol, self.data_provider)
+            else:
+                df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 50)
             
             if df is None or len(df) < 20:
                 # Fallback calculation
@@ -3050,15 +3107,29 @@ class TradingCore:
         # Setup trading mode
         self.trading_type = self.config.get("trading_mode", "spot")
         
-        # Setup strategy - PERBAIKAN IMPORT
+        # Setup strategy menggunakan create_strategy_for_symbol jika tersedia
         try:
-            from strategies import TechnicalAnalysisStrategy
-            self.strategy = TechnicalAnalysisStrategy(
-                market_type=self.config.get("market_type", "crypto"),
-                trading_type=self.trading_type,
-                atr_multiplier=self.config.get("atr_multiplier", 1.0),
-                entry_range_pct=self.config.get("entry_range_pct", 0.02)
-            )
+            if create_strategy_for_symbol is not None:
+                sample_symbol = "BTC/USDT" if self.config.get("market_type", "crypto") == "crypto" else "AAPL"
+                if self.trading_type == 'futures':
+                    sample_symbol = f"{sample_symbol}:USDT"
+                
+                self.strategy = create_strategy_for_symbol(
+                    sample_symbol,
+                    market_type=self.config.get("market_type", "crypto"),
+                    trading_mode=self.trading_type
+                )
+                logger.info(f"✅ Created auto-detected strategy untuk {self.config.get('market_type', 'crypto')} ({self.trading_type})")
+            else:
+                # Fallback ke TechnicalAnalysisStrategy
+                from strategies import TechnicalAnalysisStrategy
+                self.strategy = TechnicalAnalysisStrategy(
+                    market_type=self.config.get("market_type", "crypto"),
+                    trading_type=self.trading_type,
+                    atr_multiplier=self.config.get("atr_multiplier", 1.0),
+                    entry_range_pct=self.config.get("entry_range_pct", 0.02)
+                )
+                logger.info(f"✅ Menggunakan TechnicalAnalysisStrategy untuk {self.config.get('market_type', 'crypto')} ({self.trading_type})")
         except ImportError as e:
             print(f"❌ Gagal import strategies di TradingCore: {e}")
             # Dummy strategy
@@ -3165,12 +3236,15 @@ class TradingCore:
                 symbol = asset['symbol'] if isinstance(asset, dict) else asset
                 
                 try:
-                    # Get data
-                    df = self.data_provider.get_ohlcv(
-                        symbol=symbol,
-                        timeframe=self.config.get("timeframe", "1h"),
-                        limit=200
-                    )
+                    # Get data menggunakan get_trading_data jika tersedia
+                    if get_trading_data is not None:
+                        df = get_trading_data(symbol, self.data_provider)
+                    else:
+                        df = self.data_provider.get_ohlcv(
+                            symbol=symbol,
+                            timeframe=self.config.get("timeframe", "1h"),
+                            limit=200
+                        )
                     
                     if df is None or df.empty:
                         continue
@@ -3304,5 +3378,67 @@ def test_unified_provider():
     print("   Support SPOT dan FUTURES dengan default Bybit")
     print("   Unified provider dengan single interface")
 
+def test_data_cleaner_integration():
+    """Test integrasi data cleaner di core.py"""
+    print("\n" + "="*60)
+    print("TESTING DATA CLEANER INTEGRATION")
+    print("="*60)
+    
+    bot = EnhancedTradingBot()
+    
+    # Test symbols yang bermasalah
+    test_symbols = ["BONK/USDT:USDT", "CATI/USDT:USDT", "100MAD/USDT"]
+    
+    for symbol in test_symbols:
+        print(f"\n🔍 Testing {symbol} dengan get_trading_data")
+        
+        if get_trading_data is not None:
+            data = get_trading_data(symbol, bot.data_provider)
+            if data is not None:
+                print(f"   ✅ Clean data: {len(data)} bars")
+                if not data.empty and 'close' in data.columns:
+                    current_price = data['close'].iloc[-1]
+                    print(f"   📊 Current price: ${current_price:.6f}")
+                    
+                    # Cek apakah ada harga 100
+                    if (abs(data['close'] - 100.0) < 0.001).any():
+                        print(f"   ⚠️ WARNING: Still has price 100!")
+                    else:
+                        print(f"   👍 No price 100 detected")
+            else:
+                print(f"   ❌ get_trading_data returned None")
+        else:
+            print(f"   ℹ️ get_trading_data not available")
+    
+    # Test scan dengan symbols bermasalah
+    print("\n🧪 Testing scanning dengan symbols bermasalah...")
+    
+    # Create a test with problem symbols
+    bot.set_trading_mode('spot')
+    bot.set_mode("crypto")
+    
+    # Mock some assets
+    test_assets = [
+        {'symbol': 'BONK/USDT:USDT', 'name': 'Bonk'},
+        {'symbol': 'CATI/USDT:USDT', 'name': 'Cati'},
+        {'symbol': 'BTC/USDT', 'name': 'Bitcoin'},
+    ]
+    
+    for asset in test_assets:
+        print(f"\n🔍 Processing {asset['symbol']}")
+        if get_trading_data is not None:
+            data = get_trading_data(asset['symbol'], bot.data_provider)
+            if data is None:
+                print(f"   ❌ Data tidak valid, akan di-skip")
+            else:
+                print(f"   ✅ Data valid: {len(data)} bars")
+                print(f"   📊 Price range: ${data['close'].min():.6f} - ${data['close'].max():.6f}")
+
 if __name__ == "__main__":
     test_unified_provider()
+    test_data_cleaner_integration()
+    
+    print("\n" + "="*60)
+    print("🎯 CORE.PY READY WITH DATA CLEANER INTEGRATION")
+    print("🎯 Menggunakan get_trading_data untuk membersihkan data dari masalah harga 100")
+    print("="*60)
