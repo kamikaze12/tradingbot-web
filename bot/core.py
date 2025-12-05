@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import warnings
@@ -23,6 +24,17 @@ from dataclasses import dataclass
 from enum import Enum
 import concurrent.futures
 from scipy import stats
+
+# =============================================
+# EMERGENCY IMPORT FIX - UNTUK STRUKTUR FOLDER BOT
+# =============================================
+
+# Tambahkan current directory ke sys.path untuk memastikan import bekerja
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, current_dir)
+
+print(f"📁 Working directory: {current_dir}")
+print(f"📦 Python path: {sys.path[:2]}")
 
 # Suppress torch warnings
 warnings.filterwarnings("ignore", message=".*torch.classes.*")
@@ -66,7 +78,7 @@ EnhancedDexScreenerProvider = None
 
 try:
     print("✅ Mencoba import strategies...")
-    from .strategies import TechnicalAnalysisStrategy
+    from strategies import TechnicalAnalysisStrategy  # HAPUS titik di depan
     print("  ✅ TechnicalAnalysisStrategy berhasil diimport")
 except ImportError as e1:
     print(f"  ❌ Gagal import strategies: {e1}")
@@ -100,7 +112,7 @@ except ImportError as e2:
 
 try:
     print("✅ Mencoba import SoundNotifier...")
-    from .notifier import SoundNotifier
+    from notifier import SoundNotifier  # HAPUS titik di depan
     print("  ✅ SoundNotifier berhasil diimport")
 except ImportError as e3:
     print(f"  ❌ Gagal import SoundNotifier: {e3}")
@@ -110,15 +122,14 @@ except ImportError as e3:
         def notify(self, *args, **kwargs):
             pass
 
-# PERBAIKAN UTAMA: Import data_provider dengan error handling yang lebih baik
+# PERBAIKAN UTAMA: Import data_provider dengan cara yang benar
 print("\n🔧 Mengimport modul data_provider...")
 try:
-    # Coba import data_provider secara keseluruhan
-    import importlib
-    data_provider_module = importlib.import_module('.data_provider', 'bot')
+    # Import langsung karena satu folder
+    import data_provider as data_provider_module
     print("✅ Modul data_provider berhasil diimport")
     
-    # Coba assign setiap class secara individual
+    # Assign setiap class secara individual
     if hasattr(data_provider_module, 'UnifiedDataProvider'):
         UnifiedDataProvider = data_provider_module.UnifiedDataProvider
         print("  ✅ UnifiedDataProvider ditemukan")
@@ -2083,11 +2094,14 @@ class EnhancedTradingBot:
     def _setup_unified_provider(self):
         """Setup UnifiedDataProvider dengan auto-fallback ke YFinance"""
         try:
-            # Coba gunakan UnifiedDataProvider
-            self.data_provider = UnifiedDataProvider(
-                market_type="crypto",
-                trading_mode="spot"
-            )
+            # Gunakan UnifiedDataProvider yang sudah diimport
+            if 'UnifiedDataProvider' in globals() and UnifiedDataProvider is not None:
+                self.data_provider = UnifiedDataProvider(
+                    market_type="crypto",
+                    trading_mode="spot"
+                )
+            else:
+                raise Exception("UnifiedDataProvider not available")
             
             # **PERBAIKAN: Cek jika provider menggunakan YFinance sebagai fallback**
             if hasattr(self.data_provider, 'get_health_metrics'):
@@ -2103,7 +2117,7 @@ class EnhancedTradingBot:
             logger.error(f"❌ Failed to setup unified provider: {e}")
             
             # **PERBAIKAN: Force fallback ke YFinance jika tersedia**
-            if EnhancedYFinanceDataProvider:
+            if 'EnhancedYFinanceDataProvider' in globals() and EnhancedYFinanceDataProvider is not None:
                 self.data_provider = EnhancedYFinanceDataProvider(
                     market_type="crypto"
                 )
@@ -2930,14 +2944,22 @@ class TradingCore:
         # Setup trading mode
         self.trading_type = self.config.get("trading_mode", "spot")
         
-        # Setup strategy
-        from .strategies import TechnicalAnalysisStrategy
-        self.strategy = TechnicalAnalysisStrategy(
-            market_type=self.config.get("market_type", "crypto"),
-            trading_type=self.trading_type,
-            atr_multiplier=self.config.get("atr_multiplier", 1.0),
-            entry_range_pct=self.config.get("entry_range_pct", 0.02)
-        )
+        # Setup strategy - PERBAIKAN IMPORT
+        try:
+            from strategies import TechnicalAnalysisStrategy
+            self.strategy = TechnicalAnalysisStrategy(
+                market_type=self.config.get("market_type", "crypto"),
+                trading_type=self.trading_type,
+                atr_multiplier=self.config.get("atr_multiplier", 1.0),
+                entry_range_pct=self.config.get("entry_range_pct", 0.02)
+            )
+        except ImportError as e:
+            print(f"❌ Gagal import strategies di TradingCore: {e}")
+            # Dummy strategy
+            class DummyStrategy:
+                def analyze(self, *args, **kwargs):
+                    return {'action': 'NEUTRAL', 'score': 0}
+            self.strategy = DummyStrategy()
         
         logger.info(f"🚀 TradingCore initialized | Mode: {self.trading_type}")
     
@@ -2956,11 +2978,24 @@ class TradingCore:
         except Exception as e:
             logger.error(f"❌ Failed to setup unified provider: {e}")
             # Fallback ke dynamic provider
-            from .data_provider import DynamicDataProvider
-            return DynamicDataProvider(
-                market_type=self.config.get("market_type", "crypto"),
-                trading_mode=self.config.get("trading_mode", "spot")
-            )
+            try:
+                from data_provider import DynamicDataProvider
+                return DynamicDataProvider(
+                    market_type=self.config.get("market_type", "crypto"),
+                    trading_mode=self.config.get("trading_mode", "spot")
+                )
+            except ImportError:
+                # Last resort: create simple provider
+                class SimpleProvider:
+                    def __init__(self, *args, **kwargs):
+                        pass
+                    def get_ohlcv(self, *args, **kwargs):
+                        return pd.DataFrame()
+                    def get_ticker(self, *args, **kwargs):
+                        return {'last': 0}
+                    def get_popular_assets(self, *args, **kwargs):
+                        return []
+                return SimpleProvider()
     
     def set_mode(self, market_type):
         """Set trading mode dengan update provider"""
