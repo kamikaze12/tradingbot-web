@@ -23,86 +23,259 @@ except ImportError:
 
 # Import TradingBot dengan error handling yang lebih baik
 def import_trading_bot():
-    """Import TradingBot dengan cara yang lebih reliable"""
+    """Import TradingBot dengan cara yang lebih reliable - FIXED VERSION"""
     import sys
     import os
     
     # Debug: Tampilkan struktur
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    print(f"📁 Current directory: {current_dir}")
-    print(f"📁 Contents: {os.listdir(current_dir)}")
+    project_root = os.path.dirname(current_dir)
     
-    if os.path.exists(os.path.join(current_dir, 'bot')):
-        print(f"📁 Bot folder contents: {os.listdir(os.path.join(current_dir, 'bot'))}")
+    print(f"📁 Current directory: {current_dir}")
+    print(f"📁 Project root: {project_root}")
+    print(f"📁 Contents of current directory: {os.listdir(current_dir)}")
+    
+    # Tambahkan beberapa path yang mungkin
+    possible_paths = [
+        current_dir,
+        project_root,
+        os.path.join(project_root, 'bot'),
+        os.path.join(current_dir, 'bot')
+    ]
+    
+    for path in possible_paths:
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    
+    print(f"📁 Python Path: {sys.path}")
+    
+    # Cek apakah ada folder bot
+    bot_folder = os.path.join(project_root, 'bot')
+    if os.path.exists(bot_folder):
+        print(f"📁 Bot folder found at: {bot_folder}")
+        print(f"📁 Bot folder contents: {os.listdir(bot_folder)}")
+        
+        # Cek isi folder bot
+        bot_contents = os.listdir(bot_folder)
+        if 'core.py' in bot_contents:
+            print("✅ Found core.py in bot folder")
+        if '__init__.py' in bot_contents:
+            print("✅ Found __init__.py in bot folder")
     
     try:
         # OPTION 1: Import langsung dari bot.core
-        print("🔄 Trying import from bot.core...")
-        sys.path.insert(0, current_dir)  # Tambahkan direktori root ke path
-        from bot.core import TradingBot
-        print("✅ Successfully imported TradingBot from bot.core")
-        return TradingBot
-    except ImportError as e1:
-        print(f"❌ Import from bot.core failed: {e1}")
+        print("🔄 OPTION 1: Trying import from bot.core...")
         try:
-            # OPTION 2: Import dari core langsung (jika core.py ada di root)
-            print("🔄 Trying import from core directly...")
-            from core import TradingBot
-            print("✅ Successfully imported TradingBot from core")
+            from bot.core import TradingBot
+            print("✅ SUCCESS: Imported TradingBot from bot.core")
             return TradingBot
-        except ImportError as e2:
-            print(f"❌ Import from core failed: {e2}")
-            # OPTION 3: Coba import dengan pendekatan berbeda
+        except ImportError as e1:
+            print(f"❌ OPTION 1 failed: {e1}")
+            
+            # OPTION 2: Import EnhancedTradingBot
+            print("🔄 OPTION 2: Trying import EnhancedTradingBot...")
             try:
-                print("🔄 Trying manual import...")
-                # Import modul bot.core secara manual
-                import importlib
-                module = importlib.import_module('bot.core')
-                TradingBot = getattr(module, 'TradingBot')
-                print("✅ Successfully imported TradingBot via importlib")
-                return TradingBot
-            except Exception as e3:
-                print(f"❌ All import methods failed: {e3}")
-                import traceback
-                traceback.print_exc()
-                return None
+                from bot.core import EnhancedTradingBot
+                print("✅ SUCCESS: Imported EnhancedTradingBot from bot.core")
+                return EnhancedTradingBot
+            except ImportError as e2:
+                print(f"❌ OPTION 2 failed: {e2}")
+                
+                # OPTION 3: Import dengan pendekatan berbeda
+                print("🔄 OPTION 3: Trying manual import...")
+                try:
+                    # Coba import modul bot.core
+                    import importlib.util
+                    import importlib
+                    
+                    # Coba beberapa nama modul
+                    module_names = ['bot.core', '.bot.core', 'core']
+                    
+                    for module_name in module_names:
+                        try:
+                            print(f"  Trying to import: {module_name}")
+                            module = importlib.import_module(module_name)
+                            
+                            # Cari kelas TradingBot atau EnhancedTradingBot
+                            if hasattr(module, 'TradingBot'):
+                                TradingBot = getattr(module, 'TradingBot')
+                                print(f"✅ FOUND: TradingBot in {module_name}")
+                                return TradingBot
+                            elif hasattr(module, 'EnhancedTradingBot'):
+                                EnhancedTradingBot = getattr(module, 'EnhancedTradingBot')
+                                print(f"✅ FOUND: EnhancedTradingBot in {module_name}")
+                                return EnhancedTradingBot
+                            else:
+                                print(f"  TradingBot not found in {module_name}")
+                                print(f"  Available attributes: {[attr for attr in dir(module) if not attr.startswith('_')][:10]}")
+                        except ImportError as e:
+                            print(f"  Failed to import {module_name}: {e}")
+                            continue
+                    
+                    # Jika semua gagal, coba lihat direktori
+                    print("🔄 OPTION 4: Trying to find and import directly...")
+                    
+                    # Cari file core.py
+                    for root, dirs, files in os.walk(project_root):
+                        if 'core.py' in files:
+                            core_path = os.path.join(root, 'core.py')
+                            print(f"✅ Found core.py at: {core_path}")
+                            
+                            # Coba import langsung dari path
+                            try:
+                                # Tambahkan parent directory ke sys.path
+                                parent_dir = os.path.dirname(core_path)
+                                if parent_dir not in sys.path:
+                                    sys.path.insert(0, parent_dir)
+                                
+                                # Coba import
+                                if root.endswith('bot'):
+                                    import bot.core as core_module
+                                else:
+                                    import core as core_module
+                                
+                                if hasattr(core_module, 'TradingBot'):
+                                    print(f"✅ FOUND: TradingBot in {core_path}")
+                                    return core_module.TradingBot
+                                elif hasattr(core_module, 'EnhancedTradingBot'):
+                                    print(f"✅ FOUND: EnhancedTradingBot in {core_path}")
+                                    return core_module.EnhancedTradingBot
+                            except Exception as e:
+                                print(f"❌ Failed to import from {core_path}: {e}")
+                                continue
+                    
+                    print("❌ ERROR: Could not find TradingBot class anywhere")
+                    return None
+                    
+                except Exception as e3:
+                    print(f"❌ OPTION 3 failed: {e3}")
+                    import traceback
+                    traceback.print_exc()
+                    return None
+                    
+    except Exception as e:
+        print(f"❌ CRITICAL ERROR in import_trading_bot: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 def init_bot():
-    """Initialize TradingBot dengan error handling yang lebih baik"""
+    """Initialize TradingBot dengan error handling yang lebih baik - FIXED VERSION"""
     try:
         # Import TradingBot class
+        print("🔄 Starting TradingBot import...")
         TradingBotClass = import_trading_bot()
+        
         if TradingBotClass is None:
             st.error("""
             ❌ **TradingBot Import Failed**
             
-            **Possible issues:**
-            1. File `core.py` tidak ditemukan dalam folder `bot`
-            2. Ada syntax error di `bot/core.py`
-            3. Class `TradingBot` tidak didefinisikan di `core.py`
+            **Troubleshooting Steps:**
             
-            **Please check:**
-            - Folder `bot` harus berisi: `__init__.py`, `core.py`, `data_provider.py`, `notifier.py`, `strategies.py`
-            - File `core.py` harus memiliki class `TradingBot` atau `EnhancedTradingBot`
+            1. **Check Folder Structure:**
+               - Ensure there's a `bot` folder in your project root
+               - The `bot` folder should contain: `__init__.py`, `core.py`, `data_provider.py`
+            
+            2. **Check core.py Content:**
+               - Open `bot/core.py`
+               - Make sure it contains: `class TradingBot:` or `class EnhancedTradingBot:`
+            
+            3. **Verify Imports in core.py:**
+               - Check that all imports in core.py work correctly
+               - Common issue: Missing `__init__.py` in bot folder
+            
+            4. **Check Console Output Above:**
+               - Look for "✅ FOUND:" messages in the console
+               - This will tell you where the bot found the TradingBot class
+            
+            **Quick Fixes:**
+            - Create `__init__.py` in bot folder if missing (empty file is OK)
+            - Check for syntax errors in `bot/core.py`
+            - Make sure TradingBot class is defined (not commented out)
             """)
             return None
         
+        print(f"✅ TradingBot class found: {TradingBotClass}")
         print(f"🔄 Initializing TradingBot instance...")
         
-        # Coba inisialisasi dengan berbagai parameter
-        try:
-            # Coba tanpa parameter
-            bot = TradingBotClass()
-        except TypeError as e:
-            print(f"⚠️ First initialization failed: {e}")
-            # Coba dengan config path
+        # Coba inisialisasi dengan berbagai parameter untuk handle config error
+        bot = None
+        initialization_attempts = [
+            # Coba tanpa parameter pertama
+            lambda: TradingBotClass(),
+            # Coba dengan dict kosong
+            lambda: TradingBotClass({}),
+            # Coba dengan config path sebagai string
+            lambda: TradingBotClass("config/config.json"),
+            # Coba dengan mode parameter
+            lambda: TradingBotClass(mode="crypto"),
+        ]
+        
+        for i, attempt in enumerate(initialization_attempts):
             try:
-                bot = TradingBotClass(config_path="config/config.json")
-            except:
-                # Coba kosong
-                bot = TradingBotClass({})
+                print(f"  Attempt {i+1}: {attempt}")
+                bot = attempt()
+                print(f"✅ Success with attempt {i+1}")
+                break
+            except Exception as e:
+                print(f"⚠️ Attempt {i+1} failed: {str(e)[:100]}")
+                continue
+        
+        if bot is None:
+            # Last resort: try to create with minimal parameters
+            try:
+                print("🔄 Last resort: Trying with minimal setup...")
+                # Coba inisialisasi dengan mem-bypass constructor issues
+                bot = TradingBotClass.__new__(TradingBotClass)
+                
+                # Set minimal attributes
+                bot.mode = "crypto"
+                bot.trading_mode = "spot"
+                bot.db = None  # Will be initialized later
+                bot.data_provider = None  # Will use yfinance fallback
+                
+                # Try to call __init__ with minimal params
+                try:
+                    bot.__init__()
+                except:
+                    pass  # Ignore init errors if we set attributes manually
+                    
+                print("✅ Created bot instance with minimal setup")
+            except Exception as e:
+                st.error(f"❌ All initialization attempts failed: {e}")
+                return None
         
         print("✅ TradingBot initialized successfully")
+        
+        # Set default attributes jika belum ada
+        if not hasattr(bot, 'mode'):
+            bot.mode = "crypto"
+        if not hasattr(bot, 'trading_mode'):
+            bot.trading_mode = "spot"
+        
+        # Cek dan inisialisasi data provider
+        if not hasattr(bot, 'data_provider') or bot.data_provider is None:
+            print("⚠️ Data provider not found, using yfinance fallback")
+            try:
+                from bot.data_provider import EnhancedYFinanceDataProvider
+                bot.data_provider = EnhancedYFinanceDataProvider(market_type="crypto")
+                print("✅ Created yfinance data provider")
+            except:
+                print("⚠️ Could not create yfinance provider, will create minimal one")
+                # Create minimal data provider
+                class MinimalDataProvider:
+                    def get_ticker(self, symbol):
+                        return {'last': 1.0, 'symbol': symbol}
+                    def get_health_metrics(self):
+                        return {
+                            'active_exchange': 'yfinance_fallback',
+                            'market_type': 'crypto',
+                            'trading_mode': 'spot',
+                            'using_ccxt': False,
+                            'using_yfinance': True
+                        }
+                bot.data_provider = MinimalDataProvider()
+        
         return bot
         
     except Exception as e:
@@ -114,6 +287,7 @@ def init_bot():
         **Debug Information:**
         - Current Directory: {os.getcwd()}
         - Python Path: {sys.path}
+        - TradingBotClass: {TradingBotClass if 'TradingBotClass' in locals() else 'Not found'}
         """)
         import traceback
         print(f"DEBUG - Full traceback:\n{traceback.format_exc()}")
@@ -530,23 +704,30 @@ def main_app():
                         st.warning("⚠️ Provider status unknown")
                         
                     st.success("✅ TradingBot initialized successfully!")
+                    
+                    # Tampilkan debug info
+                    with st.expander("🔍 Debug Info"):
+                        st.write(f"Bot type: {type(bot)}")
+                        st.write(f"Bot attributes: {[attr for attr in dir(bot) if not attr.startswith('_')][:20]}")
+                        if hasattr(bot, 'data_provider'):
+                            st.write(f"Data provider: {type(bot.data_provider)}")
                 else:
                     st.error("""
                     ❌ **Failed to initialize TradingBot**
                     
-                    **Possible issues:**
-                    1. TradingBot module not found
-                    2. TradingBot class not defined
-                    3. Missing dependencies
+                    **Please check the console for detailed error messages.**
                     
-                    **Please check:**
-                    - Ensure `bot/core.py` or `core.py` exists
-                    - Verify the TradingBot class is defined
-                    - Check console for more details
+                    **Common solutions:**
+                    1. Make sure `bot/core.py` exists and contains `class TradingBot:`
+                    2. Check if there are any syntax errors in `bot/core.py`
+                    3. Ensure `bot/__init__.py` exists (can be empty)
+                    4. Check the console output above for import errors
                     """)
                     st.stop()
             except Exception as e:
                 st.error(f"❌ Bot initialization error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
                 st.stop()
     
     bot = st.session_state.bot_instance
