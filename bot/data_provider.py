@@ -109,31 +109,31 @@ class DataCache:
                 self._access_times.pop(key, None)
     
     def _is_valid_cached_data(self, data):
-        """Validasi data cached"""
+        """Validasi data cached - SIMPLE FIX: TOLAK DATA HARGA 100"""
         if data is None:
             return False
         if isinstance(data, pd.DataFrame):
             if data.empty:
                 return False
             
-            # 🚨 **PERBAIKAN KRITIS: Tolak data dengan harga 100**
+            # 🚨 **SIMPLE FIX: JANGAN SIMPAN ATAU AMBIL DATA YANG ADA HARGA 100**
             if 'close' in data.columns:
-                # Cek jika semua harga mendekati 100
-                close_prices = data['close']
-                if len(close_prices) > 0:
-                    avg_price = close_prices.mean()
-                    if abs(avg_price - 100.0) < 1.0:  # Jika rata-rata mendekati 100
-                        logger.warning(f"⚠️ Rejecting cached data with suspicious price ~100")
-                        return False
-                    
-                    if (close_prices <= 0).all():
-                        return False
-                    
-                    # Cek jika semua harga sama persis
-                    if close_prices.nunique() == 1:
-                        logger.warning(f"⚠️ Rejecting cached data with all identical prices")
-                        return False
+                # Cek jika ada harga 100
+                has_100 = (abs(data['close'] - 100.0) < 0.001).any()
+                if has_100:
+                    logger.warning("⚠️ Rejecting cached data with price 100")
+                    return False
+                
+                # Cek jika semua harga 0 atau negatif
+                if (data['close'] <= 0).all():
+                    return False
+                
+                # Cek jika semua harga sama persis (flatline)
+                if data['close'].nunique() == 1 and len(data) > 1:
+                    logger.warning("⚠️ Rejecting cached data with all identical prices")
+                    return False
             
+            # Cek minimal data
             if len(data) < 1:
                 return False
         return True
@@ -216,16 +216,19 @@ class RetryMechanism:
                 if valid_prices.sum() < 1:
                     return False
                 
-                # 🚨 **PERBAIKAN: Tolak data dengan harga 100**
-                if len(result) > 0:
-                    avg_price = result['close'].mean()
-                    if abs(avg_price - 100.0) < 0.1:  # Hampir tepat 100
-                        logger.warning("⚠️ Rejecting data with price ~100")
-                        return False
+                # 🚨 **SIMPLE FIX: Tolak data dengan harga 100**
+                has_100 = (abs(result['close'] - 100.0) < 0.001).any()
+                if has_100:
+                    logger.warning("⚠️ Rejecting data with price 100")
+                    return False
             return True
             
         elif isinstance(result, dict):
             if 'last' in result and result['last'] > 0:
+                # Cek juga untuk harga 100 di ticker
+                if abs(result['last'] - 100.0) < 0.001:
+                    logger.warning("⚠️ Rejecting ticker data with price 100")
+                    return False
                 return True
             return False
             
@@ -360,12 +363,34 @@ class EnhancedDataProvider(DataProvider, ABC):
     # ================ PERBAIKAN UTAMA: VALIDASI DATA ================
     
     def validate_market_data(self, df: pd.DataFrame, symbol: str, debug_mode: bool = False) -> Tuple[bool, str]:
-        """Validasi kualitas data sebelum diproses - FIXED VERSION dengan debug mode"""
+        """Validasi kualitas data sebelum diproses - SIMPLE FIX: BUANG SEMUA BAR HARGA 100"""
         if df is None or not isinstance(df, pd.DataFrame):
             return False, "Data is None or not a DataFrame"
         
         if df.empty:
             return False, "DataFrame is empty"
+        
+        # 🚨 **SIMPLE FIX: BUANG SEMUA BAR YANG HARGA 100**
+        if 'close' in df.columns:
+            # Hitung berapa banyak bar dengan harga 100
+            mask_100 = abs(df['close'] - 100.0) < 0.001
+            count_100 = mask_100.sum()
+            
+            if count_100 > 0:
+                # BUANG bar yang harganya 100
+                df_valid = df[~mask_100].copy()
+                
+                logger.warning(f"⚠️ Removed {count_100} bars with price 100 for {symbol}")
+                
+                # Jika setelah dibuang masih ada cukup data
+                if len(df_valid) >= 10:  # Minimal 10 bar
+                    # Ganti df dengan data yang sudah dibersihkan
+                    df = df_valid
+                    logger.info(f"✅ Kept {len(df)} valid bars after removing price 100")
+                else:
+                    # Data terlalu sedikit setelah dibuang
+                    logger.error(f"❌ Not enough valid data for {symbol} after removing price 100")
+                    return False, "Not enough data after removing price 100 bars"
         
         # 🚨 **PERBAIKAN: Mode debugging untuk test connection - lebih relaxed**
         min_bars_required = 5 if debug_mode else 20
@@ -388,26 +413,7 @@ class EnhancedDataProvider(DataProvider, ABC):
             else:
                 current_price = df['close'].iloc[-1]
                 
-            # 🚨 **PERBAIKAN KRITIS: Deteksi harga 100 (synthetic data flag)**
-            if abs(current_price - 100.0) < 0.001:  # Jika harga mendekati 100
-                checks.append(False)
-                messages.append(f"❌ SUSPICIOUS: Price is exactly 100.00000 (likely synthetic data)")
-                
-                # Coba cari harga yang bukan 100 dalam data
-                non_100_prices = df['close'][abs(df['close'] - 100.0) > 0.1]
-                if len(non_100_prices) > 0:
-                    replacement_price = non_100_prices.iloc[-1]
-                    df['close'] = replacement_price
-                    messages.append(f"⚠️ Replaced synthetic price 100 with: {replacement_price:.8f}")
-                    checks[-1] = True  # Perbaiki check terakhir
-                else:
-                    # Estimasi harga realistis
-                    estimated_price = self._estimate_realistic_price(symbol)
-                    df['close'] = estimated_price
-                    messages.append(f"⚠️ Replaced synthetic price 100 with estimated: {estimated_price:.2f}")
-                    checks[-1] = True  # Perbaiki check terakhir
-            
-            elif current_price <= 0:
+            if current_price <= 0:
                 # Cari harga positif dalam data
                 positive_prices = df['close'][df['close'] > 0]
                 if len(positive_prices) > 0:
@@ -852,6 +858,10 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 if last_price is None or last_price <= 0:
                     raise ValueError(f"Invalid price for {symbol}: {last_price}")
                 
+                # 🚨 Cek harga 100
+                if abs(last_price - 100.0) < 0.001:
+                    raise ValueError(f"Suspicious price 100 for {symbol}")
+                
                 return {
                     'last': last_price,
                     'volume': ticker.get('baseVolume', 0),
@@ -1164,6 +1174,14 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 
                 df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
                 
+                # 🚨 **SIMPLE FIX: BUANG BAR HARGA 100 SEBELUM VALIDASI**
+                if 'close' in df.columns:
+                    mask_100 = abs(df['close'] - 100.0) < 0.001
+                    count_100 = mask_100.sum()
+                    if count_100 > 0:
+                        df = df[~mask_100].copy()
+                        logger.warning(f"⚠️ Removed {count_100} bars with price 100 from YFinance")
+                
                 # Validasi data
                 is_valid, validation_msg = self.validate_market_data(df, symbol)
                 if not is_valid:
@@ -1195,6 +1213,10 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 
                 if last_price <= 0:
                     raise ValueError(f"Invalid price from YFinance: {last_price}")
+                
+                # 🚨 Cek harga 100
+                if abs(last_price - 100.0) < 0.001:
+                    raise ValueError(f"Suspicious price 100 from YFinance")
                 
                 return {
                     'last': last_price,
@@ -1567,6 +1589,14 @@ class AlphaVantageProvider(EnhancedDataProvider):
                     df = pd.DataFrame(records)
                     df.sort_values('timestamp', inplace=True)
                     
+                    # 🚨 **SIMPLE FIX: BUANG BAR HARGA 100 SEBELUM VALIDASI**
+                    if 'close' in df.columns:
+                        mask_100 = abs(df['close'] - 100.0) < 0.001
+                        count_100 = mask_100.sum()
+                        if count_100 > 0:
+                            df = df[~mask_100].copy()
+                            logger.warning(f"⚠️ Removed {count_100} bars with price 100 from AlphaVantage")
+                    
                     # Validasi data
                     is_valid, validation_msg = self.validate_market_data(df, symbol)
                     if not is_valid:
@@ -1598,8 +1628,14 @@ class AlphaVantageProvider(EnhancedDataProvider):
                 
                 if 'Global Quote' in data:
                     quote = data['Global Quote']
+                    last_price = float(quote['05. price'])
+                    
+                    # 🚨 Cek harga 100
+                    if abs(last_price - 100.0) < 0.001:
+                        raise ValueError(f"Suspicious price 100 from AlphaVantage")
+                    
                     return {
-                        'last': float(quote['05. price']),
+                        'last': last_price,
                         'volume': float(quote['06. volume']),
                         'high': float(quote['03. high']),
                         'low': float(quote['04. low']),
@@ -1709,7 +1745,7 @@ class SmartConnectionManager:
             # Test dengan fetch ticker cepat
             ticker = provider.get_ticker(test_symbol)
             
-            if ticker and ticker.get('last', 0) > 0 and ticker.get('last', 0) != 100.0:
+            if ticker and ticker.get('last', 0) > 0 and abs(ticker.get('last', 0) - 100.0) > 0.001:
                 return True
             return False
             
@@ -1718,7 +1754,7 @@ class SmartConnectionManager:
             return False
 
 # =============================================
-# UNIFIED SMART DATA PROVIDER - FIXED VERSION dengan AUTO-FALLBACK
+# UNIFIED SMART DATA PROVIDER - FIXED VERSION
 # =============================================
 
 class UnifiedDataProvider(EnhancedDataProvider):
@@ -1889,14 +1925,14 @@ class UnifiedDataProvider(EnhancedDataProvider):
             
             # 🚨 PERBAIKAN: Deteksi harga 100 di sini juga
             if 'close' in result.columns and len(result) > 0:
-                avg_price = result['close'].mean()
-                if abs(avg_price - 100.0) < 1.0:
-                    logger.warning(f"⚠️ Rejecting result with suspicious price ~100: {avg_price}")
+                has_100 = (abs(result['close'] - 100.0) < 0.001).any()
+                if has_100:
+                    logger.warning(f"⚠️ Rejecting result with price 100")
                     return False
             
             return True
         elif func_name == 'get_ticker':
-            return isinstance(result, dict) and result.get('last', 0) > 0
+            return isinstance(result, dict) and result.get('last', 0) > 0 and abs(result.get('last', 0) - 100.0) > 0.001
         elif func_name == 'get_popular_assets':
             return isinstance(result, list) and len(result) > 0
             
@@ -1907,11 +1943,12 @@ class UnifiedDataProvider(EnhancedDataProvider):
         logger.error(f"🚨 EMERGENCY: Generating emergency data for {symbol}")
         
         if func_name == 'get_ohlcv':
-            # Generate synthetic data
-            return self._generate_synthetic_data(symbol)
+            # 🚨 JANGAN GENERATE SYNTHETIC DATA, KEMBALIKAN KOSONG
+            logger.error(f"❌ Returning EMPTY DataFrame for {symbol} instead of synthetic data")
+            return pd.DataFrame()
         elif func_name == 'get_ticker':
             return {
-                'last': 100.0,
+                'last': self._estimate_realistic_price(symbol),
                 'volume': 10000,
                 'symbol': symbol,
                 'timestamp': datetime.now()
@@ -1973,7 +2010,7 @@ class UnifiedDataProvider(EnhancedDataProvider):
         for source in sources:
             try:
                 price = source()
-                if price and price > 0 and price != 100.0:  # Pastikan bukan harga 100
+                if price and price > 0 and abs(price - 100.0) > 0.001:  # Pastikan bukan harga 100
                     logger.info(f"✅ Found reference price for {symbol}: {price:.8f}")
                     return price
             except Exception as e:
@@ -1985,7 +2022,7 @@ class UnifiedDataProvider(EnhancedDataProvider):
         """Coba dapatkan harga dari ticker"""
         try:
             ticker = self.get_ticker(symbol)
-            if ticker and 'last' in ticker and ticker['last'] > 0:
+            if ticker and 'last' in ticker and ticker['last'] > 0 and abs(ticker['last'] - 100.0) > 0.001:
                 return ticker['last']
         except:
             pass
@@ -1999,9 +2036,15 @@ class UnifiedDataProvider(EnhancedDataProvider):
             try:
                 data = self._execute_with_fallback('get_ohlcv', symbol, tf, 10)
                 if data is not None and not data.empty and 'close' in data.columns:
-                    price = data['close'].iloc[-1]
-                    if price > 0 and price != 100.0:
-                        return price
+                    # Cek dan buang harga 100
+                    mask_100 = abs(data['close'] - 100.0) < 0.001
+                    if mask_100.any():
+                        data = data[~mask_100]
+                    
+                    if len(data) > 0:
+                        price = data['close'].iloc[-1]
+                        if price > 0 and abs(price - 100.0) > 0.001:
+                            return price
             except:
                 continue
         
@@ -2018,117 +2061,10 @@ class UnifiedDataProvider(EnhancedDataProvider):
             return self._try_get_price_from_ticker('BNB/USDT')
         return None
     
-    def _generate_realistic_synthetic_data(self, symbol: str, reference_price: float, 
-                                         timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
-        """Generate synthetic data yang REALISTIS berdasarkan harga referensi"""
-        logger.warning(f"⚠️ Generating REALISTIC synthetic data for {symbol} based on price: {reference_price:.8f}")
-        
-        # Tentukan interval waktu berdasarkan timeframe
-        if timeframe == '1m':
-            delta = timedelta(minutes=1)
-        elif timeframe == '5m':
-            delta = timedelta(minutes=5)
-        elif timeframe == '15m':
-            delta = timedelta(minutes=15)
-        elif timeframe == '1h':
-            delta = timedelta(hours=1)
-        elif timeframe == '4h':
-            delta = timedelta(hours=4)
-        elif timeframe == '1d':
-            delta = timedelta(days=1)
-        else:
-            delta = timedelta(hours=1)
-        
-        # Generate timestamp
-        end_time = datetime.now()
-        start_time = end_time - (delta * limit)
-        
-        timestamps = [start_time + (delta * i) for i in range(limit)]
-        
-        # Simulasikan pergerakan harga yang realistis
-        np.random.seed(int(reference_price * 1000))  # Seed berdasarkan harga
-        
-        # Volatility berdasarkan tipe aset
-        if 'BTC' in symbol or 'ETH' in symbol:
-            volatility = 0.02  # 2% untuk major coins
-        elif '/USDT' in symbol or '=X' in symbol:
-            volatility = 0.015  # 1.5% untuk crypto/fx
-        else:
-            volatility = 0.025  # 2.5% untuk lainnya
-        
-        returns = np.random.normal(0.0005, volatility, limit)
-        prices = reference_price * np.exp(np.cumsum(returns))
-        
-        # Buat OHLCV yang realistis
-        data = {
-            'timestamp': timestamps,
-            'open': prices * np.random.uniform(0.995, 1.005, limit),
-            'high': prices * np.random.uniform(1.005, 1.015, limit),
-            'low': prices * np.random.uniform(0.985, 0.995, limit),
-            'close': prices,
-            'volume': np.random.uniform(10000, 100000, limit)
-        }
-        
-        df = pd.DataFrame(data)
-        
-        logger.info(f"📊 Generated REALISTIC synthetic data for {symbol}: {len(df)} bars, price ~{reference_price:.8f}")
-        
-        # Validasi data synthetic
-        is_valid, msg = self.validate_market_data(df, symbol, debug_mode=True)
-        
-        if not is_valid:
-            logger.error(f"❌ Even synthetic data validation failed: {msg}")
-        
-        return df
-    
-    def _generate_minimal_realistic_data(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
-        """Generate data minimal yang realistis (last resort)"""
-        logger.critical(f"🚨 GENERATING MINIMAL REALISTIC DATA FOR {symbol}")
-        
-        # Gunakan estimasi harga terbaik
-        estimated_price = self._estimate_realistic_price(symbol)
-        
-        # Pastikan harga tidak 100
-        if abs(estimated_price - 100.0) < 1.0:
-            # Coba tebak berdasarkan nama coin
-            if 'BTC' in symbol:
-                estimated_price = 50000.0
-            elif 'ETH' in symbol:
-                estimated_price = 3000.0
-            elif 'BNB' in symbol:
-                estimated_price = 500.0
-            elif 'XRP' in symbol:
-                estimated_price = 0.5
-            elif 'ADA' in symbol:
-                estimated_price = 0.4
-            elif 'SOL' in symbol:
-                estimated_price = 100.0
-            else:
-                estimated_price = 10.0  # Default lebih realistis
-        
-        # Generate data sederhana
-        timestamps = [datetime.now() - timedelta(hours=i) for i in range(limit)]
-        timestamps.reverse()
-        
-        data = {
-            'timestamp': timestamps,
-            'open': [estimated_price * 0.99] * limit,
-            'high': [estimated_price * 1.01] * limit,
-            'low': [estimated_price * 0.99] * limit,
-            'close': [estimated_price] * limit,
-            'volume': [10000] * limit
-        }
-        
-        df = pd.DataFrame(data)
-        
-        logger.warning(f"📊 Generated MINIMAL data for {symbol}: {len(df)} bars, price={estimated_price:.8f}")
-        
-        return df
-    
     # ================ PUBLIC METHODS DIPERBAIKI ================
     
     def get_ohlcv(self, symbol, timeframe='1h', limit=200):
-        """Get OHLCV data dengan auto-fallback yang lebih agresif - IMPROVED"""
+        """Get OHLCV data dengan auto-fallback yang lebih agresif - SIMPLE LOGIC: BUANG HARGA 100"""
         logger.info(f"📊 Getting OHLCV for {symbol} (limit: {limit})")
         
         # =========== STRATEGI 1: Coba provider utama ===========
@@ -2145,24 +2081,27 @@ class UnifiedDataProvider(EnhancedDataProvider):
                 result = provider.get_ohlcv(symbol, timeframe, limit)
                 
                 if result is not None and not result.empty:
-                    # 🚨 PERBAIKAN: Validasi ketat dengan pengecekan harga 100
-                    is_valid, msg = self.validate_market_data(result, symbol, debug_mode=(attempt > 0))
+                    # 🚨 **SIMPLE FIX: BUANG SEMUA BAR YANG HARGA 100**
+                    if 'close' in result.columns:
+                        mask_100 = abs(result['close'] - 100.0) < 0.001
+                        count_100 = mask_100.sum()
+                        
+                        if count_100 > 0:
+                            result = result[~mask_100].copy()
+                            logger.warning(f"🚨 Removed {count_100} bars with price 100 for {symbol}")
                     
-                    # 🚨 KRITIS: Jika ada harga 100, langsung reject dan fallback
-                    if 'close' in result.columns and len(result) > 0:
-                        avg_price = result['close'].mean()
-                        if abs(avg_price - 100.0) < 1.0:  # Jika harga mendekati 100
-                            logger.warning(f"🚨 SUSPICIOUS PRICE ~100 detected for {symbol}, forcing fallback")
-                            is_valid = False
-                            # Coba perbaiki data terlebih dahulu
-                            replacement_price = self._estimate_realistic_price(symbol)
-                            if abs(replacement_price - 100.0) > 1.0:
-                                result['close'] = replacement_price
-                                result['open'] = replacement_price * 0.99
-                                result['high'] = replacement_price * 1.01
-                                result['low'] = replacement_price * 0.99
-                                logger.info(f"🛠️ Replaced suspicious price with estimated: {replacement_price:.2f}")
-                                is_valid = True  # Setelah diperbaiki, anggap valid
+                    # Setelah dibuang, cek apakah masih cukup data
+                    if len(result) < 20:  # Minimal 20 bar
+                        logger.warning(f"⚠️ Not enough data after removing price 100 for {symbol}: {len(result)} bars")
+                        if attempt < max_attempts - 1:
+                            time.sleep(1)
+                            continue  # Coba lagi dengan provider lain?
+                        else:
+                            # Coba fallback provider
+                            break
+                    
+                    # Jika data cukup, lanjutkan dengan validasi lainnya
+                    is_valid, msg = self.validate_market_data(result, symbol, debug_mode=(attempt > 0))
                     
                     if is_valid:
                         logger.info(f"✅ Valid data from {provider.__class__.__name__}")
@@ -2198,6 +2137,19 @@ class UnifiedDataProvider(EnhancedDataProvider):
             result = self.fallback_provider.get_ohlcv(yf_symbol, timeframe, limit)
             
             if result is not None and not result.empty:
+                # 🚨 **BUANG BAR HARGA 100 DARI YFINANCE JUGA**
+                if 'close' in result.columns:
+                    mask_100 = abs(result['close'] - 100.0) < 0.001
+                    count_100 = mask_100.sum()
+                    if count_100 > 0:
+                        result = result[~mask_100].copy()
+                        logger.warning(f"🚨 Removed {count_100} bars with price 100 for {symbol} from YFinance")
+                
+                # Cek minimal data
+                if len(result) < 20:
+                    logger.warning(f"⚠️ YFinance data insufficient after cleaning: {len(result)} bars")
+                    return pd.DataFrame()
+                
                 is_valid, msg = self.validate_market_data(result, symbol, debug_mode=True)
                 
                 if is_valid:
@@ -2205,13 +2157,6 @@ class UnifiedDataProvider(EnhancedDataProvider):
                     return result
                 else:
                     logger.warning(f"⚠️ YFinance data also invalid: {msg[:100]}")
-                    
-                    # Coba perbaiki data YFinance juga
-                    if 'close' in result.columns and len(result) > 0:
-                        avg_price = result['close'].mean()
-                        if abs(avg_price - 100.0) < 1.0:
-                            # Data YFinance juga bermasalah, coba simbol alternatif
-                            logger.warning("⚠️ YFinance data also has price ~100, trying alternative symbols...")
             else:
                 logger.warning("⚠️ YFinance returned no data")
                 
@@ -2234,6 +2179,17 @@ class UnifiedDataProvider(EnhancedDataProvider):
                 result = self.fallback_provider.get_ohlcv(yf_alt_symbol, timeframe, limit)
                 
                 if result is not None and not result.empty:
+                    # 🚨 **BUANG BAR HARGA 100**
+                    if 'close' in result.columns:
+                        mask_100 = abs(result['close'] - 100.0) < 0.001
+                        count_100 = mask_100.sum()
+                        if count_100 > 0:
+                            result = result[~mask_100].copy()
+                            logger.warning(f"🚨 Removed {count_100} bars with price 100 for {alt_symbol}")
+                    
+                    if len(result) < 20:
+                        continue
+                    
                     is_valid, msg = self.validate_market_data(result, alt_symbol, debug_mode=True)
                     
                     if is_valid:
@@ -2244,19 +2200,9 @@ class UnifiedDataProvider(EnhancedDataProvider):
                 logger.debug(f"   Alternative {alt_symbol} failed: {e}")
                 continue
         
-        # =========== STRATEGI 4: GENERATE SYNTHETIC DATA HANYA JIKA SANGAT DIPERLUKAN ===========
-        logger.error(f"🚨 ALL REAL DATA SOURCES FAILED for {symbol}")
-        
-        # Coba dapatkan harga referensi terlebih dahulu
-        reference_price = self._get_reference_price(symbol)
-        
-        if reference_price is None:
-            logger.critical(f"❌ Cannot get reference price for {symbol}, using minimal synthetic data")
-            return self._generate_minimal_realistic_data(symbol, timeframe, limit)
-        else:
-            # Generate synthetic data berdasarkan harga referensi real
-            logger.warning(f"⚠️ Generating REALISTIC synthetic data based on reference price: {reference_price:.8f}")
-            return self._generate_realistic_synthetic_data(symbol, reference_price, timeframe, limit)
+        # =========== SEMUA GAGAL: KEMBALIKAN KOSONG ===========
+        logger.error(f"🚨 ALL REAL DATA SOURCES FAILED for {symbol}. Returning EMPTY DataFrame.")
+        return pd.DataFrame()
     
     def get_ticker(self, symbol):
         """Get ticker data dengan auto-fallback"""
@@ -2445,7 +2391,7 @@ class DynamicDataProvider(EnhancedDataProvider):
                         try:
                             # Test dengan fetch ticker untuk BTC/USDT (timeout 5 detik)
                             test_ticker = spot_provider.get_ticker("BTC/USDT")
-                            if test_ticker and test_ticker.get('last', 0) > 0:
+                            if test_ticker and test_ticker.get('last', 0) > 0 and abs(test_ticker.get('last', 0) - 100.0) > 0.001:
                                 successful_exchange = exchange_id
                                 logger.info(f"✅ Successfully connected to {exchange_id}")
                                 
@@ -2461,7 +2407,7 @@ class DynamicDataProvider(EnhancedDataProvider):
                                 }
                                 break
                             else:
-                                logger.warning(f"❌ {exchange_id} test failed: Invalid ticker data")
+                                logger.warning(f"❌ {exchange_id} test failed: Invalid ticker data or price 100")
                         except Exception as test_e:
                             logger.warning(f"❌ {exchange_id} test failed: {test_e}")
                     else:
@@ -2581,6 +2527,14 @@ class DynamicDataProvider(EnhancedDataProvider):
             # Gunakan cache mechanism
             cached_data = self._get_cached_data(symbol, timeframe, limit)
             if cached_data is not None:
+                # 🚨 **CEK CACHE APAKAH ADA HARGA 100**
+                if 'close' in cached_data.columns:
+                    has_100 = (abs(cached_data['close'] - 100.0) < 0.001).any()
+                    if has_100:
+                        logger.warning(f"⚠️ Cached data for {symbol} has price 100, skipping cache")
+                        cached_data = None
+            
+            if cached_data is not None:
                 is_valid, _ = self.validate_market_data(cached_data, symbol)
                 if is_valid:
                     logger.info(f"✅ Using validated cached data for {symbol}")
@@ -2601,6 +2555,14 @@ class DynamicDataProvider(EnhancedDataProvider):
             
             # Get data dari provider yang sesuai
             data = provider.get_ohlcv(symbol, timeframe, limit)
+            
+            # 🚨 **SIMPLE FIX: BUANG BAR HARGA 100 SEBELUM VALIDASI**
+            if data is not None and not data.empty and 'close' in data.columns:
+                mask_100 = abs(data['close'] - 100.0) < 0.001
+                count_100 = mask_100.sum()
+                if count_100 > 0:
+                    data = data[~mask_100].copy()
+                    logger.warning(f"⚠️ Removed {count_100} bars with price 100 for {symbol}")
             
             # Validasi data
             if data is not None and not data.empty:
@@ -2948,6 +2910,82 @@ class DataProviderMonitor:
         
         return report
 
+# =============================================
+# SIMPLE DATA FUNCTION
+# =============================================
+
+def get_simple_data(symbol, timeframe='1h', limit=200):
+    """
+    Function paling simple untuk ambil data
+    RULE: Kalau ada harga 100 → BUANG, kalau kurang data → SKIP
+    """
+    try:
+        # 1. Convert symbol ke format YFinance
+        yf_symbol = symbol.replace('/USDT', '-USD').replace(':USDT', '-USD')
+        
+        # 2. Download dari YFinance
+        ticker = yf.Ticker(yf_symbol)
+        
+        # Cek dulu apakah ada data
+        info = ticker.info
+        if not info or 'regularMarketPrice' not in info:
+            logger.warning(f"❌ {symbol} not found on YFinance")
+            return pd.DataFrame()
+        
+        # 3. Download history
+        interval_map = {'1h': '1h', '4h': '4h', '1d': '1d'}
+        interval = interval_map.get(timeframe, '1h')
+        
+        if interval in ['1h', '4h']:
+            period = '60d'  # 60 hari untuk data intraday
+        else:
+            period = '1y'
+        
+        df = ticker.history(period=period, interval=interval)
+        
+        if df.empty:
+            return pd.DataFrame()
+        
+        # 4. Format data
+        df.reset_index(inplace=True)
+        df.columns = [col.lower() for col in df.columns]
+        df.rename(columns={'date': 'timestamp'}, inplace=True)
+        
+        # 5. 🚨 **BUANG SEMUA BAR YANG HARGA 100**
+        if 'close' in df.columns:
+            mask_100 = abs(df['close'] - 100.0) < 0.001
+            count_100 = mask_100.sum()
+            
+            if count_100 > 0:
+                logger.warning(f"⚠️ Removing {count_100} bars with price 100 for {symbol}")
+                df = df[~mask_100].copy()
+        
+        # 6. Cek apakah masih cukup data
+        if len(df) < 20:
+            logger.warning(f"⚠️ Not enough data for {symbol} after cleaning: {len(df)} bars")
+            return pd.DataFrame()
+        
+        # 7. Potong sesuai limit
+        if len(df) > limit:
+            df = df.tail(limit)
+        
+        # 8. Cek harga realistic (optional)
+        if 'close' in df.columns and len(df) > 0:
+            current_price = df['close'].iloc[-1]
+            
+            # Kalau masih ada harga 100 (seharusnya sudah dibuang)
+            if abs(current_price - 100.0) < 0.001:
+                logger.error(f"🚨 {symbol} still has price 100 after cleaning!")
+                return pd.DataFrame()
+            
+            logger.info(f"✅ Clean data for {symbol}: {len(df)} bars, price: {current_price:.8f}")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error getting data for {symbol}: {e}")
+        return pd.DataFrame()
+
 # Test function
 def test_robust_data_fetcher():
     """Test RobustDataFetcher dengan multi-layer validation"""
@@ -3149,6 +3187,28 @@ def test_unified_provider():
     for stock in stocks:
         print(f"   - {stock['symbol']} ({stock.get('name', 'N/A')})")
 
+def test_simple_data():
+    """Test fungsi get_simple_data()"""
+    print("\n🧪 Testing get_simple_data()...")
+    
+    # Test 1: BTC/USDT
+    print("\n1. Testing BTC/USDT:")
+    data = get_simple_data("BTC/USDT", '1h', 20)
+    if not data.empty:
+        print(f"✅ Data fetched: {len(data)} rows")
+        print(f"   Latest price: {data['close'].iloc[-1]}")
+        print(f"   Has price 100: {(abs(data['close'] - 100.0) < 0.001).any()}")
+    else:
+        print("❌ No data returned")
+    
+    # Test 2: Invalid symbol
+    print("\n2. Testing invalid symbol (XXX/USDT):")
+    data = get_simple_data("XXX/USDT", '1h', 20)
+    if data.empty:
+        print("✅ Correctly returned empty DataFrame for invalid symbol")
+    else:
+        print("❌ Should return empty for invalid symbol")
+
 if __name__ == "__main__":
     print("=" * 60)
     print("DATA PROVIDER TEST SUITE")
@@ -3160,6 +3220,8 @@ if __name__ == "__main__":
     test_dynamic_provider()
     print("\n" + "=" * 60)
     test_unified_provider()
+    print("\n" + "=" * 60)
+    test_simple_data()
     
     print("\n" + "=" * 60)
     print("TESTS COMPLETED")
