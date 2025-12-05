@@ -9,6 +9,7 @@ import random
 import sys
 import os
 import json
+import traceback
 
 # ✅ FIX: Add the project root to Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -20,17 +21,39 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-# Import TradingBot - FIXED IMPORT
-try:
-    from bot.core import TradingBot
-    print("✅ Successfully imported TradingBot from bot.core")
-except ImportError as e:
+# Import TradingBot dengan error handling yang lebih baik
+def import_trading_bot():
+    """Import TradingBot dengan multiple fallback options"""
     try:
-        from core import TradingBot
-        print("✅ Successfully imported TradingBot from core")
-    except ImportError as e2:
-        st.error(f"❌ Import Error: {e2}")
-        st.stop()
+        from bot.core import TradingBot
+        print("✅ Successfully imported TradingBot from bot.core")
+        return TradingBot
+    except ImportError as e:
+        print(f"❌ Import from bot.core failed: {e}")
+        try:
+            from core import TradingBot
+            print("✅ Successfully imported TradingBot from core")
+            return TradingBot
+        except ImportError as e2:
+            print(f"❌ Import from core failed: {e2}")
+            try:
+                # Coba import relatif
+                from .core import TradingBot
+                print("✅ Successfully imported TradingBot from .core")
+                return TradingBot
+            except ImportError as e3:
+                print(f"❌ All import attempts failed: {e3}")
+                st.error(f"""
+                ❌ **TradingBot Import Error**
+                
+                **Possible solutions:**
+                1. Ensure `bot/core.py` or `core.py` exists in the project
+                2. Check if TradingBot class is defined in the module
+                3. Verify Python path includes the project directory
+                
+                **Error details:** {e3}
+                """)
+                return None
 
 # ====================================
 # Setup
@@ -131,16 +154,55 @@ def login_section():
         - Username: `admin` | Password: `admin123`
         """)
 
-@st.cache_resource
 def init_bot():
-    """Initialize TradingBot"""
+    """Initialize TradingBot dengan error handling yang lebih baik"""
     try:
-        bot = TradingBot()
+        # Import TradingBot class
+        TradingBotClass = import_trading_bot()
+        if TradingBotClass is None:
+            return None
+        
+        print(f"🔄 Initializing TradingBot with class: {TradingBotClass}")
+        
+        # Cek apakah TradingBotClass memang callable
+        if not callable(TradingBotClass):
+            st.error(f"❌ TradingBot class is not callable: {type(TradingBotClass)}")
+            return None
+        
+        # Coba inisialisasi
+        bot = TradingBotClass()
         print("✅ TradingBot initialized successfully")
-        st.success("✅ TradingBot initialized successfully")
         return bot
+        
+    except TypeError as e:
+        if "'NoneType' object is not callable" in str(e):
+            st.error("""
+            ❌ **TradingBot Initialization Error**
+            
+            **Root Cause:** The TradingBot class could not be properly imported or is None.
+            
+            **Solutions:**
+            1. Check if `bot/core.py` or `core.py` exists and contains `TradingBot` class
+            2. Verify the class is properly defined: `class TradingBot:`
+            3. Check for syntax errors in the TradingBot module
+            4. Ensure all dependencies are installed
+            """)
+        else:
+            st.error(f"❌ TypeError during bot initialization: {e}")
+        return None
+        
     except Exception as e:
-        st.error(f"❌ Failed to initialize TradingBot: {e}")
+        st.error(f"""
+        ❌ **Failed to initialize TradingBot**
+        
+        **Error:** {str(e)}
+        
+        **Debug Information:**
+        - Python Path: {sys.path}
+        - Working Directory: {os.getcwd()}
+        - File Location: {__file__}
+        """)
+        print(f"DEBUG - Full traceback:\n{traceback.format_exc()}")
         return None
 
 def safe_get(data, key, default=0):
@@ -432,31 +494,47 @@ def main_app():
 
     # Initialize bot dengan error handling yang lebih baik
     if 'bot_instance' not in st.session_state:
-        try:
-            bot = init_bot()
-            if bot:
-                st.session_state.bot_instance = bot
-                # 🚨 **FIX**: Set default mode jika belum diset
-                if not hasattr(bot, 'mode'):
-                    bot.mode = "crypto"
-                if not hasattr(bot, 'trading_mode'):
-                    bot.trading_mode = "spot"
+        with st.spinner("Initializing TradingBot..."):
+            try:
+                bot = init_bot()
+                if bot:
+                    st.session_state.bot_instance = bot
+                    # 🚨 **FIX**: Set default mode jika belum diset
+                    if not hasattr(bot, 'mode'):
+                        bot.mode = "crypto"
+                    if not hasattr(bot, 'trading_mode'):
+                        bot.trading_mode = "spot"
                     
-                # **PERBAIKAN: Auto-check provider dan fallback jika perlu**
-                try:
-                    health = bot.data_provider.get_health_metrics()
-                    if health.get('using_yfinance', False):
-                        st.info("ℹ️ Using YFinance as data source (auto-fallback)")
-                    else:
-                        st.success(f"✅ Using {health.get('active_exchange', 'CCXT')}")
-                except:
-                    st.warning("⚠️ Provider status unknown")
-            else:
-                st.error("❌ Failed to initialize TradingBot")
+                    # **PERBAIKAN: Auto-check provider dan fallback jika perlu**
+                    try:
+                        if hasattr(bot, 'data_provider') and hasattr(bot.data_provider, 'get_health_metrics'):
+                            health = bot.data_provider.get_health_metrics()
+                            if health.get('using_yfinance', False):
+                                st.info("ℹ️ Using YFinance as data source (auto-fallback)")
+                            else:
+                                st.success(f"✅ Using {health.get('active_exchange', 'CCXT')}")
+                    except:
+                        st.warning("⚠️ Provider status unknown")
+                        
+                    st.success("✅ TradingBot initialized successfully!")
+                else:
+                    st.error("""
+                    ❌ **Failed to initialize TradingBot**
+                    
+                    **Possible issues:**
+                    1. TradingBot module not found
+                    2. TradingBot class not defined
+                    3. Missing dependencies
+                    
+                    **Please check:**
+                    - Ensure `bot/core.py` or `core.py` exists
+                    - Verify the TradingBot class is defined
+                    - Check console for more details
+                    """)
+                    st.stop()
+            except Exception as e:
+                st.error(f"❌ Bot initialization error: {e}")
                 st.stop()
-        except Exception as e:
-            st.error(f"❌ Bot initialization error: {e}")
-            st.stop()
     
     bot = st.session_state.bot_instance
     
