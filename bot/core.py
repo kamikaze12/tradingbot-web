@@ -2037,9 +2037,15 @@ class MLEnhancedBot:
 class EnhancedTradingBot:
     """Enhanced trading bot dengan UNIFIED provider"""
     
-    def __init__(self, config_path="config/config.json"):
-        self.config_path = config_path
-        self.load_config()
+    def __init__(self, config=None):
+        if config is None:
+            config_path = "config/config.json"
+            self.config_path = config_path
+            self.load_config()
+        else:
+            self.config = config
+            self.config_path = "config/config.json"
+        
         self.mode = None
         
         # **PERBAIKAN UTAMA: Hapus leverage untuk futures**
@@ -2080,16 +2086,90 @@ class EnhancedTradingBot:
         self.current_drawdown = 0.0
         self.trading_enabled = True
         
-        # Threading
+        # Threading - 🚨 PERBAIKAN: Inisialisasi atribut yang hilang
         self.scheduler_thread = None
         self.stop_scheduler = False
         self.scanning_in_progress = False
+        self.current_scan_task = None
         
         # ML enhancements
         self.ml_predictions_cache = {}
         self.last_ml_update = 0
         
         logger.info("✅ Enhanced TradingBot initialized dengan UnifiedProvider")
+
+    def validate_market_data(self, df: pd.DataFrame, symbol: str, debug_mode: bool = False) -> Tuple[bool, str]:
+        """Validasi data market dengan logging lebih detail"""
+        checks = []
+        messages = []
+        
+        # Check 1: DataFrame tidak kosong
+        if df is None or len(df) == 0:
+            return False, "Empty DataFrame"
+        
+        # Check 2: Column yang diperlukan ada
+        required_columns = ['open', 'high', 'low', 'close']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            return False, f"Missing columns: {missing_columns}"
+        
+        # Check 3: Minimal data points
+        min_data_points = 20
+        if len(df) < min_data_points:
+            return False, f"Insufficient data points: {len(df)} < {min_data_points}"
+        
+        # Check 4: Validasi harga positif
+        price_columns = ['open', 'high', 'low', 'close']
+        for col in price_columns:
+            if (df[col] <= 0).any():
+                checks.append(False)
+                messages.append(f"❌ Non-positive values in {col}")
+        
+        # Check 5: Harga high >= low
+        if (df['high'] < df['low']).any():
+            checks.append(False)
+            messages.append("❌ High < Low detected")
+        
+        # Check 6: Harga dalam range yang wajar
+        if 'close' in df.columns and len(df) > 0:
+            avg_price = df['close'].mean()
+            min_price = df['close'].min()
+            max_price = df['close'].max()
+            
+            # 🚨 TAMBAHKAN: Log harga rata-rata untuk debug
+            if debug_mode:
+                logger.debug(f"🔍 DEBUG {symbol}: Avg price = {avg_price:.8f}, Min = {min_price:.8f}, Max = {max_price:.8f}")
+            
+            # Deteksi dini harga ~100 (kemungkinan data sintetik)
+            if abs(avg_price - 100.0) < 0.1:
+                logger.error(f"🚨 CRITICAL: {symbol} has average price ~100 (likely synthetic/bad data)")
+                checks.append(False)
+                messages.append(f"❌ Average price is ~100 (invalid data)")
+            
+            # Check volume jika ada
+            if 'volume' in df.columns:
+                avg_volume = df['volume'].mean()
+                if avg_volume <= 0:
+                    checks.append(False)
+                    messages.append(f"❌ Invalid volume: {avg_volume}")
+        
+        # Check 7: Tidak ada NaN values di kolom penting
+        important_columns = ['open', 'high', 'low', 'close']
+        for col in important_columns:
+            if df[col].isna().any():
+                checks.append(False)
+                messages.append(f"❌ NaN values in {col}")
+        
+        # Hasil akhir
+        all_checks_pass = all(checks) if checks else True
+        
+        if not all_checks_pass:
+            error_msg = f"Data validation failed for {symbol}: " + "; ".join(messages)
+            if debug_mode:
+                logger.error(error_msg)
+            return False, error_msg
+        
+        return True, "Data validation passed"
 
     def _setup_unified_provider(self):
         """Setup UnifiedDataProvider dengan auto-fallback ke YFinance"""
@@ -2361,8 +2441,14 @@ class EnhancedTradingBot:
                 logger.info(f"  Testing OHLCV for: {test_symbol}")
                 
                 df = self.data_provider.get_ohlcv(test_symbol, '1h', 10)
+                
+                # Validasi data dengan debug mode
                 if df is not None and len(df) > 0:
-                    logger.info(f"  ✅ OHLCV data: {len(df)} bars")
+                    is_valid, msg = self.validate_market_data(df, test_symbol, debug_mode=True)
+                    if is_valid:
+                        logger.info(f"  ✅ OHLCV data: {len(df)} bars (valid)")
+                    else:
+                        logger.warning(f"  ⚠️ OHLCV data validation failed: {msg}")
                 else:
                     logger.warning("  ⚠️ No OHLCV data, but continuing...")
             
@@ -2517,6 +2603,7 @@ class EnhancedTradingBot:
             return []
         
         self.scanning_in_progress = True
+        self.current_scan_task = threading.current_thread().ident
         
         try:
             # Validasi provider
@@ -2585,8 +2672,16 @@ class EnhancedTradingBot:
                     
                     # Get OHLCV data untuk analysis
                     df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
+                    
+                    # Validasi data sebelum analisis
                     if df is None or len(df) < 50:
                         logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df else 0} bars")
+                        continue
+                    
+                    # Validasi kualitas data
+                    is_valid, validation_msg = self.validate_market_data(df, symbol, debug_mode=True)
+                    if not is_valid:
+                        logger.warning(f"    ⚠️ Data validation failed for {symbol}: {validation_msg}")
                         continue
                     
                     logger.info(f"    📊 OHLCV data: {len(df)} bars, price range: {df['close'].min():.2f}-{df['close'].max():.2f}")
@@ -2660,6 +2755,7 @@ class EnhancedTradingBot:
             return []
         finally:
             self.scanning_in_progress = False
+            self.current_scan_task = None
 
     def _apply_market_constraints(self, analysis: dict) -> dict:
         """Apply market constraints - PERBAIKAN UTAMA"""
@@ -2702,6 +2798,11 @@ class EnhancedTradingBot:
             if df is None or len(df) < 50:
                 return {'error': 'Insufficient data'}
             
+            # Validasi data
+            is_valid, validation_msg = self.validate_market_data(df, symbol, debug_mode=True)
+            if not is_valid:
+                return {'error': f'Data validation failed: {validation_msg}'}
+            
             # Technical analysis
             analysis = self.strategy.analyze(df)
             if not analysis:
@@ -2741,6 +2842,11 @@ class EnhancedTradingBot:
             
             if df is None or len(df) < 100:
                 return {"error": "Insufficient data for backtest"}
+            
+            # Validasi data
+            is_valid, validation_msg = self.validate_market_data(df, symbol, debug_mode=True)
+            if not is_valid:
+                return {"error": f"Data validation failed: {validation_msg}"}
             
             # Run backtest
             basic_result = self.backtest_engine.run_backtest(df, self.strategy)
