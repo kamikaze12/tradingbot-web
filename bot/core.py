@@ -231,6 +231,30 @@ print("IMPORT COMPLETED")
 print("="*60 + "\n")
 
 # =============================================
+# HELPER FUNCTIONS - AUTO DETECTION
+# =============================================
+
+def auto_detect_trading_type(symbol: str) -> Tuple[str, str]:
+    """
+    Auto-detect trading type (spot/futures) dari simbol.
+    Returns: (trading_type, formatted_symbol)
+    """
+    symbol_upper = symbol.upper()
+    
+    # Deteksi futures dari format
+    futures_markers = [':USDT', ':USDT:', 'PERP', 'FUTURES', 'FUTURE']
+    
+    for marker in futures_markers:
+        if marker in symbol_upper:
+            # Format futures untuk konsistensi
+            formatted = symbol_upper.replace('-', '/').replace('_', '/')
+            return "futures", formatted
+    
+    # Default spot
+    formatted = symbol_upper.replace('-', '/').replace('_', '/')
+    return "spot", formatted
+
+# =============================================
 # ENHANCED BACKTEST ENGINE DARI CORE (1).PY
 # =============================================
 
@@ -2077,7 +2101,6 @@ class EnhancedTradingBot:
         self.ml_bot = MLEnhancedBot()
         self.portfolio_optimizer = PortfolioOptimizer()
         self.backtest_engine = BacktestEngine()
-        self.data_provider_monitor = DataProviderMonitor()
         
         # Configuration
         self.risk_per_trade = self.config.get("risk_per_trade", 0.01)
@@ -2222,7 +2245,7 @@ class EnhancedTradingBot:
                         self.trading_mode = kwargs.get('trading_mode', 'spot')
                         self.active_exchange = 'dummy'
                     
-                    def get_popular_assets(self, limit=100, asset_type='spot'):
+                    def get_popular_assets(self, limit=100):
                         return [{'symbol': 'BTC/USDT', 'name': 'Bitcoin'}]
                     
                     def get_ohlcv(self, symbol, timeframe, limit):
@@ -2294,348 +2317,47 @@ class EnhancedTradingBot:
         except Exception as e:
             logger.error(f"Error saving config: {e}")
 
-    def _is_futures_symbol(self, symbol: str) -> bool:
-        """Check if symbol is in futures format"""
-        if not symbol:
-            return False
-        
-        symbol_upper = symbol.upper()
-        futures_markers = [':USDT', 'PERP', '/USDT:', 'FUTURES', 'USDT:', '-USDT']
-        
-        return any(marker in symbol_upper for marker in futures_markers)
+    def _create_spot_strategy(self):
+        """Create spot strategy"""
+        return TechnicalAnalysisStrategy(
+            market_type=self.mode,
+            trading_type="spot",
+            atr_multiplier=self.config.get("atr_multiplier", 1.0),
+            entry_range_pct=self.config.get("entry_range_pct", 0.02),
+        )
+    
+    def _create_futures_strategy(self):
+        """Create futures strategy"""
+        return TechnicalAnalysisStrategy(
+            market_type=self.mode,
+            trading_type="futures",
+            atr_multiplier=self.config.get("atr_multiplier", 1.0),
+            entry_range_pct=self.config.get("entry_range_pct", 0.02),
+        )
 
-    def _ensure_futures_symbol(self, symbol: str) -> str:
-        """Konversi simbol spot ke futures jika mode futures aktif - ENHANCED"""
-        if self.trading_mode != 'futures':
-            return symbol
-
-        # Jika sudah format futures, return as-is
-        if self._is_futures_symbol(symbol):
-            return symbol
-
-        # Konversi berdasarkan exchange
-        exchange = self.config.get("futures_symbol_format", "binance").lower()
-
-        if exchange == 'binance':
-            # Binance futures format: BTC/USDT:USDT
-            if '/USDT' in symbol:
-                return f"{symbol}:USDT"
-        elif exchange == 'bybit':
-            # Bybit: BTCUSDT
-            return symbol.replace('/', '')
-        elif exchange in ['kucoin', 'okx']:
-            # KuCoin/OKX: BTC-USDT
-            return symbol.replace('/', '-')
-        elif exchange == 'gateio':
-            return f"{symbol}_PERP"
-        elif exchange == 'mexc':
-            return f"{symbol.replace('/', '_')}_PERP"
-        elif exchange == 'huobi':
-            return f"{symbol.replace('/', '-C')}"
-
-        # Default: tambahkan :USDT
-        if '/USDT' in symbol:
-            return f"{symbol}:USDT"
-        else:
-            return symbol
-
-    def set_trading_mode(self, mode: str):
-        """Set trading mode: 'spot' atau 'futures'"""
-        if mode.lower() in ['spot', 'spots']:
-            self.trading_mode = 'spot'
-            logger.info(f"🎯 Trading mode set to SPOT")
-            
-            # Update provider
-            if hasattr(self.data_provider, 'trading_mode'):
-                self.data_provider.trading_mode = 'spot'
-                
-        elif mode.lower() in ['futures', 'future']:
-            self.trading_mode = 'futures'
-            logger.info(f"🎯 Trading mode set to FUTURES")
-            
-            # Update provider
-            if hasattr(self.data_provider, 'trading_mode'):
-                self.data_provider.trading_mode = 'futures'
-        else:
-            logger.warning(f"Unknown trading mode: {mode}, defaulting to SPOT")
-            self.trading_mode = 'spot'
-
-    def set_mode(self, mode):
-        """Set trading mode dengan futures support - UNIFIED VERSION"""
-        try:
-            self.mode = mode.lower()
-            
-            # Stop existing tasks
-            self.stop_background_tasks()
-            
-            logger.info(f"🎯 Setting market mode to: {self.mode.upper()}")
-            logger.info(f"📊 Trading mode: {self.trading_mode.upper()}")
-            
-            # Update UnifiedDataProvider dengan mode baru
-            logger.info(f"🔄 Configuring UnifiedProvider for {self.mode} ({self.trading_mode})...")
-            
-            try:
-                # Update provider configuration
-                if hasattr(self.data_provider, 'market_type'):
-                    self.data_provider.market_type = self.mode
-                    self.data_provider.trading_mode = self.trading_mode
-                
-                # Jika UnifiedProvider mendukung reinitialization
-                if hasattr(self.data_provider, 'reinitialize'):
-                    self.data_provider.reinitialize(
-                        market_type=self.mode,
-                        trading_mode=self.trading_mode
-                    )
-                
-                # Setup strategy menggunakan create_strategy_for_symbol jika tersedia
-                if create_strategy_for_symbol is not None:
-                    # Coba gunakan strategi otomatis untuk simbol sample
-                    sample_symbol = "BTC/USDT" if self.mode == 'crypto' else "AAPL" if self.mode == 'us_stocks' else "BBCA.JK"
-                    if self.trading_mode == 'futures':
-                        sample_symbol = self._ensure_futures_symbol(sample_symbol)
-                    
-                    try:
-                        self.strategy = create_strategy_for_symbol(
-                            sample_symbol,
-                            market_type=self.mode,
-                            trading_mode=self.trading_mode
-                        )
-                        logger.info(f"✅ Created auto-detected strategy for {self.mode} ({self.trading_mode})")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Auto strategy creation failed: {e}, falling back to TechnicalAnalysisStrategy")
-                        self.strategy = TechnicalAnalysisStrategy(
-                            market_type=self.mode,
-                            trading_type=self.trading_mode,
-                            atr_multiplier=self.config.get("atr_multiplier", 1.0),
-                            entry_range_pct=self.config.get("entry_range_pct", 0.02),
-                        )
-                else:
-                    # Fallback ke TechnicalAnalysisStrategy
-                    self.strategy = TechnicalAnalysisStrategy(
-                        market_type=self.mode,
-                        trading_type=self.trading_mode,
-                        atr_multiplier=self.config.get("atr_multiplier", 1.0),
-                        entry_range_pct=self.config.get("entry_range_pct", 0.02),
-                    )
-                
-                # Test provider connection
-                test_assets = self._test_provider_connection()
-                
-                if test_assets:
-                    logger.info(f"✅ Provider ready for {self.mode} ({self.trading_mode})")
-                    logger.info(f"📋 Sample assets: {test_assets[:3]}")
-                    
-                    # Start background tasks
-                    self.start_background_tasks()
-                    return True
-                else:
-                    logger.warning(f"⚠️ Provider test returned no assets, but continuing...")
-                    self.start_background_tasks()
-                    return True
-                    
-            except Exception as e:
-                logger.error(f"❌ Failed to configure provider: {e}")
-                logger.error(traceback.format_exc())
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error setting mode {mode}: {e}")
-            return False
-
-    def _test_provider_connection(self):
-        """Test provider connection"""
-        try:
-            logger.info("🧪 Testing UnifiedProvider connection...")
-            
-            # Get popular assets dengan asset_type saat ini
-            asset_type = 'futures' if self.trading_mode == 'futures' else 'spot'
-            assets = self.data_provider.get_popular_assets(5, asset_type=asset_type)
-            
-            if not assets:
-                logger.warning("⚠️ No assets returned from provider")
-                return []
-            
-            # Format asset symbols
-            asset_symbols = []
-            for asset in assets[:5]:
-                if isinstance(asset, dict):
-                    symbol = asset.get('symbol', 'Unknown')
-                else:
-                    symbol = str(asset)
-                
-                # Konversi ke futures jika mode futures
-                if self.trading_mode == 'futures':
-                    symbol = self._ensure_futures_symbol(symbol)
-                
-                asset_symbols.append(symbol)
-            
-            # Test OHLCV untuk asset pertama menggunakan get_trading_data jika tersedia
-            if asset_symbols:
-                test_symbol = asset_symbols[0]
-                logger.info(f"  Testing OHLCV for: {test_symbol}")
-                
-                # Gunakan get_trading_data jika tersedia untuk membersihkan data
-                if get_trading_data is not None:
-                    df = get_trading_data(test_symbol, self.data_provider)
-                else:
-                    df = self.data_provider.get_ohlcv(test_symbol, '1h', 10)
-                
-                # Validasi data dengan debug mode
-                if df is not None and len(df) > 0:
-                    is_valid, msg = self.validate_market_data(df, test_symbol, debug_mode=True)
-                    if is_valid:
-                        logger.info(f"  ✅ OHLCV data: {len(df)} bars (valid)")
-                    else:
-                        logger.warning(f"  ⚠️ OHLCV data validation failed: {msg}")
-                else:
-                    logger.warning("  ⚠️ No OHLCV data, but continuing...")
-            
-            return asset_symbols
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Provider test had issues: {e}")
-            return []
-
-    def get_assets_by_type(self, limit: int = 100, asset_type: str = None) -> List[Dict]:
-        """Get assets berdasarkan type (spot/futures) dengan konversi simbol"""
+    def get_popular_assets(self, limit=100):
+        """Get all popular assets - biar strategi yang filter"""
         if not self.data_provider:
-            logger.error("❌ No data provider available")
             return []
         
         try:
-            # Tentukan asset_type
-            if asset_type is None:
-                asset_type = 'futures' if self.trading_mode == 'futures' else 'spot'
+            # Panggil tanpa parameter asset_type
+            assets = self.data_provider.get_popular_assets(limit)
             
-            logger.info(f"📊 Getting {limit} {asset_type} assets for {self.mode}...")
-            
-            # Panggil get_popular_assets dengan asset_type
-            assets = self.data_provider.get_popular_assets(limit, asset_type=asset_type)
-            
-            # Format hasil dengan konversi simbol
-            formatted_assets = []
+            # Tambahkan auto-detected type
             for asset in assets:
-                if isinstance(asset, dict):
-                    symbol = asset.get('symbol', 'Unknown')
-                    name = asset.get('name', asset.get('symbol', 'Unknown'))
-                    
-                    # Konversi ke futures jika mode futures tapi simbol belum futures
-                    if (self.trading_mode == 'futures' and 
-                        asset_type in ['futures', 'future'] and
-                        not self._is_futures_symbol(symbol)):
-                        
-                        symbol = self._ensure_futures_symbol(symbol)
-                    
-                    formatted_assets.append({
-                        'symbol': symbol,
-                        'name': name,
-                        'type': asset_type
-                    })
-                else:
-                    symbol = str(asset)
-                    
-                    # Konversi ke futures jika mode futures
-                    if (self.trading_mode == 'futures' and 
-                        asset_type in ['futures', 'future'] and
-                        not self._is_futures_symbol(symbol)):
-                        
-                        symbol = self._ensure_futures_symbol(symbol)
-                    
-                    formatted_assets.append({
-                        'symbol': symbol,
-                        'name': str(asset),
-                        'type': asset_type
-                    })
+                symbol = asset['symbol']
+                trading_type, formatted_symbol = auto_detect_trading_type(symbol)
+                asset['detected_type'] = trading_type
+                asset['formatted_symbol'] = formatted_symbol
             
-            logger.info(f"✅ Found {len(formatted_assets)} {asset_type} assets")
-            return formatted_assets[:limit]
-            
+            return assets
         except Exception as e:
-            logger.error(f"❌ Error getting {asset_type} assets: {e}")
+            logger.error(f"Error: {e}")
             return []
 
-    def get_popular_assets(self, limit=None, asset_type: str = None):
-        """Get popular assets dengan parameter asset_type"""
-        if not self.data_provider:
-            logger.error("❌ No data provider available. Run set_mode() first!")
-            return []
-        
-        try:
-            if limit is None:
-                limit = self.config.get("analysis_coins_limit", 150)
-            
-            # Tentukan asset_type
-            if asset_type is None:
-                asset_type = 'futures' if self.trading_mode == 'futures' else 'spot'
-            
-            logger.info(f"🔄 Fetching {limit} popular assets for {self.mode} ({asset_type})...")
-            
-            # Panggil get_popular_assets dari provider dengan asset_type
-            assets = self.data_provider.get_popular_assets(limit, asset_type=asset_type)
-            
-            if assets:
-                logger.info(f"✅ Found {len(assets)} assets for {self.mode} ({asset_type})")
-                
-                # Format assets untuk konsistensi
-                formatted_assets = []
-                for asset in assets:
-                    if isinstance(asset, dict):
-                        formatted_assets.append({
-                            'symbol': asset.get('symbol', 'Unknown'),
-                            'name': asset.get('name', asset.get('symbol', 'Unknown'))
-                        })
-                    else:
-                        formatted_assets.append({
-                            'symbol': str(asset),
-                            'name': str(asset)
-                        })
-                
-                return formatted_assets[:limit]
-            else:
-                logger.warning("⚠️ No assets returned from provider")
-                return []
-                
-        except Exception as e:
-            logger.error(f"❌ Error getting popular assets: {e}")
-            return []
-
-    def search_assets(self, query: str, limit: int = 20) -> List[Dict]:
-        """Search assets dengan fallback"""
-        if not self.data_provider:
-            logger.warning("No data provider available")
-            return []
-        
-        try:
-            logger.info(f"🔍 Searching assets for: '{query}' in {self.mode}")
-            
-            if hasattr(self.data_provider, 'search_assets'):
-                results = self.data_provider.search_assets(query, limit)
-            else:
-                # Manual search dari popular assets dengan asset_type saat ini
-                asset_type = 'futures' if self.trading_mode == 'futures' else 'spot'
-                all_assets = self.get_popular_assets(limit * 2, asset_type=asset_type)
-                results = []
-                for asset in all_assets:
-                    if isinstance(asset, dict):
-                        symbol = asset.get('symbol', '').lower()
-                        name = asset.get('name', '').lower()
-                    else:
-                        symbol = str(asset).lower()
-                        name = symbol
-                    
-                    if query.lower() in symbol or query.lower() in name:
-                        results.append(asset)
-                        if len(results) >= limit:
-                            break
-            
-            logger.info(f"✅ Found {len(results)} assets for query '{query}'")
-            return results
-        except Exception as e:
-            logger.error(f"Error searching assets: {e}")
-            return []
-
-    def scan_potential_assets(self, limit=None, search_query: str = None, asset_type: str = None):
-        """Scan untuk potential signals - MENGGUNAKAN get_trading_data"""
+    def scan_potential_assets(self, limit=25, search_query: str = None):
+        """Scan dengan auto-detection"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -2650,57 +2372,40 @@ class EnhancedTradingBot:
                 self.scanning_in_progress = False
                 return []
             
-            if limit is None:
-                limit = self.config.get("max_signals", 25)
-            
-            # Tentukan asset_type
-            if asset_type is None:
-                asset_type = 'futures' if self.trading_mode == 'futures' else 'spot'
-            
             # Gunakan analysis_coins_limit untuk jumlah assets
             assets_limit = self.config.get("analysis_coins_limit", 150)
             
-            logger.info(f"🔍 Scanning for {limit} signals in {self.mode} ({asset_type})...")
+            logger.info(f"🔍 Scanning for {limit} signals...")
             logger.info(f"📊 Will analyze up to {assets_limit} assets")
             
-            # Get assets menggunakan method baru
-            assets = self.get_assets_by_type(assets_limit, asset_type)
+            # Get assets menggunakan method baru (tanpa asset_type)
+            assets = self.get_popular_assets(assets_limit)
             
             if not assets:
                 logger.warning("❌ No assets available for scanning")
                 self.scanning_in_progress = False
                 return []
             
-            logger.info(f"📊 Scanning {len(assets)} {asset_type} assets...")
+            logger.info(f"📊 Scanning {len(assets)} assets...")
             logger.info(f"📋 Sample assets: {[a['symbol'] for a in assets[:5]]}")
             
             signals = []
             scan_delay = self.config.get("scan_delay", 0.3)
             
-            for i, asset in enumerate(assets):
+            for i, asset in enumerate(assets[:50]):  # Batasi untuk testing
                 try:
                     symbol = asset.get('symbol')
                     asset_name = asset.get('name', symbol)
+                    detected_type = asset.get('detected_type', 'spot')
+                    formatted_symbol = asset.get('formatted_symbol', symbol)
                     
                     if not symbol:
                         continue
                     
-                    logger.info(f"  [{i+1}/{len(assets)}] Analyzing: {symbol}")
-                    
-                    # Validasi simbol berdasarkan market
-                    if self.mode == 'saham_id':
-                        if not symbol.endswith('.JK'):
-                            logger.info(f"    ⚠️ Skipping {symbol} - not Indonesian stock format (.JK)")
-                            continue
-                    elif self.mode == 'forex' and '/' not in symbol:
-                        logger.info(f"    ⚠️ Skipping {symbol} - not forex format (XXX/YYY)")
-                        continue
-                    elif self.mode == 'us_stocks' and not (symbol.endswith('.US') or '.' not in symbol):
-                        logger.info(f"    ⚠️ Skipping {symbol} - not US stock format")
-                        continue
+                    logger.info(f"  [{i+1}/{len(assets[:50])}] Analyzing: {symbol} (Type: {detected_type})")
                     
                     # Get current price
-                    ticker = self.data_provider.get_ticker(symbol)
+                    ticker = self.data_provider.get_ticker(formatted_symbol)
                     if not ticker or ticker.get('last', 0) <= 0:
                         logger.info(f"    ⚠️ Invalid price for {symbol}: {ticker}")
                         continue
@@ -2710,10 +2415,10 @@ class EnhancedTradingBot:
                     
                     # Get OHLCV data untuk analysis MENGGUNAKAN get_trading_data
                     if get_trading_data is not None:
-                        df = get_trading_data(symbol, self.data_provider)
+                        df = get_trading_data(formatted_symbol, self.data_provider)
                         logger.info(f"    ✅ Menggunakan get_trading_data untuk membersihkan data")
                     else:
-                        df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
+                        df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
                         logger.info(f"    ℹ️ get_trading_data tidak tersedia, menggunakan data langsung")
                     
                     # Validasi data sebelum analisis
@@ -2729,14 +2434,20 @@ class EnhancedTradingBot:
                     
                     logger.info(f"    📊 OHLCV data: {len(df)} bars, price range: {df['close'].min():.2f}-{df['close'].max():.2f}")
                     
+                    # Pilih strategi berdasarkan tipe
+                    if detected_type == "futures":
+                        strategy = self._create_futures_strategy()
+                    else:
+                        strategy = self._create_spot_strategy()
+                    
                     # Analyze dengan strategy
-                    analysis = self.strategy.analyze(df)
+                    analysis = strategy.analyze(df)
                     if not analysis:
                         logger.info(f"    ⚠️ No analysis for {symbol}")
                         continue
                     
                     # **PERBAIKAN UTAMA: Apply market constraints - untuk spot crypto hanya LONG**
-                    analysis = self._apply_market_constraints(analysis)
+                    analysis = self._apply_market_constraints(analysis, detected_type)
                     
                     score = analysis.get('score', 0)
                     action = analysis.get('action', 'NEUTRAL')
@@ -2746,7 +2457,7 @@ class EnhancedTradingBot:
                     # Check jika signal valid
                     if abs(score) >= min_score and action != 'NEUTRAL':
                         signal_data = {
-                            'symbol': symbol,
+                            'symbol': formatted_symbol,
                             'name': asset_name,
                             'score': round(score, 2),
                             'action': action,
@@ -2760,13 +2471,13 @@ class EnhancedTradingBot:
                             'rsi': round(analysis.get('rsi', 50), 2),
                             'volume_ratio': round(analysis.get('volume_ratio', 1), 2),
                             'market_type': self.mode,
-                            'trading_mode': self.trading_mode,
+                            'trading_mode': detected_type,  # gunakan detected_type
                             'provider': 'unified',
-                            'asset_type': asset_type
+                            'asset_type': detected_type  # untuk kompatibilitas
                         }
                         
                         signals.append(signal_data)
-                        logger.info(f"✅ Signal: {symbol} | {action} | Score: {score:.2f} | Type: {asset_type}")
+                        logger.info(f"✅ Signal: {formatted_symbol} | {action} | Score: {score:.2f} | Type: {detected_type}")
                         
                         # Stop jika sudah cukup sinyal
                         if len(signals) >= limit:
@@ -2800,15 +2511,15 @@ class EnhancedTradingBot:
             self.scanning_in_progress = False
             self.current_scan_task = None
 
-    def _apply_market_constraints(self, analysis: dict) -> dict:
-        """Apply market constraints - PERBAIKAN UTAMA"""
+    def _apply_market_constraints(self, analysis: dict, detected_type: str = "spot") -> dict:
+        """Apply market constraints berdasarkan detected type"""
         if not isinstance(analysis, dict):
             return analysis
             
         action = analysis.get('action', 'NEUTRAL')
         
         # **PERBAIKAN UTAMA: Untuk spot crypto, hanya LONG yang diperbolehkan**
-        if action == 'SHORT' and self.mode == 'crypto' and self.trading_mode == 'spot':
+        if action == 'SHORT' and self.mode == 'crypto' and detected_type == 'spot':
             logger.debug(f"🚫 SHORT blocked for {self.mode} (spot mode)")
             
             analysis['action'] = 'NEUTRAL'
@@ -2829,19 +2540,15 @@ class EnhancedTradingBot:
             if not self.data_provider:
                 return {'error': 'No data provider available'}
             
-            # Konversi ke futures jika mode futures
-            original_symbol = symbol
-            if self.trading_mode == 'futures':
-                symbol = self._ensure_futures_symbol(symbol)
-                if original_symbol != symbol:
-                    logger.info(f"🔁 Converted symbol for ML analysis: {original_symbol} → {symbol}")
+            # Auto detect type
+            detected_type, formatted_symbol = auto_detect_trading_type(symbol)
             
             # Get data menggunakan get_trading_data jika tersedia
             if get_trading_data is not None:
-                logger.info(f"🔍 Menggunakan get_trading_data untuk membersihkan data {symbol}")
-                df = get_trading_data(symbol, self.data_provider)
+                logger.info(f"🔍 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
+                df = get_trading_data(formatted_symbol, self.data_provider)
             else:
-                df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 100)
+                df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
             
             if df is None or len(df) < 50:
                 return {'error': 'Insufficient data'}
@@ -2851,13 +2558,19 @@ class EnhancedTradingBot:
             if not is_valid:
                 return {'error': f'Data validation failed: {validation_msg}'}
             
+            # Pilih strategi berdasarkan tipe
+            if detected_type == "futures":
+                strategy = self._create_futures_strategy()
+            else:
+                strategy = self._create_spot_strategy()
+            
             # Technical analysis
-            analysis = self.strategy.analyze(df)
+            analysis = strategy.analyze(df)
             if not analysis:
                 return {'error': 'Analysis failed'}
             
             # Apply market constraints
-            analysis = self._apply_market_constraints(analysis)
+            analysis = self._apply_market_constraints(analysis, detected_type)
             
             return analysis
             
@@ -2875,23 +2588,19 @@ class EnhancedTradingBot:
             return {"error": "No data provider available"}
             
         try:
-            # Konversi ke futures jika mode futures
-            original_symbol = symbol
-            if self.trading_mode == 'futures':
-                symbol = self._ensure_futures_symbol(symbol)
-                if original_symbol != symbol:
-                    logger.info(f"🔁 Converted symbol for backtest: {original_symbol} → {symbol}")
+            # Auto detect type
+            detected_type, formatted_symbol = auto_detect_trading_type(symbol)
             
             if timeframe is None:
                 timeframe = self.config.get("timeframe", "1h")
                 
-            logger.info(f"🔧 Running advanced backtest for {symbol}...")
+            logger.info(f"🔧 Running advanced backtest for {formatted_symbol} ({detected_type})...")
             
             # Get data menggunakan get_trading_data jika tersedia
             if get_trading_data is not None:
-                df = get_trading_data(symbol, self.data_provider)
+                df = get_trading_data(formatted_symbol, self.data_provider)
             else:
-                df = self.data_provider.get_ohlcv(symbol, timeframe, limit)
+                df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
             
             if df is None or len(df) < 100:
                 return {"error": "Insufficient data for backtest"}
@@ -2901,11 +2610,18 @@ class EnhancedTradingBot:
             if not is_valid:
                 return {"error": f"Data validation failed: {validation_msg}"}
             
+            # Pilih strategi
+            if detected_type == "futures":
+                strategy = self._create_futures_strategy()
+            else:
+                strategy = self._create_spot_strategy()
+            
             # Run backtest
-            basic_result = self.backtest_engine.run_backtest(df, self.strategy)
+            basic_result = self.backtest_engine.run_backtest(df, strategy)
             
             return {
-                'symbol': symbol,
+                'symbol': formatted_symbol,
+                'detected_type': detected_type,
                 'timeframe': timeframe,
                 'basic_backtest': basic_result,
                 'data_points': len(df)
@@ -3033,23 +2749,20 @@ class EnhancedTradingBot:
     def calculate_custom_entry(self, symbol, entry_price, action="LONG"):
         """Calculate custom entry dengan TP/SL"""
         try:
-            # Konversi ke futures jika mode futures
-            original_symbol = symbol
-            if self.trading_mode == 'futures':
-                symbol = self._ensure_futures_symbol(symbol)
-                if original_symbol != symbol:
-                    logger.info(f"🔁 Converted symbol for custom entry: {original_symbol} → {symbol}")
+            # Auto detect type
+            detected_type, formatted_symbol = auto_detect_trading_type(symbol)
             
             # Get data menggunakan get_trading_data jika tersedia
             if get_trading_data is not None:
-                df = get_trading_data(symbol, self.data_provider)
+                df = get_trading_data(formatted_symbol, self.data_provider)
             else:
-                df = self.data_provider.get_ohlcv(symbol, self.config.get("timeframe", "1h"), 50)
+                df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 50)
             
             if df is None or len(df) < 20:
                 # Fallback calculation
                 return {
-                    'symbol': symbol,
+                    'symbol': formatted_symbol,
+                    'detected_type': detected_type,
                     'entry_price': entry_price,
                     'tp1': entry_price * 1.03,
                     'tp2': entry_price * 1.06,
@@ -3057,22 +2770,29 @@ class EnhancedTradingBot:
                     'sl': entry_price * 0.97
                 }
             
+            # Pilih strategi
+            if detected_type == "futures":
+                strategy = self._create_futures_strategy()
+            else:
+                strategy = self._create_spot_strategy()
+            
             # Calculate menggunakan strategy
-            if self.strategy:
-                analysis = self.strategy.analyze(df)
-                if analysis and 'tp1' in analysis and 'sl' in analysis:
-                    return {
-                        'symbol': symbol,
-                        'entry_price': entry_price,
-                        'tp1': analysis['tp1'],
-                        'tp2': analysis['tp2'],
-                        'tp3': analysis['tp3'],
-                        'sl': analysis['sl']
-                    }
+            analysis = strategy.analyze(df)
+            if analysis and 'tp1' in analysis and 'sl' in analysis:
+                return {
+                    'symbol': formatted_symbol,
+                    'detected_type': detected_type,
+                    'entry_price': entry_price,
+                    'tp1': analysis['tp1'],
+                    'tp2': analysis['tp2'],
+                    'tp3': analysis['tp3'],
+                    'sl': analysis['sl']
+                }
             
             # Fallback
             return {
-                'symbol': symbol,
+                'symbol': formatted_symbol,
+                'detected_type': detected_type,
                 'entry_price': entry_price,
                 'tp1': entry_price * 1.03,
                 'tp2': entry_price * 1.06,
@@ -3084,12 +2804,139 @@ class EnhancedTradingBot:
             logger.error(f"Error in custom entry calculation: {e}")
             return {
                 'symbol': symbol,
+                'detected_type': 'spot',
                 'entry_price': entry_price,
                 'tp1': entry_price * 1.03,
                 'tp2': entry_price * 1.06,
                 'tp3': entry_price * 1.09,
                 'sl': entry_price * 0.97
             }
+
+    # =============================================
+    # SET MODE METHOD (SIMPLIFIED)
+    # =============================================
+
+    def set_mode(self, mode):
+        """Set trading mode dengan futures support - SIMPLIFIED VERSION"""
+        try:
+            self.mode = mode.lower()
+            
+            # Stop existing tasks
+            self.stop_background_tasks()
+            
+            logger.info(f"🎯 Setting market mode to: {self.mode.upper()}")
+            
+            # Update UnifiedDataProvider dengan mode baru
+            logger.info(f"🔄 Configuring UnifiedProvider for {self.mode}...")
+            
+            try:
+                # Update provider configuration
+                if hasattr(self.data_provider, 'market_type'):
+                    self.data_provider.market_type = self.mode
+                
+                # Jika UnifiedProvider mendukung reinitialization
+                if hasattr(self.data_provider, 'reinitialize'):
+                    self.data_provider.reinitialize(
+                        market_type=self.mode
+                    )
+                
+                # Setup strategy menggunakan create_strategy_for_symbol jika tersedia
+                if create_strategy_for_symbol is not None:
+                    # Coba gunakan strategi otomatis untuk simbol sample
+                    sample_symbol = "BTC/USDT" if self.mode == 'crypto' else "AAPL" if self.mode == 'us_stocks' else "BBCA.JK"
+                    
+                    try:
+                        self.strategy = create_strategy_for_symbol(
+                            sample_symbol,
+                            market_type=self.mode
+                        )
+                        logger.info(f"✅ Created auto-detected strategy for {self.mode}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Auto strategy creation failed: {e}, falling back to TechnicalAnalysisStrategy")
+                        self.strategy = TechnicalAnalysisStrategy(
+                            market_type=self.mode,
+                            trading_type="spot",
+                            atr_multiplier=self.config.get("atr_multiplier", 1.0),
+                            entry_range_pct=self.config.get("entry_range_pct", 0.02),
+                        )
+                else:
+                    # Fallback ke TechnicalAnalysisStrategy
+                    self.strategy = TechnicalAnalysisStrategy(
+                        market_type=self.mode,
+                        trading_type="spot",
+                        atr_multiplier=self.config.get("atr_multiplier", 1.0),
+                        entry_range_pct=self.config.get("entry_range_pct", 0.02),
+                    )
+                
+                # Test provider connection
+                test_assets = self._test_provider_connection()
+                
+                if test_assets:
+                    logger.info(f"✅ Provider ready for {self.mode}")
+                    logger.info(f"📋 Sample assets: {test_assets[:3]}")
+                    
+                    # Start background tasks
+                    self.start_background_tasks()
+                    return True
+                else:
+                    logger.warning(f"⚠️ Provider test returned no assets, but continuing...")
+                    self.start_background_tasks()
+                    return True
+                    
+            except Exception as e:
+                logger.error(f"❌ Failed to configure provider: {e}")
+                logger.error(traceback.format_exc())
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error setting mode {mode}: {e}")
+            return False
+
+    def _test_provider_connection(self):
+        """Test provider connection"""
+        try:
+            logger.info("🧪 Testing UnifiedProvider connection...")
+            
+            # Get popular assets
+            assets = self.get_popular_assets(5)
+            
+            if not assets:
+                logger.warning("⚠️ No assets returned from provider")
+                return []
+            
+            # Format asset symbols
+            asset_symbols = []
+            for asset in assets[:5]:
+                symbol = asset.get('symbol', 'Unknown')
+                detected_type = asset.get('detected_type', 'spot')
+                asset_symbols.append(f"{symbol} ({detected_type})")
+            
+            # Test OHLCV untuk asset pertama menggunakan get_trading_data jika tersedia
+            if assets:
+                test_symbol = assets[0].get('formatted_symbol', assets[0].get('symbol'))
+                logger.info(f"  Testing OHLCV for: {test_symbol}")
+                
+                # Gunakan get_trading_data jika tersedia untuk membersihkan data
+                if get_trading_data is not None:
+                    df = get_trading_data(test_symbol, self.data_provider)
+                else:
+                    df = self.data_provider.get_ohlcv(test_symbol, '1h', 10)
+                
+                # Validasi data dengan debug mode
+                if df is not None and len(df) > 0:
+                    is_valid, msg = self.validate_market_data(df, test_symbol, debug_mode=True)
+                    if is_valid:
+                        logger.info(f"  ✅ OHLCV data: {len(df)} bars (valid)")
+                    else:
+                        logger.warning(f"  ⚠️ OHLCV data validation failed: {msg}")
+                else:
+                    logger.warning("  ⚠️ No OHLCV data, but continuing...")
+            
+            return asset_symbols
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Provider test had issues: {e}")
+            return []
 
 # =============================================
 # TRADING CORE - SIMPLIFIED VERSION
@@ -3111,8 +2958,6 @@ class TradingCore:
         try:
             if create_strategy_for_symbol is not None:
                 sample_symbol = "BTC/USDT" if self.config.get("market_type", "crypto") == "crypto" else "AAPL"
-                if self.trading_type == 'futures':
-                    sample_symbol = f"{sample_symbol}:USDT"
                 
                 self.strategy = create_strategy_for_symbol(
                     sample_symbol,
@@ -3218,11 +3063,8 @@ class TradingCore:
         try:
             logger.info(f"🔍 Scanning {self.trading_type} market ({scan_type})...")
             
-            # Get assets berdasarkan trading mode
-            assets = self.data_provider.get_popular_assets(
-                limit=limit,
-                asset_type=self.trading_type
-            )
+            # Get assets
+            assets = self.data_provider.get_popular_assets(limit=limit)
             
             if not assets:
                 logger.error("❌ No assets found for scanning")
@@ -3298,73 +3140,46 @@ def test_unified_provider():
     
     bot = EnhancedTradingBot()
     
-    # Test crypto market dengan spot
-    print("\n1. Testing CRYPTO market (SPOT)...")
-    bot.set_trading_mode('spot')
+    # Test crypto market
+    print("\n1. Testing CRYPTO market...")
     success = bot.set_mode("crypto")
     
     if success:
-        print("✅ Crypto mode set successfully (SPOT)")
+        print("✅ Crypto mode set successfully")
         
-        # Test popular assets spot
-        assets = bot.get_popular_assets(150, asset_type='spot')
-        print(f"   Found {len(assets)} spot assets")
+        # Test popular assets
+        assets = bot.get_popular_assets(10)
+        print(f"   Found {len(assets)} assets")
         for asset in assets[:5]:
-            print(f"   - {asset['symbol']}")
+            print(f"   - {asset['symbol']} ({asset.get('detected_type', 'N/A')})")
         
-        # Test scanning spot
-        print("\n2. Testing scanning SPOT...")
-        signals = bot.scan_potential_assets(limit=10, asset_type='spot')
-        print(f"   Found {len(signals)} spot signals")
+        # Test scanning
+        print("\n2. Testing scanning...")
+        signals = bot.scan_potential_assets(limit=10)
+        print(f"   Found {len(signals)} signals")
         
         if signals:
             for i, signal in enumerate(signals[:10]):
-                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']})")
+                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Type: {signal.get('trading_mode', 'N/A')})")
         else:
-            print("   ℹ️ No spot signals found - this is normal with real data")
-    
-    # Test crypto market dengan futures
-    print("\n3. Testing CRYPTO market (FUTURES)...")
-    bot.set_trading_mode('futures')
-    success = bot.set_mode("crypto")
-    
-    if success:
-        print("✅ Crypto mode set successfully (FUTURES)")
-        
-        # Test popular assets futures
-        assets = bot.get_popular_assets(150, asset_type='futures')
-        print(f"   Found {len(assets)} futures assets")
-        for asset in assets[:5]:
-            print(f"   - {asset['symbol']}")
-        
-        # Test scanning futures
-        print("\n4. Testing scanning FUTURES...")
-        signals = bot.scan_potential_assets(limit=10, asset_type='futures')
-        print(f"   Found {len(signals)} futures signals")
-        
-        if signals:
-            for i, signal in enumerate(signals[:10]):
-                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']})")
-        else:
-            print("   ℹ️ No futures signals found - this is normal with real data")
+            print("   ℹ️ No signals found - this is normal with real data")
     
     # Test saham_id
-    print("\n5. Testing SAHAM_ID market...")
-    bot.set_trading_mode('spot')
+    print("\n3. Testing SAHAM_ID market...")
     success = bot.set_mode("saham_id")
     
     if success:
         print("✅ Saham ID mode set successfully")
         
         # Test popular assets saham_id
-        assets = bot.get_popular_assets(100, asset_type='spot')
+        assets = bot.get_popular_assets(10)
         print(f"   Found {len(assets)} Indonesian stocks")
         for asset in assets[:5]:
-            print(f"   - {asset['symbol']} ({asset.get('name', 'N/A')})")
+            print(f"   - {asset['symbol']} ({asset.get('name', 'N/A')}) ({asset.get('detected_type', 'N/A')})")
         
         # Test scanning saham_id
-        print("\n6. Testing scanning SAHAM_ID...")
-        signals = bot.scan_potential_assets(limit=10, asset_type='spot')
+        print("\n4. Testing scanning SAHAM_ID...")
+        signals = bot.scan_potential_assets(limit=10)
         print(f"   Found {len(signals)} Indonesian stock signals")
         
         if signals:
@@ -3374,9 +3189,9 @@ def test_unified_provider():
             print("   ℹ️ No Indonesian stock signals found - this is normal with real data")
     
     print("\n" + "="*60)
-    print("✅ Test completed - Bot menggunakan UnifiedDataProvider")
-    print("   Support SPOT dan FUTURES dengan default Bybit")
-    print("   Unified provider dengan single interface")
+    print("✅ Test completed - Bot menggunakan UnifiedDataProvider dengan auto-detection")
+    print("   Auto-detect spot/futures dari simbol")
+    print("   Single interface tanpa parameter asset_type")
 
 def test_data_cleaner_integration():
     """Test integrasi data cleaner di core.py"""
@@ -3414,7 +3229,6 @@ def test_data_cleaner_integration():
     print("\n🧪 Testing scanning dengan symbols bermasalah...")
     
     # Create a test with problem symbols
-    bot.set_trading_mode('spot')
     bot.set_mode("crypto")
     
     # Mock some assets
@@ -3439,6 +3253,7 @@ if __name__ == "__main__":
     test_data_cleaner_integration()
     
     print("\n" + "="*60)
-    print("🎯 CORE.PY READY WITH DATA CLEANER INTEGRATION")
-    print("🎯 Menggunakan get_trading_data untuk membersihkan data dari masalah harga 100")
+    print("🎯 CORE.PY READY WITH AUTO-DETECTION")
+    print("🎯 Menggunakan get_trading_data untuk membersihkan data")
+    print("🎯 Auto-detect spot/futures dari simbol tanpa parameter asset_type")
     print("="*60)
