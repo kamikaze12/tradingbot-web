@@ -1,3 +1,5 @@
+[file name]: strategies.py
+[file content begin]
 import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
@@ -2410,78 +2412,70 @@ class TechnicalAnalysisStrategy(EnhancedTechnicalAnalysisStrategy):
 # UTILITY FUNCTIONS FOR AUTO-DETECTION
 # =============================================
 
+def auto_detect_trading_type_and_format(symbol: str) -> Tuple[str, str]:
+    """
+    Auto-detect trading type dan konversi format secara otomatis.
+    Returns: (trading_type, formatted_symbol)
+    """
+    symbol_upper = symbol.upper()
+    
+    # Deteksi futures
+    futures_markers = [':USDT', 'PERP', 'FUTURES', 'SWAP', '-USDT', '_PERP', '1226', '0325', '0626', '0926']
+    is_futures = any(marker in symbol_upper for marker in futures_markers)
+    
+    if is_futures:
+        trading_type = "futures"
+        # Standardisasi format untuk futures
+        if ':USDT' in symbol_upper:
+            formatted = symbol  # Sudah dalam format yang benar
+        elif '/USDT' in symbol_upper and ':USDT' not in symbol_upper:
+            formatted = f"{symbol}:USDT"  # Tambahkan :USDT
+        elif '-USDT' in symbol_upper and 'PERP' not in symbol_upper:
+            formatted = symbol.replace('-USDT', '/USDT:USDT')
+        else:
+            formatted = symbol
+    else:
+        trading_type = "spot"
+        # Standardisasi format spot
+        if ':USDT' in symbol_upper:
+            formatted = symbol.replace(':USDT', '/USDT')
+        else:
+            formatted = symbol
+    
+    return trading_type, formatted
+
 def auto_detect_trading_type(symbol: str) -> str:
     """
     Auto-detect if symbol is for spot or futures trading - ENHANCED
     """
-    symbol_upper = symbol.upper()
-    
-    # Futures patterns across different exchanges
-    futures_patterns = [
-        'PERP', 'PERPETUAL',  # Bybit, OKX, Binance
-        'SWAP',               # Binance
-        'FUTURES', 'FUTURE',  # Generic
-        '1226', '0325', '0626', '0926',  # Quarterly expiry
-        'CME:', 'COMEX:', 'NYMEX:',  # Traditional futures
-        'ES1!', 'NQ1!', 'YM1!', 'RTY1!',  # Stock index futures
-        '_FW', '_FUT', '_QUARTER',        # Huobi, others
-        '/USD-M', '/COIN-M',              # Binance futures
-        '-MARGIN', 'MARGIN',              # Margin trading
-        '.P', '.F', '.Q',                 # Generic futures suffixes
-        ':F', ':P',                       # Other exchanges
-        'USDT-PERP', 'USD-PERP'           # Specific patterns
-    ]
-    
-    for pattern in futures_patterns:
-        if pattern in symbol_upper:
-            return "futures"
-    
-    # Spot patterns
-    spot_patterns = [
-        '/USDT', '/USD', '/BTC', '/ETH',  # Spot pairs
-        '.JK', '.AX', '.NS', '.L',        # Stock exchanges
-        ':STOCK', ':SPOT',                # Explicit spot
-    ]
-    
-    for pattern in spot_patterns:
-        if pattern in symbol_upper:
-            return "spot"
-    
-    # Default to spot jika tidak yakin
-    return "spot"
+    trading_type, _ = auto_detect_trading_type_and_format(symbol)
+    return trading_type
 
 def convert_symbol_format(symbol: str, target_type: str = "spot") -> str:
     """
     Convert symbol between spot and futures format
     Example: 
-        BTC/USDT → BTC/USDT-PERP (spot to futures)
-        BTC/USDT-PERP → BTC/USDT (futures to spot)
+        BTC/USDT → BTC/USDT:USDT (spot to futures)
+        BTC/USDT:USDT → BTC/USDT (futures to spot)
     """
-    symbol_upper = symbol.upper()
-    
     if target_type == "futures":
-        # Convert spot to futures
-        if "-PERP" not in symbol_upper and "PERP" not in symbol_upper and "FUTURE" not in symbol_upper:
-            if "/USDT" in symbol_upper:
-                return symbol.replace("/USDT", "/USDT-PERP")
-            elif "-USDT" in symbol_upper:
-                return symbol.replace("-USDT", "-USDT-PERP")
-            elif "USDT" in symbol_upper and "/" not in symbol and "-" not in symbol:
-                return symbol + "USDT-PERP"
-            elif "/USD" in symbol_upper:
-                return symbol.replace("/USD", "/USD-PERP")
-            elif "/BTC" in symbol_upper:
-                return symbol.replace("/BTC", "/BTC-PERP")
-            elif "/ETH" in symbol_upper:
-                return symbol.replace("/ETH", "/ETH-PERP")
+        # Convert spot to futures format (dengan :USDT)
+        if ':USDT' not in symbol.upper():
+            if '/USDT' in symbol.upper():
+                return f"{symbol}:USDT"
+            elif '-USDT' in symbol.upper():
+                return symbol.replace('-USDT', '/USDT:USDT')
+            else:
+                return f"{symbol}:USDT"  # Default tambahkan :USDT
+        else:
+            return symbol  # Already in futures format
+    
     elif target_type == "spot":
-        # Convert futures to spot
-        if "-PERP" in symbol_upper:
-            return symbol.replace("-PERP", "").replace("PERP", "")
-        elif "PERPETUAL" in symbol_upper:
-            return symbol.replace("PERPETUAL", "").replace("PERP", "")
-        elif "FUTURE" in symbol_upper:
-            return symbol.replace("FUTURE", "").replace("FUT", "")
+        # Convert futures to spot format (hapus :USDT)
+        if ':USDT' in symbol.upper():
+            return symbol.replace(':USDT', '')
+        else:
+            return symbol
     
     return symbol
 
@@ -2561,14 +2555,16 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
     # Jika trading_mode diberikan dari core.py, gunakan itu
     if trading_mode:
         trading_type = trading_mode
+        # Format simbol sesuai trading_mode
+        formatted_symbol = convert_symbol_format(symbol, trading_mode)
     else:
         # Auto-detect jika tidak diberikan
-        trading_type = auto_detect_trading_type(symbol)
+        trading_type, formatted_symbol = auto_detect_trading_type_and_format(symbol)
     
     # Auto-suggest leverage
-    leverage = auto_suggest_leverage(symbol, market_type)
+    leverage = auto_suggest_leverage(formatted_symbol, market_type)
     
-    logger.info(f"Auto-detected for {symbol}: Market={market_type}, Type={trading_type}, Leverage={leverage}x")
+    logger.info(f"Auto-detected for {symbol} -> {formatted_symbol}: Market={market_type}, Type={trading_type}, Leverage={leverage}x")
     
     return EnhancedTechnicalAnalysisStrategy(
         market_type=market_type,
@@ -2584,11 +2580,7 @@ def get_strategy_for_trading_mode(symbol: str, trading_mode: str = "spot",
     Get strategy configured for specific trading mode
     """
     # Convert symbol format jika diperlukan
-    formatted_symbol = symbol
-    if trading_mode == "futures":
-        formatted_symbol = convert_symbol_format(symbol, "futures")
-    elif trading_mode == "spot":
-        formatted_symbol = convert_symbol_format(symbol, "spot")
+    formatted_symbol = convert_symbol_format(symbol, trading_mode)
     
     # Create strategy dengan trading_mode yang ditentukan
     strategy = create_strategy_for_symbol(
@@ -2699,7 +2691,7 @@ def test_strategy_with_futures_support():
     print(f"Range Size: {result['range_size']:.2f}%")
     
     # Test 2: BTC Futures Trading (5x leverage)
-    print("\n2. TESTING BTC/USDT-PERP FUTURES (5x LEVERAGE)")
+    print("\n2. TESTING BTC/USDT:USDT FUTURES (5x LEVERAGE)")
     print("-" * 40)
     futures_strategy = EnhancedTechnicalAnalysisStrategy(
         market_type="crypto_future",
@@ -2707,7 +2699,7 @@ def test_strategy_with_futures_support():
         leverage=5
     )
     
-    result = futures_strategy.analyze(df, "BTC/USDT-PERP")
+    result = futures_strategy.analyze(df, "BTC/USDT:USDT")
     print(f"Action: {result['action']}")
     print(f"Trading Type: {result['trading_type']}")
     print(f"Leverage: {result['leverage']}x")
@@ -2722,7 +2714,7 @@ def test_strategy_with_futures_support():
     
     symbols_to_test = [
         "BTC/USDT",
-        "BTC/USDT-PERP",
+        "BTC/USDT:USDT",
         "ETH/USDT-SWAP",
         "EUR/USD",
         "XAU/USD",
@@ -2816,10 +2808,10 @@ def test_integration_with_core():
     
     conversion_tests = [
         ("BTC/USDT", "spot", "BTC/USDT"),
-        ("BTC/USDT", "futures", "BTC/USDT-PERP"),
-        ("BTC/USDT-PERP", "spot", "BTC/USDT"),
-        ("BTC/USDT-PERP", "futures", "BTC/USDT-PERP"),
-        ("ETH-USD", "futures", "ETH-USD-PERP"),
+        ("BTC/USDT", "futures", "BTC/USDT:USDT"),
+        ("BTC/USDT:USDT", "spot", "BTC/USDT"),
+        ("BTC/USDT:USDT", "futures", "BTC/USDT:USDT"),
+        ("ETH-USD", "futures", "ETH/USDT:USDT"),
         ("ES1!", "spot", "ES1!"),
     ]
     
@@ -2891,7 +2883,7 @@ if __name__ == "__main__":
         leverage=5
     )
     
-    result = futures_strategy.analyze(df, "BTC/USDT-PERP")
+    result = futures_strategy.analyze(df, "BTC/USDT:USDT")
     formatted_output = futures_strategy.format_signal_output(result)
     print(formatted_output)
     
@@ -2905,3 +2897,4 @@ if __name__ == "__main__":
     print("🎯 STRATEGIES.PY READY FOR INTEGRATION WITH CORE.PY")
     print("🎯 DATA CLEANER IMPLEMENTED - READY TO FIX PRICE 100 ISSUES!")
     print("=" * 60)
+[file content end]
