@@ -11,6 +11,7 @@ from scipy.signal import argrelextrema
 import talib
 import yfinance as yf
 from datetime import datetime, timedelta
+import time  # Ditambahkan untuk rate limiting
 
 warnings.filterwarnings('ignore')
 
@@ -22,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =============================================
-# DATA CLEANER FUNCTION - IMPLEMENTASI GAMPANG
+# DATA CLEANER FUNCTION - IMPLEMENTASI GAMPANG (DIPERBAIKI)
 # =============================================
 
 def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
@@ -35,33 +36,39 @@ def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
         clean_symbol = symbol.split(':')[0] if ':' in symbol else symbol
         clean_symbol = clean_symbol.replace('/', '-').replace('USDT-', '')
         
+        # ⏰ TAMBAH RATE LIMITING - delay 1 detik antara request
+        time.sleep(0.5)  # Dikurangi dari 1.0 ke 0.5 untuk lebih cepat
+        
         # Download data dari yfinance
-        df = yf.download(clean_symbol, period=f'{lookback}d', interval=timeframe)
+        logger.info(f"📥 Downloading {clean_symbol} from YFinance...")
+        df = yf.download(clean_symbol, period=f'{lookback}d', interval=timeframe, progress=False)
         
         if df.empty:
             logger.warning(f"No data for {symbol}")
             return pd.DataFrame()
         
-        # 🚨 **CEK DAN PERBAIKI HARGA 100**
+        # 🚨 **CEK DAN PERBAIKI HARGA 100** - DIPERBAIKI: GUNAKAN .any()
         if 'Close' in df.columns:
-            # Deteksi harga stuck di 100
-            mask_100 = abs(df['Close'] - 100.0) < 0.001
+            # Deteksi harga stuck di 100 - GUNAKAN OPERASI VECTOR
+            price_diff = abs(df['Close'] - 100.0)
+            mask_100 = price_diff < 0.001
             
-            if mask_100.any():
-                logger.warning(f"Found {mask_100.sum()} bars with close price 100 in {symbol}. Fixing...")
+            if mask_100.any():  # ← GUNAKAN .any() untuk Series
+                count_100 = mask_100.sum()
+                logger.warning(f"Found {count_100} bars with close price 100 in {symbol}. Fixing...")
                 
                 # Ganti harga 100 dengan NaN
                 df.loc[mask_100, 'Close'] = np.nan
                 
                 # Forward fill untuk ganti NaN dengan harga sebelumnya
-                df['Close'].ffill(inplace=True)
+                df['Close'] = df['Close'].ffill()
                 
                 # Backfill untuk kasus harga awal 100
-                df['Close'].bfill(inplace=True)
+                df['Close'] = df['Close'].bfill()
         
         # Pastikan harga tidak aneh
         if 'Close' in df.columns:
-            # Hapus baris dengan harga <= 0
+            # Hapus baris dengan harga <= 0 - GUNAKAN BOOLEAN INDEXING
             df = df[df['Close'] > 0]
             
             # Hapus baris dengan harga tidak realistic
@@ -98,10 +105,15 @@ def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
             logger.warning(f"Empty DataFrame after cleaning for {symbol}")
             return pd.DataFrame()
         
-        # Final check: pastikan TIDAK ADA harga 100
-        if 'close' in df.columns and (abs(df['close'] - 100.0) < 0.001).any():
-            logger.error(f"🚨 {symbol} still has price 100 after cleaning!")
-            return pd.DataFrame()
+        # Final check: pastikan TIDAK ADA harga 100 - GUNAKAN .any()
+        if 'close' in df.columns:
+            # BUAT Series boolean, lalu gunakan .any()
+            price_diff_final = abs(df['close'] - 100.0)
+            mask_100_final = (price_diff_final < 0.001)
+            
+            if mask_100_final.any():  # ← INI YANG BENAR!
+                logger.error(f"🚨 {symbol} still has price 100 after cleaning!")
+                return pd.DataFrame()
         
         logger.info(f"✅ Clean data for {symbol}: {len(df)} bars")
         return df
@@ -117,13 +129,16 @@ def get_trading_data(symbol, provider=None):
     """
     data = get_clean_data(symbol, provider)
     
-    # 🚨 **TAMBAH VALIDASI FINAL**
+    # 🚨 **TAMBAH VALIDASI FINAL** - DIPERBAIKI: GUNAKAN .any()
     if data.empty:
         return None
     
     if 'close' in data.columns:
-        # Pastikan TIDAK ADA harga 100
-        if (abs(data['close'] - 100.0) < 0.001).any():
+        # Pastikan TIDAK ADA harga 100 - GUNAKAN .any()
+        price_diff = abs(data['close'] - 100.0)
+        mask_100 = (price_diff < 0.001)
+        
+        if mask_100.any():  # ← PERBAIKI DI SINI
             logger.error(f"🚨 {symbol} still has price 100, rejecting!")
             return None
         
@@ -556,7 +571,7 @@ class TradingStrategy(ABC):
                 'sl': sl,
                 'atr': atr,
                 'entry_range_pct': entry_range_pct * 100,
-                'range_size': (entry_range_high - entry_range_low) / current_price * 100,
+                'range_size': (entry_range_high - entry_range_low) / current_price * 100 if current_price > 0 else 0,
                 'risk_amount': risk_amount,
                 'risk_percentage': (risk_amount / best_entry) * 100 if best_entry > 0 else 0,
                 'rr_ratio_tp1': rr_ratio_1,
@@ -1239,46 +1254,59 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return 0.0
 
     def _should_skip_symbol(self, df, symbol):
-        """Skip logic yang lebih pintar untuk futures"""
-        if df is None or df.empty or len(df) < 20:
+        """Skip logic yang lebih pintar untuk futures - DIPERBAIKI"""
+        if df is None or df.empty or len(df) < 10:  # ← UBAH dari 20 ke 10
+            logger.debug(f"Skipping {symbol}: data too short ({len(df) if df is not None else 0} bars)")
             return True
         
         # Deteksi apakah ini futures
-        is_futures = any(x in symbol.upper() for x in [':USDT', 'PERP', 'FUTURES', '-USDT'])
+        is_futures = any(x in symbol.upper() for x in [':USDT', 'PERP', 'FUTURES', '-USDT', 'USDT:'])
         
         # Parameter berbeda untuk spot vs futures
         if is_futures:
-            min_volatility = 0.00001
-            min_volume = 100
-            min_price = 0.000001
+            min_volatility = 0.000001  # ← LEBIH RENDAH untuk futures
+            min_volume = 10           # ← LEBIH RENDAH untuk futures
+            min_price = 0.0000001     # ← LEBIH RENDAH untuk futures
         else:
             min_volatility = 0.001
             min_volume = 1000
             min_price = 0.001
         
         # Check conditions
-        volatility = df['close'].pct_change().std()
-        avg_volume = df['volume'].mean()
+        if len(df) > 1:
+            volatility = df['close'].pct_change().std()
+        else:
+            volatility = 0.01
+        
+        avg_volume = df['volume'].mean() if 'volume' in df.columns else 1000
         current_price = df['close'].iloc[-1] if len(df) > 0 else 0
         
-        price_changes = df['close'].diff().abs().sum()
-        is_flatline = price_changes < (current_price * 0.0001 * len(df))
+        # Cek jika ada NaN
+        if df['close'].isna().any():
+            logger.warning(f"Skipping {symbol}: has NaN values")
+            return True
         
-        skip_conditions = [
-            volatility < min_volatility,
-            avg_volume < min_volume,
-            current_price < min_price,
-            is_flatline,
-            df['close'].isna().any(),
-            (df['high'] < df['low']).any()
-        ]
+        # Cek harga valid
+        if current_price <= 0 or current_price > 100000000:
+            logger.warning(f"Skipping {symbol}: invalid price {current_price}")
+            return True
         
-        should_skip = any(skip_conditions)
+        # Cek volume terlalu rendah
+        if avg_volume < min_volume:
+            logger.debug(f"Skipping {symbol}: low volume {avg_volume:.0f}")
+            return True
         
-        if should_skip and is_futures:
-            logger.debug(f"⏭️ Skipping futures {symbol}: volatility={volatility:.6f}, volume={avg_volume:.0f}, price={current_price:.6f}")
+        # Cek jika semua data sama (flatline)
+        if len(df['close'].unique()) <= 3:
+            logger.warning(f"Skipping {symbol}: flatline data")
+            return True
         
-        return should_skip
+        # Cek volatility terlalu rendah
+        if volatility < min_volatility:
+            logger.debug(f"Skipping {symbol}: low volatility {volatility:.6f}")
+            return True
+        
+        return False
     
     def _get_safe_neutral_signal(self, symbol: str = None) -> Dict[str, Any]:
         """Return safe neutral signal when skipping analysis"""
@@ -1304,16 +1332,21 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         """Analyze market data - SAMA untuk spot/futures, beda hanya di parameter"""
         try:
             # 1. Validasi data dasar
-            if df is None or df.empty or len(df) < 20:
+            if df is None or df.empty or len(df) < 10:
+                logger.warning(f"Data insufficient for {symbol}: {len(df) if df is not None else 0} bars")
                 return self._get_default_analysis(symbol)
             
-            # 2. Ambil harga sekarang
+            # 2. Skip jika data tidak valid
+            if self._should_skip_symbol(df, symbol):
+                return self._get_safe_neutral_signal(symbol)
+            
+            # 3. Ambil harga sekarang
             current_price = df['close'].iloc[-1]
             
-            # 3. Hitung indikator teknis (SAMA untuk spot/futures)
+            # 4. Hitung indikator teknis (SAMA untuk spot/futures)
             indicators = self._calculate_enhanced_indicators(df)
             
-            # 4. Tentukan sinyal berdasarkan indikator
+            # 5. Tentukan sinyal berdasarkan indikator
             rsi = indicators['rsi_14']
             macd_signal = indicators['macd_line'] > indicators['macd_signal']
             bb_position = indicators['bb_position']
@@ -1331,7 +1364,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             if bb_position < 0.2: score += 2
             elif bb_position > 0.8: score -= 2
             
-            # 5. Tentukan action
+            # 6. Tentukan action
             if score >= 3:
                 action = "LONG"
             elif score <= -3:
@@ -1339,7 +1372,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             else:
                 action = "NEUTRAL"
             
-            # 6. Hitung entry range berdasarkan trading_type
+            # 7. Hitung entry range berdasarkan trading_type
             if self.trading_type == "futures":
                 # Futures: range lebih lebar
                 entry_range = self.entry_range_pct * 1.5
@@ -1347,7 +1380,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 # Spot: range normal
                 entry_range = self.entry_range_pct
             
-            # 7. Hitung TP/SL
+            # 8. Hitung TP/SL
             entry_calc = self.calculate_custom_entry(
                 symbol=symbol or "UNKNOWN",
                 current_price=current_price,
@@ -1355,7 +1388,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 df=df
             )
             
-            # 8. Return hasil
+            # 9. Return hasil
             result = {
                 'action': action,
                 'score': score,
@@ -1382,7 +1415,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 'confidence': min(abs(score) / 10.0, 1.0)
             }
             
-            # 9. Tambahkan indikator tambahan
+            # 10. Tambahkan indikator tambahan
             result.update({
                 'macd_line': indicators['macd_line'],
                 'macd_signal': indicators['macd_signal'],
@@ -1397,7 +1430,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return result
             
         except Exception as e:
-            logger.error(f"Analysis error: {e}")
+            logger.error(f"Analysis error for {symbol}: {e}")
             return self._get_default_analysis(symbol)
     
     def _calculate_enhanced_indicators(self, df: pd.DataFrame) -> Dict[str, float]:
@@ -1432,7 +1465,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             indicators['bb_middle'] = bb_middle
             indicators['bb_position'] = (prices[-1] - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
             
-            # ATR
+            # ATR - DIPERBAIKI
             indicators['atr'] = self._calculate_atr(df)
             
             # Volatility
@@ -1521,15 +1554,23 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         return upper, lower, middle
     
     def _calculate_atr(self, df: pd.DataFrame) -> float:
-        """Calculate Average True Range"""
+        """Calculate Average True Range - DIPERBAIKI untuk data minimal"""
         try:
+            # Cek jika data cukup
+            if len(df) < 5:
+                current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 100.0
+                return current_price * 0.02  # Fallback
+            
             high = df['high'].values
             low = df['low'].values
             close = df['close'].values
             
+            # Validasi data
             if (high <= 0).any() or (low <= 0).any() or (close <= 0).any():
+                logger.warning("Invalid price data in ATR calculation")
                 return df['close'].iloc[-1] * 0.02
             
+            # Hitung True Range untuk setiap bar
             tr = np.zeros(len(high))
             for i in range(1, len(high)):
                 tr1 = high[i] - low[i]
@@ -1537,12 +1578,20 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 tr3 = abs(low[i] - close[i-1])
                 tr[i] = max(tr1, tr2, tr3)
             
-            atr = np.mean(tr[-14:]) if len(tr) >= 14 else np.mean(tr)
-            return atr if atr > 0 else df['close'].iloc[-1] * 0.02
+            # Hitung ATR (14-period)
+            period = min(14, len(tr))
+            atr = np.mean(tr[-period:]) if len(tr) >= period else np.mean(tr)
+            
+            # Pastikan ATR tidak nol atau negatif
+            if atr <= 0:
+                current_price = close[-1]
+                atr = current_price * 0.02
+            
+            return atr
             
         except Exception as e:
             logger.error(f"ATR calculation error: {e}")
-            current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 1.0
+            current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 100.0
             return current_price * 0.02
     
     def _calculate_trend_strength(self, prices: np.ndarray) -> float:
@@ -1831,7 +1880,11 @@ def test_data_cleaner():
             current_price = data['close'].iloc[-1]
             print(f"   📊 Current price: ${current_price:.6f}")
             
-            if (abs(data['close'] - 100.0) < 0.001).any():
+            # Cek harga 100 dengan .any()
+            price_diff = abs(data['close'] - 100.0)
+            mask_100 = (price_diff < 0.001)
+            
+            if mask_100.any():
                 print(f"   ⚠️ WARNING: Still has price 100!")
             else:
                 print(f"   👍 No price 100 detected")
