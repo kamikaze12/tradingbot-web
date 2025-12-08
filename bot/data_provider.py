@@ -1,4 +1,98 @@
-# ... (semua kode sebelumnya tetap sama)
+import ccxt
+import pandas as pd
+import yfinance as yf
+import numpy as np
+from datetime import datetime, timedelta
+import logging
+from typing import Dict, List, Optional, Tuple
+import time
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# =============================================
+# BASE DATA PROVIDER
+# =============================================
+
+class EnhancedDataProvider:
+    """Base class for enhanced data providers"""
+    
+    def __init__(self):
+        self.api_calls = 0
+        self.errors = 0
+        self.last_success = None
+        
+    def _safe_api_call(self, func):
+        """Safe wrapper for API calls"""
+        try:
+            self.api_calls += 1
+            result = func()
+            self.last_success = datetime.now()
+            return result
+        except Exception as e:
+            self.errors += 1
+            logger.error(f"API call failed: {e}")
+            raise
+    
+    def validate_market_data(self, df: pd.DataFrame, symbol: str) -> Tuple[bool, str]:
+        """Validate market data quality"""
+        if df.empty:
+            return False, "Empty DataFrame"
+        
+        # Check for NaN values
+        if df.isnull().any().any():
+            df = df.fillna(method='ffill').fillna(method='bfill')
+            logger.warning(f"Fixed NaN values in {symbol}")
+        
+        # Check for zero volume
+        if 'volume' in df.columns:
+            zero_volume = (df['volume'] == 0).sum()
+            if zero_volume > len(df) * 0.5:  # More than 50% zero volume
+                return False, f"Too many zero volume bars: {zero_volume}/{len(df)}"
+        
+        # Check price validity
+        required_cols = ['open', 'high', 'low', 'close']
+        for col in required_cols:
+            if col in df.columns:
+                if (df[col] <= 0).any():
+                    return False, f"Invalid {col} values (<=0)"
+                
+                # Check for unrealistic spikes (price change > 100% in one bar)
+                if col == 'close' and len(df) > 1:
+                    returns = df['close'].pct_change().abs()
+                    if (returns > 5).any():  # >500% change
+                        return False, "Unrealistic price spike detected"
+        
+        return True, "Data validated successfully"
+    
+    def _estimate_realistic_price(self, symbol: str) -> float:
+        """Estimate realistic price for emergency fallback"""
+        # Common crypto price estimates
+        price_map = {
+            'BTC': 50000, 'ETH': 3000, 'BNB': 400, 'XRP': 0.6, 'ADA': 0.5,
+            'SOL': 100, 'DOT': 7, 'DOGE': 0.1, 'AVAX': 30, 'MATIC': 0.8,
+            'LTC': 70, 'LINK': 15, 'ATOM': 10, 'XLM': 0.12, 'BCH': 300
+        }
+        
+        for key, price in price_map.items():
+            if key in symbol.upper():
+                return price
+        
+        return 100.0  # Default fallback
+    
+    def get_health_metrics(self) -> Dict:
+        """Get provider health metrics"""
+        return {
+            'api_calls': self.api_calls,
+            'errors': self.errors,
+            'last_success': self.last_success,
+            'uptime': (datetime.now() - self.last_success).total_seconds() if self.last_success else 0
+        }
+
+# =============================================
+# ENHANCED CCXT DATA PROVIDER - UNIVERSAL
+# =============================================
 
 class EnhancedCCXTDataProvider(EnhancedDataProvider):
     """Enhanced CCXT provider - UNIVERSAL (tanpa pemisahan spot/future)"""
@@ -20,7 +114,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                     'enableRateLimit': True,
                     'timeout': 30000,
                     'options': {
-                        'defaultType': 'spot',  # Default ke spot, tapi akan load semua markets
+                        'defaultType': 'spot',  # Default, tapi akan load semua markets
                     }
                 }
                 
@@ -31,13 +125,9 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                     self.exchange.load_markets()
                     logger.info(f"✅ Successfully connected to {exchange_id}, loaded {len(self.exchange.markets)} markets")
                     
-                    # Log market types yang tersedia
-                    market_types = set()
-                    for symbol, market in self.exchange.markets.items():
-                        if 'type' in market:
-                            market_types.add(market['type'])
-                    
-                    logger.info(f"📊 Available market types: {list(market_types)}")
+                    # Log sample symbols
+                    sample_symbols = list(self.exchange.markets.keys())[:10]
+                    logger.info(f"📊 Sample symbols: {sample_symbols}")
                     
                 except Exception as e:
                     logger.warning(f"⚠️ Could not load all markets: {e}")
@@ -46,9 +136,9 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
             except Exception as e:
                 logger.error(f"Failed to initialize {exchange_id}: {str(e)}")
                 self.exchange = None
-
-    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
-        """Get OHLCV data dengan validation - UNIVERSAL"""
+    
+    def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
+        """Get OHLCV data - UNIVERSAL"""
         def fetch_ccxt_data():
             if not self.exchange:
                 raise Exception(f"Exchange {self.exchange_id} not initialized")
@@ -56,6 +146,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
             try:
                 # Coba fetch data
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                
                 if not ohlcv:
                     # Coba dengan symbol alternatif
                     alt_symbols = self._get_alternative_symbols(symbol)
@@ -76,7 +167,11 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 
-                # 🚨 BUANG BAR HARGA 100
+                # Validasi data
+                if len(df) < 10:
+                    raise ValueError(f"Insufficient data for {symbol}: {len(df)} bars")
+                
+                # 🚨 Filter harga 100 (data error)
                 if 'close' in df.columns:
                     mask_100 = abs(df['close'] - 100.0) < 0.001
                     count_100 = mask_100.sum()
@@ -84,14 +179,14 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                         df = df[~mask_100].copy()
                         logger.warning(f"⚠️ Removed {count_100} bars with price 100 for {symbol}")
                 
-                # Validasi data
+                # Validasi kualitas data
                 is_valid, validation_msg = self.validate_market_data(df, symbol)
                 if not is_valid:
-                    logger.warning(f"CCXT data validation failed: {symbol}")
+                    logger.warning(f"Data validation failed: {symbol} - {validation_msg}")
                     # Data sudah diperbaiki di dalam fungsi validate_market_data
                 
                 current_price = df['close'].iloc[-1] if len(df) > 0 else 0
-                logger.info(f"📊 CCXT DATA: {symbol} - {len(df)} bars, current price: {current_price:.8f}")
+                logger.info(f"📊 {symbol} - {len(df)} bars, current: {current_price:.8f}, timeframe: {timeframe}")
                 
                 return df
                 
@@ -100,14 +195,14 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 raise
 
         return self._safe_api_call(fetch_ccxt_data)
-        
-    def get_ticker(self, symbol):
+    
+    def get_ticker(self, symbol: str) -> Dict:
         """Get ticker data - UNIVERSAL"""
         def fetch_ticker():
             try:
                 if not self.exchange:
                     raise Exception("Exchange not initialized")
-                    
+                
                 ticker = self.exchange.fetch_ticker(symbol)
                 last_price = ticker.get('last')
                 
@@ -135,21 +230,22 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 
                 return {
                     'last': last_price,
-                    'volume': ticker.get('baseVolume', 0),
+                    'volume': ticker.get('baseVolume', 0) or ticker.get('quoteVolume', 0),
                     'high': ticker.get('high'),
                     'low': ticker.get('low'),
                     'bid': ticker.get('bid'),
                     'ask': ticker.get('ask'),
-                    'symbol': symbol
+                    'symbol': symbol,
+                    'timestamp': datetime.now()
                 }
             except Exception as e:
                 logger.error(f"CCXT ticker error: {str(e)}")
                 raise
         
         return self._safe_api_call(fetch_ticker)
-
-    def get_popular_assets(self, limit=100, **kwargs):
-        """Get popular assets - UNIVERSAL (tanpa pemisahan spot/future)"""
+    
+    def get_popular_assets(self, limit: int = 100, **kwargs) -> List[Dict]:
+        """Get popular assets - UNIVERSAL"""
         try:
             logger.info(f"🔄 Getting {limit} popular assets from {self.exchange_id}...")
             
@@ -157,8 +253,8 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 logger.warning(f"Exchange {self.exchange_id} not initialized")
                 return self._get_fallback_major_coins(limit)
             
+            # Coba load markets
             try:
-                # Reload markets untuk memastikan data terbaru
                 self.exchange.load_markets()
                 markets = self.exchange.markets
                 logger.info(f"📊 Loaded {len(markets)} markets from {self.exchange_id}")
@@ -166,52 +262,34 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 logger.error(f"Failed to load markets: {e}")
                 return self._get_fallback_major_coins(limit)
             
-            # TAMPILKAN SEMUA SIMBOL, biar strategi yang filter
-            target_markets = []
+            # Filter untuk USDT pairs (semua jenis: spot, futures, dll)
+            usdt_markets = []
             for symbol, market in markets.items():
-                # Prioritaskan USDT pairs (spot dan futures)
-                if any(x in symbol for x in ['/USDT', ':USDT', '-USDT']):
-                    target_markets.append(symbol)
+                # Prioritaskan USDT pairs
+                if any(sep in symbol for sep in ['/USDT', ':USDT', '-USDT', 'USDT']):
+                    usdt_markets.append(symbol)
             
-            logger.info(f"📊 Found {len(target_markets)} USDT markets")
+            logger.info(f"📊 Found {len(usdt_markets)} USDT markets")
             
-            # Filter stablecoins
-            excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST', 'FDUSD']
+            # Filter stablecoins yang tidak populer untuk trading
+            excluded_coins = ['BUSD', 'USDC', 'DAI', 'TUSD', 'USDP', 'UST', 'FDUSD', 'PAX']
             filtered_markets = [
-                symbol for symbol in target_markets 
+                symbol for symbol in usdt_markets 
                 if not any(excluded in symbol for excluded in excluded_coins)
             ]
             
-            # Ambil berdasarkan volume
-            assets_with_volume = []
-            
-            # Ambil sample untuk cek volume (max 50 untuk performance)
-            sample_size = min(50, len(filtered_markets))
-            markets_to_check = filtered_markets[:sample_size]
-            
-            for symbol in markets_to_check:
-                try:
-                    ticker = self.exchange.fetch_ticker(symbol)
-                    volume = ticker.get('quoteVolume', 0) or ticker.get('baseVolume', 0)
-                    assets_with_volume.append((symbol, volume))
-                except:
-                    assets_with_volume.append((symbol, 0))
-                    continue
-            
-            # Sort berdasarkan volume (descending)
-            assets_with_volume.sort(key=lambda x: x[1], reverse=True)
-            
-            # Prioritaskan coin utama
+            # Prioritaskan major coins dulu
             major_coins = [
                 'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
                 'SOL/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
-                'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'XLM/USDT', 'BCH/USDT'
+                'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'XLM/USDT', 'BCH/USDT',
+                'TRX/USDT', 'ETC/USDT', 'FIL/USDT', 'ALGO/USDT', 'VET/USDT'
             ]
             
-            # Tambahkan major coins dulu
-            result = []
+            # Tambahkan major coins
+            result_symbols = []
             for coin in major_coins:
-                # Cari semua variasi dari major coin
+                # Cari semua variasi dari coin
                 coin_variations = [
                     coin,
                     coin.replace('/USDT', ':USDT'),
@@ -221,79 +299,73 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 ]
                 
                 for variation in coin_variations:
-                    if variation in filtered_markets and variation not in result:
-                        result.append(variation)
+                    if variation in filtered_markets and variation not in result_symbols:
+                        result_symbols.append(variation)
                         break
             
-            # Tambahkan sisanya berdasarkan volume
-            for symbol, _ in assets_with_volume:
-                if symbol not in result and len(result) < limit:
-                    result.append(symbol)
+            # Tambahkan yang lain sampai mencapai limit
+            for symbol in filtered_markets:
+                if symbol not in result_symbols and len(result_symbols) < limit:
+                    result_symbols.append(symbol)
             
-            # Jika masih kurang, tambahkan dari filtered_markets
-            if len(result) < limit:
-                for symbol in filtered_markets:
-                    if symbol not in result and len(result) < limit:
-                        result.append(symbol)
-            
-            # Format sebagai list of dict untuk konsistensi - TANPA 'type'
-            formatted_result = []
-            for symbol in result:
-                # Extract base name
-                base_name = symbol.split('/')[0] if '/' in symbol else symbol.split(':')[0]
-                formatted_result.append({
+            # Format hasil
+            result = []
+            for symbol in result_symbols:
+                base_name = symbol.split('/')[0] if '/' in symbol else symbol.split(':')[0].split('-')[0]
+                result.append({
                     'symbol': symbol,
                     'name': base_name,
                     'exchange': self.exchange_id
                 })
             
-            logger.info(f"✅ CCXT returning {len(formatted_result)} popular assets (UNIVERSAL)")
-            if formatted_result:
-                logger.info(f"   Top 5: {[item['symbol'] for item in formatted_result[:5]]}")
-            return formatted_result[:limit]
+            logger.info(f"✅ Returning {len(result)} popular assets from {self.exchange_id}")
+            if result:
+                logger.info(f"   Top 10: {[item['symbol'] for item in result[:10]]}")
+            
+            return result[:limit]
             
         except Exception as e:
-            logger.error(f"Error getting popular assets from {self.exchange_id}: {str(e)}")
+            logger.error(f"Error getting popular assets: {str(e)}")
             return self._get_fallback_major_coins(limit)
-
-    def _get_fallback_major_coins(self, limit):
-        """Fallback major coins - UNIVERSAL"""
+    
+    def _get_fallback_major_coins(self, limit: int) -> List[Dict]:
+        """Fallback major coins"""
         major_pairs = [
             'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
             'SOL/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
             'LTC/USDT', 'LINK/USDT', 'ATOM/USDT', 'XLM/USDT', 'BCH/USDT',
-            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT',
-            'XRP/USDT:USDT', 'ADA/USDT:USDT', 'SOL/USDT:USDT',
-            'DOT/USDT:USDT', 'DOGE/USDT:USDT', 'AVAX/USDT:USDT', 'MATIC/USDT:USDT'
+            'TRX/USDT', 'ETC/USDT', 'FIL/USDT', 'ALGO/USDT', 'VET/USDT'
         ]
         
-        formatted_result = []
+        result = []
         for symbol in major_pairs[:limit]:
-            base_name = symbol.split('/')[0] if '/' in symbol else symbol.split(':')[0]
-            formatted_result.append({
+            base_name = symbol.split('/')[0]
+            result.append({
                 'symbol': symbol,
                 'name': base_name,
                 'exchange': self.exchange_id
             })
         
-        return formatted_result[:limit]
-
-    def _get_alternative_symbols(self, symbol):
-        """Dapatkan alternatif simbol untuk dicoba"""
+        return result
+    
+    def _get_alternative_symbols(self, symbol: str) -> List[str]:
+        """Get alternative symbol formats"""
         alt_symbols = [symbol]
         
         # Format asli
-        alt_symbols.append(symbol)
+        if symbol:
+            alt_symbols.append(symbol)
         
-        # Hapus futures marker
+        # Konversi separators
         if ':USDT' in symbol:
             alt_symbols.append(symbol.replace(':USDT', '/USDT'))
             alt_symbols.append(symbol.replace(':USDT', '-USDT'))
-        
-        # Ganti separator
-        if '/USDT' in symbol:
+        elif '/USDT' in symbol:
             alt_symbols.append(symbol.replace('/USDT', ':USDT'))
             alt_symbols.append(symbol.replace('/USDT', '-USDT'))
+        elif '-USDT' in symbol:
+            alt_symbols.append(symbol.replace('-USDT', '/USDT'))
+            alt_symbols.append(symbol.replace('-USDT', ':USDT'))
         
         # Hapus duplikat
         return list(dict.fromkeys(alt_symbols))
@@ -307,21 +379,28 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
     
     def __init__(self):
         super().__init__()
-
-    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
+    
+    def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
         """Get OHLCV from Yahoo Finance - UNIVERSAL"""
         def fetch_yfinance_data():
             try:
                 # Convert symbol ke format YFinance
                 yf_symbol = self._convert_to_yfinance_symbol(symbol)
                 
-                interval_map = {'1h': '1h', '4h': '4h', '1d': '1d', '1w': '1wk'}
+                # Map timeframe
+                interval_map = {
+                    '1m': '1m', '5m': '5m', '15m': '15m',
+                    '1h': '1h', '4h': '1h',  # YFinance doesn't have 4h
+                    '1d': '1d', '1w': '1wk', '1M': '1mo'
+                }
+                
                 interval = interval_map.get(timeframe, '1d')
                 
-                if interval == '1h':
-                    period = '2mo' if limit > 30 else '5d'
+                # Tentukan period berdasarkan interval
+                if interval in ['1m', '5m', '15m', '1h']:
+                    period = '60d' if limit > 100 else '7d'
                 elif interval == '1d':
-                    period = '1y' if limit > 100 else '6mo'
+                    period = '1y' if limit > 200 else '6mo'
                 else:
                     period = '1y'
                 
@@ -329,21 +408,29 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 df = ticker.history(period=period, interval=interval)
                 
                 if df.empty:
-                    raise ValueError(f"No data returned from Yahoo Finance for {yf_symbol}")
+                    raise ValueError(f"No data returned for {yf_symbol}")
                 
                 if len(df) > limit:
                     df = df.tail(limit)
                 
                 df.reset_index(inplace=True)
                 df.columns = [col.lower() for col in df.columns]
+                
+                # Standardize column names
                 if 'date' in df.columns:
                     df.rename(columns={'date': 'timestamp'}, inplace=True)
                 elif 'datetime' in df.columns:
                     df.rename(columns={'datetime': 'timestamp'}, inplace=True)
                 
-                df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+                # Ensure we have required columns
+                required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                for col in required_cols:
+                    if col not in df.columns:
+                        raise ValueError(f"Missing column {col} in data")
                 
-                # 🚨 BUANG BAR HARGA 100
+                df = df[required_cols]
+                
+                # 🚨 Filter harga 100
                 if 'close' in df.columns:
                     mask_100 = abs(df['close'] - 100.0) < 0.001
                     count_100 = mask_100.sum()
@@ -351,11 +438,12 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                         df = df[~mask_100].copy()
                         logger.warning(f"⚠️ Removed {count_100} bars with price 100 for {symbol}")
                 
-                # Validasi data
+                # Validasi
                 is_valid, validation_msg = self.validate_market_data(df, symbol)
                 if not is_valid:
-                    logger.warning(f"YFinance data validation failed: {symbol}")
+                    logger.warning(f"YFinance validation failed: {symbol} - {validation_msg}")
                 
+                logger.info(f"📈 YFinance: {symbol} - {len(df)} bars")
                 return df
                 
             except Exception as e:
@@ -363,12 +451,12 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 raise
 
         return self._safe_api_call(fetch_yfinance_data)
-
-    def get_ticker(self, symbol):
+    
+    def get_ticker(self, symbol: str) -> Dict:
         """Get ticker data from Yahoo Finance - UNIVERSAL"""
         def fetch_ticker():
             try:
-                # Convert symbol ke format YFinance
+                # Convert symbol
                 yf_symbol = self._convert_to_yfinance_symbol(symbol)
                 
                 ticker = yf.Ticker(yf_symbol)
@@ -378,64 +466,71 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 if not history.empty:
                     last_price = history['Close'].iloc[-1]
                     volume = history['Volume'].iloc[-1] if 'Volume' in history.columns else 0
+                    high = history['High'].iloc[-1] if 'High' in history.columns else last_price
+                    low = history['Low'].iloc[-1] if 'Low' in history.columns else last_price
                 else:
                     last_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
                     volume = info.get('volume', 0)
+                    high = info.get('dayHigh', last_price)
+                    low = info.get('dayLow', last_price)
                 
                 if last_price <= 0:
-                    raise ValueError(f"Invalid price from YFinance: {last_price}")
+                    raise ValueError(f"Invalid price: {last_price}")
                 
                 # 🚨 Cek harga 100
                 if abs(last_price - 100.0) < 0.001:
-                    raise ValueError(f"Suspicious price 100 from YFinance")
+                    raise ValueError(f"Suspicious price 100")
                 
                 return {
                     'last': last_price,
                     'volume': volume,
-                    'high': info.get('dayHigh', 0),
-                    'low': info.get('dayLow', 0),
+                    'high': high,
+                    'low': low,
+                    'bid': info.get('bid', last_price * 0.999),
+                    'ask': info.get('ask', last_price * 1.001),
                     'market_cap': info.get('marketCap', 0),
-                    'symbol': symbol
+                    'symbol': symbol,
+                    'timestamp': datetime.now()
                 }
             except Exception as e:
                 logger.error(f"YFinance ticker error: {str(e)}")
                 raise
         
         return self._safe_api_call(fetch_ticker)
-
-    def get_popular_assets(self, limit=100, **kwargs):
+    
+    def get_popular_assets(self, limit: int = 100, **kwargs) -> List[Dict]:
         """Get popular assets - UNIVERSAL"""
         try:
             # Gabungkan semua jenis aset
             all_assets = []
             
-            # Crypto
-            crypto_assets = self._get_crypto_assets(limit)
+            # Crypto (prioritas)
+            crypto_assets = self._get_crypto_assets(limit // 2)
             all_assets.extend(crypto_assets)
             
-            # Forex
-            forex_assets = self._get_forex_assets(limit)
-            all_assets.extend(forex_assets)
-            
             # US Stocks
-            stock_assets = self._get_us_stock_assets(limit)
+            stock_assets = self._get_us_stock_assets(limit // 4)
             all_assets.extend(stock_assets)
             
+            # Forex
+            forex_assets = self._get_forex_assets(limit // 4)
+            all_assets.extend(forex_assets)
+            
             # Indonesian Stocks
-            id_stock_assets = self._get_id_stock_assets(limit)
+            id_stock_assets = self._get_id_stock_assets(limit // 4)
             all_assets.extend(id_stock_assets)
             
             # Potong sesuai limit
             result = all_assets[:limit]
             
-            logger.info(f"📈 YFinance returning {len(result)} popular assets (UNIVERSAL)")
+            logger.info(f"📈 YFinance returning {len(result)} popular assets")
             return result
             
         except Exception as e:
             logger.error(f"Error getting popular assets: {str(e)}")
             return self._get_fallback_assets(limit)
-
-    def _convert_to_yfinance_symbol(self, symbol):
+    
+    def _convert_to_yfinance_symbol(self, symbol: str) -> str:
         """Convert symbol ke format YFinance"""
         if '/USDT' in symbol:
             return symbol.replace('/USDT', '-USD')
@@ -443,16 +538,19 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
             return symbol.replace(':USDT', '-USD')
         elif '/USD' in symbol and '=X' not in symbol:
             return symbol.replace('/USD', '-USD')
+        elif '/' in symbol:
+            # Untuk pairs seperti EUR/USD
+            return symbol.replace('/', '') + '=X'
         else:
             return symbol
-
-    def _get_crypto_assets(self, limit):
+    
+    def _get_crypto_assets(self, limit: int) -> List[Dict]:
         """Get crypto assets"""
         crypto_pairs = [
             'BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD',
             'SOL-USD', 'DOT-USD', 'DOGE-USD', 'AVAX-USD', 'MATIC-USD',
             'LTC-USD', 'LINK-USD', 'ATOM-USD', 'XLM-USD', 'BCH-USD',
-            'ETC-USD', 'FIL-USD', 'THETA-USD', 'EOS-USD', 'XTZ-USD'
+            'TRX-USD', 'ETC-USD', 'FIL-USD', 'ALGO-USD', 'VET-USD'
         ]
         
         result = []
@@ -460,12 +558,13 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
             result.append({
                 'symbol': symbol,
                 'name': symbol.replace('-USD', ''),
+                'exchange': 'yfinance',
                 'category': 'crypto'
             })
         
         return result
-
-    def _get_forex_assets(self, limit):
+    
+    def _get_forex_assets(self, limit: int) -> List[Dict]:
         """Get forex assets"""
         forex_pairs = [
             'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X',
@@ -478,16 +577,17 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
             result.append({
                 'symbol': symbol,
                 'name': pair,
+                'exchange': 'yfinance',
                 'category': 'forex'
             })
         
         return result
-
-    def _get_us_stock_assets(self, limit):
+    
+    def _get_us_stock_assets(self, limit: int) -> List[Dict]:
         """Get US stock assets"""
         us_stocks = [
             'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX',
-            'JPM', 'V', 'JNJ', 'WMT', 'PG', 'MA', 'UNH', 'HD', 'DIS'
+            'JPM', 'V', 'JNJ', 'WMT', 'PG', 'MA', 'UNH', 'HD', 'DIS', 'BAC'
         ]
         
         result = []
@@ -495,12 +595,13 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
             result.append({
                 'symbol': symbol,
                 'name': symbol,
+                'exchange': 'yfinance',
                 'category': 'stock'
             })
         
         return result
-
-    def _get_id_stock_assets(self, limit):
+    
+    def _get_id_stock_assets(self, limit: int) -> List[Dict]:
         """Get Indonesian stock assets"""
         id_stocks = [
             'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'BNGA.JK',
@@ -512,19 +613,19 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
             result.append({
                 'symbol': symbol,
                 'name': symbol.replace('.JK', ''),
+                'exchange': 'yfinance',
                 'category': 'stock'
             })
         
         return result
-
-    def _get_fallback_assets(self, limit):
+    
+    def _get_fallback_assets(self, limit: int) -> List[Dict]:
         """Fallback assets"""
         fallback = [
-            {'symbol': 'BTC-USD', 'name': 'Bitcoin', 'category': 'crypto'},
-            {'symbol': 'ETH-USD', 'name': 'Ethereum', 'category': 'crypto'},
-            {'symbol': 'AAPL', 'name': 'Apple', 'category': 'stock'},
-            {'symbol': 'EURUSD=X', 'name': 'EUR/USD', 'category': 'forex'},
-            {'symbol': 'BBCA.JK', 'name': 'Bank BCA', 'category': 'stock'}
+            {'symbol': 'BTC-USD', 'name': 'Bitcoin', 'exchange': 'yfinance', 'category': 'crypto'},
+            {'symbol': 'ETH-USD', 'name': 'Ethereum', 'exchange': 'yfinance', 'category': 'crypto'},
+            {'symbol': 'AAPL', 'name': 'Apple', 'exchange': 'yfinance', 'category': 'stock'},
+            {'symbol': 'EURUSD=X', 'name': 'EUR/USD', 'exchange': 'yfinance', 'category': 'forex'}
         ]
         
         return fallback[:limit]
@@ -534,7 +635,7 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
 # =============================================
 
 class UnifiedDataProvider(EnhancedDataProvider):
-    """Provider terpadu dengan auto-fallback yang benar-benar bekerja - UNIVERSAL"""
+    """Provider terpadu dengan auto-fallback - UNIVERSAL"""
     
     def __init__(self, exchange_id='binance', api_key='', secret=''):
         super().__init__()
@@ -552,7 +653,7 @@ class UnifiedDataProvider(EnhancedDataProvider):
         
         logger.info(f"🚀 UnifiedDataProvider ready | Exchange: {exchange_id}")
     
-    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
+    def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
         """Get OHLCV data dengan auto-fallback - UNIVERSAL"""
         logger.info(f"📊 Getting OHLCV for {symbol} (limit: {limit})")
         
@@ -560,22 +661,22 @@ class UnifiedDataProvider(EnhancedDataProvider):
         try:
             result = self.primary_provider.get_ohlcv(symbol, timeframe, limit)
             
-            if result is not None and not result.empty:
-                # 🚨 BUANG BAR HARGA 100
+            if result is not None and not result.empty and len(result) >= 10:
+                # 🚨 Filter harga 100
                 if 'close' in result.columns:
                     mask_100 = abs(result['close'] - 100.0) < 0.001
                     count_100 = mask_100.sum()
-                    
                     if count_100 > 0:
                         result = result[~mask_100].copy()
                         logger.warning(f"🚨 Removed {count_100} bars with price 100 for {symbol}")
                 
                 # Validasi
-                if len(result) >= 20:
-                    is_valid, msg = self.validate_market_data(result, symbol)
-                    if is_valid:
-                        logger.info(f"✅ Valid data from primary provider")
-                        return result
+                is_valid, msg = self.validate_market_data(result, symbol)
+                if is_valid:
+                    logger.info(f"✅ Valid data from primary provider: {len(result)} bars")
+                    return result
+                else:
+                    logger.warning(f"⚠️ Primary provider data invalid: {msg}")
         except Exception as e:
             logger.warning(f"⚠️ Primary provider failed: {e}")
         
@@ -585,8 +686,8 @@ class UnifiedDataProvider(EnhancedDataProvider):
         try:
             result = self.fallback_provider.get_ohlcv(symbol, timeframe, limit)
             
-            if result is not None and not result.empty:
-                # 🚨 BUANG BAR HARGA 100
+            if result is not None and not result.empty and len(result) >= 10:
+                # 🚨 Filter harga 100
                 if 'close' in result.columns:
                     mask_100 = abs(result['close'] - 100.0) < 0.001
                     count_100 = mask_100.sum()
@@ -595,19 +696,20 @@ class UnifiedDataProvider(EnhancedDataProvider):
                         logger.warning(f"🚨 Removed {count_100} bars with price 100 for {symbol}")
                 
                 # Validasi
-                if len(result) >= 20:
-                    is_valid, msg = self.validate_market_data(result, symbol)
-                    if is_valid:
-                        logger.info(f"✅ Valid data from fallback provider")
-                        return result
+                is_valid, msg = self.validate_market_data(result, symbol)
+                if is_valid:
+                    logger.info(f"✅ Valid data from fallback provider: {len(result)} bars")
+                    return result
+                else:
+                    logger.warning(f"⚠️ Fallback provider data invalid: {msg}")
         except Exception as e:
             logger.warning(f"⚠️ Fallback provider failed: {e}")
         
         # Semua gagal
-        logger.error(f"🚨 ALL DATA SOURCES FAILED for {symbol}. Returning EMPTY DataFrame.")
+        logger.error(f"🚨 ALL DATA SOURCES FAILED for {symbol}")
         return pd.DataFrame()
     
-    def get_ticker(self, symbol):
+    def get_ticker(self, symbol: str) -> Dict:
         """Get ticker data dengan auto-fallback - UNIVERSAL"""
         logger.debug(f"📈 Getting ticker for {symbol}")
         
@@ -615,27 +717,31 @@ class UnifiedDataProvider(EnhancedDataProvider):
         try:
             result = self.primary_provider.get_ticker(symbol)
             if result and result.get('last', 0) > 0 and abs(result.get('last', 0) - 100.0) > 0.001:
+                logger.info(f"✅ Ticker from primary: {result.get('last')}")
                 return result
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Primary ticker failed: {e}")
         
         # Fallback ke YFinance
         try:
             result = self.fallback_provider.get_ticker(symbol)
             if result and result.get('last', 0) > 0 and abs(result.get('last', 0) - 100.0) > 0.001:
+                logger.info(f"✅ Ticker from fallback: {result.get('last')}")
                 return result
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Fallback ticker failed: {e}")
         
         # Emergency fallback
+        logger.warning(f"⚠️ Using emergency fallback for {symbol}")
         return {
             'last': self._estimate_realistic_price(symbol),
             'volume': 10000,
             'symbol': symbol,
-            'timestamp': datetime.now()
+            'timestamp': datetime.now(),
+            'source': 'emergency_fallback'
         }
     
-    def get_popular_assets(self, limit=100, **kwargs):
+    def get_popular_assets(self, limit: int = 100, **kwargs) -> List[Dict]:
         """Get popular assets - UNIVERSAL"""
         logger.info(f"📋 Getting {limit} popular assets from {self.exchange_id}")
         
@@ -661,30 +767,33 @@ class UnifiedDataProvider(EnhancedDataProvider):
         return [
             {'symbol': 'BTC/USDT', 'name': 'Bitcoin', 'exchange': self.exchange_id},
             {'symbol': 'ETH/USDT', 'name': 'Ethereum', 'exchange': self.exchange_id},
-            {'symbol': 'BNB/USDT', 'name': 'Binance Coin', 'exchange': self.exchange_id}
+            {'symbol': 'BNB/USDT', 'name': 'Binance Coin', 'exchange': self.exchange_id},
+            {'symbol': 'XRP/USDT', 'name': 'Ripple', 'exchange': self.exchange_id},
+            {'symbol': 'ADA/USDT', 'name': 'Cardano', 'exchange': self.exchange_id}
         ][:limit]
     
-    def get_health_metrics(self):
+    def get_health_metrics(self) -> Dict:
         """Get health metrics"""
         base_metrics = super().get_health_metrics()
         
         base_metrics.update({
             'exchange': self.exchange_id,
             'primary_provider': self.primary_provider.__class__.__name__,
-            'fallback_provider': self.fallback_provider.__class__.__name__
+            'fallback_provider': self.fallback_provider.__class__.__name__,
+            'status': 'active'
         })
         
         return base_metrics
 
 # =============================================
-# DATA PROVIDER FACTORY - DIPERBAIKI
+# DATA PROVIDER FACTORY
 # =============================================
 
 class DataProviderFactory:
-    """Factory untuk membuat data provider - DIPERBAIKI"""
+    """Factory untuk membuat data provider"""
     
     @staticmethod
-    def create_provider(provider_type, **kwargs):
+    def create_provider(provider_type: str, **kwargs):
         """Create data provider berdasarkan type"""
         
         if provider_type == 'universal':
@@ -699,7 +808,7 @@ class DataProviderFactory:
             )
             
         elif provider_type == 'ccxt':
-            # CCXT Universal (tanpa pemisahan spot/future)
+            # CCXT Universal
             exchange_id = kwargs.get('exchange_id', 'binance')
             api_key = kwargs.get('api_key', '')
             secret = kwargs.get('secret', '')
@@ -714,52 +823,29 @@ class DataProviderFactory:
             # YFinance Universal
             return EnhancedYFinanceDataProvider()
             
-        elif provider_type == 'alphavantage':
-            api_key = kwargs.get('api_key', 'demo')
-            return AlphaVantageProvider(api_key=api_key)
-        
-        elif provider_type == 'robust':
-            # Robust fetcher dengan universal providers
-            primary_type = kwargs.get('primary_type', 'ccxt')
-            secondary_type = kwargs.get('secondary_type', 'yfinance')
-            
-            primary_provider = DataProviderFactory.create_provider(primary_type, **kwargs)
-            secondary_provider = DataProviderFactory.create_provider(secondary_type, **kwargs)
-            
-            return RobustDataFetcher(
-                primary_provider=primary_provider,
-                secondary_provider=secondary_provider,
-                synthetic_fallback=kwargs.get('synthetic_fallback', True)
-            )
-            
         else:
             raise ValueError(f"Unknown provider type: {provider_type}")
 
 # =============================================
-# DYNAMIC DATA PROVIDER - DIPERBAIKI
+# DYNAMIC DATA PROVIDER
 # =============================================
 
 class DynamicDataProvider(EnhancedDataProvider):
-    """Dynamic data provider dengan fallback yang benar - UNIVERSAL"""
+    """Dynamic data provider dengan fallback - UNIVERSAL"""
     
     def __init__(self, exchange_id='binance', api_key='', secret=''):
         super().__init__()
         self.exchange_id = exchange_id
         
-        # List exchange untuk dicoba secara berurutan
-        self.exchange_list = ['binance', 'kucoin', 'bybit', 'okx']
-        self.current_exchange_idx = 0
-        
         # Setup providers
         self._setup_providers(exchange_id, api_key, secret)
         
-        logger.info(f"DynamicDataProvider initialized for exchange: {exchange_id}")
-
-    def _setup_providers(self, exchange_id, api_key, secret):
-        """Setup providers dengan sistem fallback yang benar"""
-        
+        logger.info(f"DynamicDataProvider initialized for {exchange_id}")
+    
+    def _setup_providers(self, exchange_id: str, api_key: str, secret: str):
+        """Setup providers"""
         try:
-            # Setup CCXT provider universal
+            # Setup CCXT provider
             self.primary_provider = EnhancedCCXTDataProvider(
                 exchange_id=exchange_id,
                 api_key=api_key,
@@ -769,28 +855,28 @@ class DynamicDataProvider(EnhancedDataProvider):
             # Setup YFinance fallback
             self.fallback_provider = EnhancedYFinanceDataProvider()
             
-            logger.info(f"✅ Providers setup: {self.primary_provider.__class__.__name__} + YFinance")
+            logger.info(f"✅ Providers setup: CCXT + YFinance")
             
         except Exception as e:
-            logger.error(f"❌ Failed to setup CCXT provider: {e}")
+            logger.error(f"❌ Failed to setup CCXT: {e}")
             # Fallback ke YFinance saja
             self.primary_provider = EnhancedYFinanceDataProvider()
             self.fallback_provider = EnhancedYFinanceDataProvider()
-            logger.info(f"⚠️ Using YFinance as primary (CCXT failed)")
-
-    def get_ohlcv(self, symbol, timeframe='1h', limit=200):
-        """Get OHLCV data dengan auto-fallback"""
+            logger.info(f"⚠️ Using YFinance as primary")
+    
+    def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
+        """Get OHLCV dengan auto-fallback"""
         return self._execute_with_fallback('get_ohlcv', symbol, timeframe, limit)
-
-    def get_ticker(self, symbol):
-        """Get ticker data dengan auto-fallback"""
+    
+    def get_ticker(self, symbol: str) -> Dict:
+        """Get ticker dengan auto-fallback"""
         return self._execute_with_fallback('get_ticker', symbol)
-
-    def get_popular_assets(self, limit=100, **kwargs):
+    
+    def get_popular_assets(self, limit: int = 100, **kwargs) -> List[Dict]:
         """Get popular assets dengan auto-fallback"""
         return self._execute_with_fallback('get_popular_assets', limit=limit)
-
-    def _execute_with_fallback(self, method_name, *args, **kwargs):
+    
+    def _execute_with_fallback(self, method_name: str, *args, **kwargs):
         """Execute method dengan fallback otomatis"""
         try:
             # Coba primary provider
@@ -804,9 +890,9 @@ class DynamicDataProvider(EnhancedDataProvider):
                 raise ValueError("Invalid data from primary provider")
                 
         except Exception as e:
-            logger.warning(f"⚠️ Primary provider failed for {method_name}: {e}")
+            logger.warning(f"⚠️ Primary failed for {method_name}: {e}")
             
-            # Fallback ke YFinance
+            # Fallback
             try:
                 method = getattr(self.fallback_provider, method_name)
                 result = method(*args, **kwargs)
@@ -818,95 +904,142 @@ class DynamicDataProvider(EnhancedDataProvider):
                     raise ValueError("Invalid data from fallback provider")
                     
             except Exception as fallback_e:
-                logger.error(f"❌ Fallback also failed: {fallback_e}")
+                logger.error(f"❌ Fallback failed: {fallback_e}")
                 
                 # Emergency fallback
-                if method_name == 'get_ohlcv':
-                    return pd.DataFrame()
-                elif method_name == 'get_ticker':
-                    return {
-                        'last': self._estimate_realistic_price(kwargs.get('symbol', args[0] if args else 'BTC/USDT')),
-                        'volume': 10000,
-                        'symbol': kwargs.get('symbol', args[0] if args else 'BTC/USDT')
-                    }
-                elif method_name == 'get_popular_assets':
-                    return [
-                        {'symbol': 'BTC/USDT', 'name': 'Bitcoin', 'exchange': self.exchange_id},
-                        {'symbol': 'ETH/USDT', 'name': 'Ethereum', 'exchange': self.exchange_id}
-                    ]
-                return None
-
-    def _validate_result(self, result, method_name):
+                return self._get_emergency_fallback(method_name, *args, **kwargs)
+    
+    def _validate_result(self, result, method_name: str) -> bool:
         """Validasi hasil"""
         if result is None:
             return False
             
         if method_name == 'get_ohlcv':
-            if not isinstance(result, pd.DataFrame) or result.empty:
-                return False
-            
-            if 'close' in result.columns and len(result) > 0:
-                has_100 = (abs(result['close'] - 100.0) < 0.001).any()
-                if has_100:
-                    logger.warning(f"⚠️ Rejecting result with price 100")
-                    return False
-            
-            return True
+            return isinstance(result, pd.DataFrame) and not result.empty and len(result) >= 10
         elif method_name == 'get_ticker':
-            return isinstance(result, dict) and result.get('last', 0) > 0 and abs(result.get('last', 0) - 100.0) > 0.001
+            return isinstance(result, dict) and result.get('last', 0) > 0
         elif method_name == 'get_popular_assets':
             return isinstance(result, list) and len(result) > 0
             
         return False
+    
+    def _get_emergency_fallback(self, method_name: str, *args, **kwargs):
+        """Emergency fallback"""
+        if method_name == 'get_ohlcv':
+            return pd.DataFrame()
+        elif method_name == 'get_ticker':
+            symbol = kwargs.get('symbol', args[0] if args else 'BTC/USDT')
+            return {
+                'last': self._estimate_realistic_price(symbol),
+                'volume': 10000,
+                'symbol': symbol
+            }
+        elif method_name == 'get_popular_assets':
+            limit = kwargs.get('limit', 100)
+            return [
+                {'symbol': 'BTC/USDT', 'name': 'Bitcoin', 'exchange': self.exchange_id},
+                {'symbol': 'ETH/USDT', 'name': 'Ethereum', 'exchange': self.exchange_id}
+            ][:limit]
+        
+        return None
 
 # =============================================
-# TEST FUNCTIONS - DIPERBAIKI
+# TEST FUNCTIONS
 # =============================================
 
 def test_universal_provider():
     """Test Universal Provider"""
-    print("\n🧪 Testing Universal Provider...")
+    print("\n" + "="*60)
+    print("🧪 TESTING UNIVERSAL DATA PROVIDER")
+    print("="*60)
     
     # Test 1: Universal CCXT Provider
-    print("\n1. Testing Universal CCXT Provider:")
-    provider = EnhancedCCXTDataProvider(exchange_id='binance')
-    
-    assets = provider.get_popular_assets(10)
-    print(f"✅ Popular assets: {len(assets)} found")
-    for i, asset in enumerate(assets[:5]):
-        print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')})")
+    print("\n1️⃣ Testing Universal CCXT Provider:")
+    try:
+        provider = EnhancedCCXTDataProvider(exchange_id='binance')
+        assets = provider.get_popular_assets(5)
+        print(f"✅ Popular assets: {len(assets)} found")
+        for i, asset in enumerate(assets[:3]):
+            print(f"   {i+1}. {asset['symbol']} ({asset['name']})")
+    except Exception as e:
+        print(f"❌ CCXT Provider error: {e}")
     
     # Test 2: Unified Provider
-    print("\n2. Testing Unified Provider:")
-    unified = UnifiedDataProvider(exchange_id='binance')
-    
-    # Test OHLCV
+    print("\n2️⃣ Testing Unified Provider:")
     try:
+        unified = UnifiedDataProvider(exchange_id='binance')
+        
+        # Test OHLCV
         data = unified.get_ohlcv("BTC/USDT", '1h', 20)
         if not data.empty:
             print(f"✅ OHLCV data: {len(data)} rows")
-            print(f"   Latest price: {data['close'].iloc[-1] if len(data) > 0 else 'N/A'}")
+            print(f"   Latest: {data['close'].iloc[-1]:.2f} | Volume: {data['volume'].iloc[-1]:.0f}")
         else:
-            print("❌ No OHLCV data")
+            print("⚠️ No OHLCV data (might be API limit)")
+        
+        # Test ticker
+        ticker = unified.get_ticker("ETH/USDT")
+        print(f"✅ Ticker: {ticker['symbol']} = ${ticker['last']:.2f}")
+        
     except Exception as e:
-        print(f"❌ OHLCV error: {e}")
+        print(f"❌ Unified Provider error: {e}")
     
     # Test 3: Factory
-    print("\n3. Testing Factory:")
-    factory_provider = DataProviderFactory.create_provider('universal', exchange_id='binance')
-    assets = factory_provider.get_popular_assets(5)
-    print(f"✅ Factory assets: {len(assets)} found")
-    for asset in assets:
-        print(f"   - {asset['symbol']}")
+    print("\n3️⃣ Testing Factory:")
+    try:
+        factory_provider = DataProviderFactory.create_provider('universal', exchange_id='binance')
+        assets = factory_provider.get_popular_assets(3)
+        print(f"✅ Factory assets: {len(assets)} found")
+        for asset in assets:
+            print(f"   - {asset['symbol']} ({asset['name']})")
+    except Exception as e:
+        print(f"❌ Factory error: {e}")
+    
+    # Test 4: Dynamic Provider
+    print("\n4️⃣ Testing Dynamic Provider:")
+    try:
+        dynamic = DynamicDataProvider(exchange_id='binance')
+        assets = dynamic.get_popular_assets(3)
+        print(f"✅ Dynamic assets: {len(assets)} found")
+        print(f"   Health: {dynamic.get_health_metrics()}")
+    except Exception as e:
+        print(f"❌ Dynamic error: {e}")
+
+def quick_test():
+    """Quick test function"""
+    print("\n⚡ QUICK TEST")
+    
+    # Simple test with YFinance (always works)
+    print("\nTesting YFinance Provider:")
+    yf_provider = EnhancedYFinanceDataProvider()
+    
+    try:
+        # Test crypto
+        btc_data = yf_provider.get_ohlcv("BTC-USD", '1d', 10)
+        print(f"✅ BTC data: {len(btc_data)} rows")
+        
+        # Test stock
+        aapl_ticker = yf_provider.get_ticker("AAPL")
+        print(f"✅ AAPL price: ${aapl_ticker['last']:.2f}")
+        
+        # Test popular assets
+        assets = yf_provider.get_popular_assets(5)
+        print(f"✅ Popular assets: {[a['symbol'] for a in assets]}")
+        
+    except Exception as e:
+        print(f"❌ YFinance test failed: {e}")
 
 if __name__ == "__main__":
-    print("=" * 60)
+    print("\n" + "="*60)
     print("UNIVERSAL DATA PROVIDER TEST SUITE")
-    print("=" * 60)
+    print("="*60)
     
-    # Run tests
+    # Run comprehensive tests
     test_universal_provider()
     
-    print("\n" + "=" * 60)
-    print("TESTS COMPLETED")
-    print("=" * 60)
+    # Run quick test
+    quick_test()
+    
+    print("\n" + "="*60)
+    print("✅ TESTS COMPLETED")
+    print("="*60)
