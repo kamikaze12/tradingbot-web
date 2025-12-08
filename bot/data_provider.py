@@ -66,6 +66,33 @@ class EnhancedDataProvider:
         
         return True, "Data validated successfully"
     
+    def validate_market_data_without_volume(self, df: pd.DataFrame, symbol: str) -> Tuple[bool, str]:
+        """Validate market data TANPA cek volume (untuk YFinance)"""
+        if df.empty:
+            return False, "Empty DataFrame"
+        
+        # Check for NaN values
+        if df.isnull().any().any():
+            df = df.fillna(method='ffill').fillna(method='bfill')
+            logger.warning(f"Fixed NaN values in {symbol}")
+        
+        # 🚨 SKIP VOLUME CHECK
+        
+        # Check price validity
+        required_cols = ['open', 'high', 'low', 'close']
+        for col in required_cols:
+            if col in df.columns:
+                if (df[col] <= 0).any():
+                    return False, f"Invalid {col} values (<=0)"
+                
+                # Check for unrealistic spikes
+                if col == 'close' and len(df) > 1:
+                    returns = df['close'].pct_change().abs()
+                    if (returns > 5).any():  # >500% change
+                        return False, "Unrealistic price spike detected"
+        
+        return True, "Data validated successfully (volume check skipped)"
+    
     def _estimate_realistic_price(self, symbol: str) -> float:
         """Estimate realistic price for emergency fallback"""
         # Common crypto price estimates
@@ -112,7 +139,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                     'apiKey': api_key,
                     'secret': secret,
                     'enableRateLimit': True,
-                    'timeout': 30000,
+                    'timeout': 10000,  # Kurangi dari 30000 ke 10000 ms
                     'options': {
                         'defaultType': 'spot',  # Default, tapi akan load semua markets
                     }
@@ -144,32 +171,33 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 raise Exception(f"Exchange {self.exchange_id} not initialized")
             
             try:
+                current_symbol = symbol  # BUAT VARIABEL LOKAL
                 # Coba fetch data
-                ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                ohlcv = self.exchange.fetch_ohlcv(current_symbol, timeframe, limit=limit)
                 
                 if not ohlcv:
                     # Coba dengan symbol alternatif
-                    alt_symbols = self._get_alternative_symbols(symbol)
+                    alt_symbols = self._get_alternative_symbols(current_symbol)
                     for alt_symbol in alt_symbols:
-                        if alt_symbol != symbol:
+                        if alt_symbol != current_symbol:
                             try:
                                 ohlcv = self.exchange.fetch_ohlcv(alt_symbol, timeframe, limit=limit)
                                 if ohlcv:
-                                    logger.info(f"⚠️ Using alternative symbol {alt_symbol} for {symbol}")
-                                    symbol = alt_symbol
+                                    logger.info(f"⚠️ Using alternative symbol {alt_symbol} for {current_symbol}")
+                                    current_symbol = alt_symbol  # UPDATE VARIABEL LOKAL
                                     break
                             except:
                                 continue
                     
                     if not ohlcv:
-                        raise ValueError(f"No OHLCV data returned for {symbol}")
+                        raise ValueError(f"No OHLCV data returned for {current_symbol}")
                 
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 
                 # Validasi data
                 if len(df) < 10:
-                    raise ValueError(f"Insufficient data for {symbol}: {len(df)} bars")
+                    raise ValueError(f"Insufficient data for {current_symbol}: {len(df)} bars")
                 
                 # 🚨 Filter harga 100 (data error)
                 if 'close' in df.columns:
@@ -177,21 +205,21 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                     count_100 = mask_100.sum()
                     if count_100 > 0:
                         df = df[~mask_100].copy()
-                        logger.warning(f"⚠️ Removed {count_100} bars with price 100 for {symbol}")
+                        logger.warning(f"⚠️ Removed {count_100} bars with price 100 for {current_symbol}")
                 
                 # Validasi kualitas data
-                is_valid, validation_msg = self.validate_market_data(df, symbol)
+                is_valid, validation_msg = self.validate_market_data(df, current_symbol)
                 if not is_valid:
-                    logger.warning(f"Data validation failed: {symbol} - {validation_msg}")
+                    logger.warning(f"Data validation failed: {current_symbol} - {validation_msg}")
                     # Data sudah diperbaiki di dalam fungsi validate_market_data
                 
                 current_price = df['close'].iloc[-1] if len(df) > 0 else 0
-                logger.info(f"📊 {symbol} - {len(df)} bars, current: {current_price:.8f}, timeframe: {timeframe}")
+                logger.info(f"📊 {current_symbol} - {len(df)} bars, current: {current_price:.8f}, timeframe: {timeframe}")
                 
                 return df
                 
             except Exception as e:
-                logger.warning(f"CCXT failed for {symbol}: {str(e)}")
+                logger.warning(f"CCXT failed for {current_symbol}: {str(e)}")
                 raise
 
         return self._safe_api_call(fetch_ccxt_data)
@@ -203,30 +231,31 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 if not self.exchange:
                     raise Exception("Exchange not initialized")
                 
-                ticker = self.exchange.fetch_ticker(symbol)
+                current_symbol = symbol  # BUAT VARIABEL LOKAL
+                ticker = self.exchange.fetch_ticker(current_symbol)
                 last_price = ticker.get('last')
                 
                 if last_price is None or last_price <= 0:
                     # Coba dengan symbol alternatif
-                    alt_symbols = self._get_alternative_symbols(symbol)
+                    alt_symbols = self._get_alternative_symbols(current_symbol)
                     for alt_symbol in alt_symbols:
-                        if alt_symbol != symbol:
+                        if alt_symbol != current_symbol:
                             try:
                                 ticker = self.exchange.fetch_ticker(alt_symbol)
                                 last_price = ticker.get('last')
                                 if last_price and last_price > 0:
                                     logger.info(f"⚠️ Using alternative symbol {alt_symbol} for ticker")
-                                    symbol = alt_symbol
+                                    current_symbol = alt_symbol  # UPDATE
                                     break
                             except:
                                 continue
                     
                     if last_price is None or last_price <= 0:
-                        raise ValueError(f"Invalid price for {symbol}: {last_price}")
+                        raise ValueError(f"Invalid price for {current_symbol}: {last_price}")
                 
                 # 🚨 Cek harga 100
                 if abs(last_price - 100.0) < 0.001:
-                    raise ValueError(f"Suspicious price 100 for {symbol}")
+                    raise ValueError(f"Suspicious price 100 for {current_symbol}")
                 
                 return {
                     'last': last_price,
@@ -235,7 +264,7 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                     'low': ticker.get('low'),
                     'bid': ticker.get('bid'),
                     'ask': ticker.get('ask'),
-                    'symbol': symbol,
+                    'symbol': current_symbol,  # PAKAI VARIABEL LOKAL
                     'timestamp': datetime.now()
                 }
             except Exception as e:
@@ -438,12 +467,14 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                         df = df[~mask_100].copy()
                         logger.warning(f"⚠️ Removed {count_100} bars with price 100 for {symbol}")
                 
-                # Validasi
-                is_valid, validation_msg = self.validate_market_data(df, symbol)
+                # 🚨 DISABLE VOLUME VALIDATION UNTUK YFINANCE
+                # Validasi TANPA cek volume (karena YFinance sering volume=0 untuk crypto)
+                is_valid, validation_msg = self.validate_market_data_without_volume(df, symbol)
                 if not is_valid:
                     logger.warning(f"YFinance validation failed: {symbol} - {validation_msg}")
+                    # Tetap lanjutkan karena volume bukan masalah utama untuk analisis
                 
-                logger.info(f"📈 YFinance: {symbol} - {len(df)} bars")
+                logger.info(f"📈 YFinance: {symbol} - {len(df)} bars (volume check disabled)")
                 return df
                 
             except Exception as e:
@@ -696,7 +727,7 @@ class UnifiedDataProvider(EnhancedDataProvider):
                         logger.warning(f"🚨 Removed {count_100} bars with price 100 for {symbol}")
                 
                 # Validasi
-                is_valid, msg = self.validate_market_data(result, symbol)
+                is_valid, msg = self.validate_market_data_without_volume(result, symbol)
                 if is_valid:
                     logger.info(f"✅ Valid data from fallback provider: {len(result)} bars")
                     return result
@@ -1028,7 +1059,7 @@ class SmartChainDataProvider(EnhancedDataProvider):
             raise
     
     def _get_dummy_data(self, symbol: str, limit: int) -> pd.DataFrame:
-        """Generate dummy data jika semua gagal"""
+        """Generate dummy data jika semua gagal - FIXED VERSION"""
         # Base price berdasarkan symbol
         if 'BTC' in symbol:
             base_price = 50000
@@ -1036,21 +1067,66 @@ class SmartChainDataProvider(EnhancedDataProvider):
             base_price = 3000
         elif 'SOL' in symbol:
             base_price = 100
+        elif 'XRP' in symbol:
+            base_price = 0.6
+        elif 'ADA' in symbol:
+            base_price = 0.5
+        elif 'DOGE' in symbol:
+            base_price = 0.1
         else:
-            base_price = 100
+            base_price = 50
         
         dates = pd.date_range(end=datetime.now(), periods=limit, freq='1H')
         
+        # Generate realistic OHLC data (FIX: ensure high >= low)
+        np.random.seed(int(time.time()) % 1000)  # Random seed
+        
+        # Start dengan base price
+        prices = [base_price]
+        for i in range(1, limit):
+            # Random price movement (-2% to +2%)
+            change = np.random.uniform(-0.02, 0.02)
+            new_price = prices[-1] * (1 + change)
+            prices.append(new_price)
+        
+        # Buat OHLC yang realistis
+        opens = []
+        highs = []
+        lows = []
+        closes = []
+        
+        for i in range(limit):
+            if i == 0:
+                open_price = prices[0]
+            else:
+                open_price = closes[i-1]
+            
+            close_price = prices[i]
+            
+            # Pastikan high >= low
+            min_price = min(open_price, close_price)
+            max_price = max(open_price, close_price)
+            
+            # Tambahkan random spread
+            spread = np.random.uniform(0.001, 0.005) * base_price
+            high_price = max_price + spread
+            low_price = max(min_price - spread, 0.001)  # Pastikan tidak negatif
+            
+            opens.append(open_price)
+            highs.append(high_price)
+            lows.append(low_price)
+            closes.append(close_price)
+        
         df = pd.DataFrame({
-            'open': base_price + np.random.randn(limit) * base_price * 0.01,
-            'high': base_price + np.random.randn(limit) * base_price * 0.02,
-            'low': base_price - np.random.randn(limit) * base_price * 0.02,
-            'close': base_price + np.random.randn(limit) * base_price * 0.01,
-            'volume': np.random.rand(limit) * 1000
+            'open': opens,
+            'high': highs,
+            'low': lows,
+            'close': closes,
+            'volume': np.random.uniform(1000, 10000, limit)
         }, index=dates)
         
         df.index.name = 'timestamp'
-        logger.info(f"🛠️ Generated {len(df)} dummy bars for {symbol}")
+        logger.info(f"🛠️ Generated REALISTIC {len(df)} dummy bars for {symbol}, avg price: {df['close'].mean():.2f}")
         return df
     
     def _format_symbol_for_exchange(self, exchange_id: str, symbol: str) -> str:
