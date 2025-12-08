@@ -644,6 +644,56 @@ def main_app():
                         st.write("- Crypto: BTC/USDT:USDT, ETH/USDT:USDT")
                         st.write("- Crypto (alternative): BTCUSDT-PERP, ETHUSDT-PERP")
 
+        # ============================================
+        # POIN 4: Tambahkan Provider Info di Sidebar
+        # ============================================
+        if st.session_state.market_set and hasattr(bot, 'get_provider_health'):
+            with st.expander("🔧 Provider Info"):
+                try:
+                    health = bot.get_provider_health()
+                    
+                    # Display provider info
+                    provider_type = health.get('provider_type', 'unknown')
+                    status = health.get('status', 'unknown')
+                    
+                    if provider_type == 'smart_chain':
+                        active_provider = health.get('active_provider', 'unknown')
+                        cache_size = health.get('cache_size', 0)
+                        
+                        st.write(f"**Provider:** SmartChainDataProvider")
+                        st.write(f"**Active:** {active_provider}")
+                        st.write(f"**Cache:** {cache_size} items")
+                        st.write(f"**Market:** {health.get('market_type', 'unknown')}")
+                        
+                        if status == 'active':
+                            st.success("✅ Provider healthy")
+                        else:
+                            st.warning("⚠️ Provider issues")
+                            
+                    elif provider_type == 'unified':
+                        st.write(f"**Provider:** UnifiedDataProvider")
+                        st.write(f"**Primary:** {health.get('primary_provider', 'unknown')}")
+                        st.write(f"**Fallback:** {health.get('fallback_provider', 'unknown')}")
+                        
+                    else:
+                        st.write(f"**Provider:** {provider_type}")
+                        st.write(f"**Status:** {status}")
+                        
+                    if st.button("🔄 Test Provider", key="test_provider"):
+                        with st.spinner("Testing..."):
+                            # Test dengan BTC/USDT
+                            try:
+                                test_result = bot.analyze_asset("BTC/USDT")
+                                if test_result and 'error' not in test_result:
+                                    st.success("✅ Provider test passed!")
+                                else:
+                                    st.error("❌ Provider test failed")
+                            except Exception as e:
+                                st.error(f"❌ Test error: {str(e)[:100]}")
+                                
+                except Exception as e:
+                    st.error(f"Error getting provider info: {e}")
+
     # Check if market is set
     if not st.session_state.market_set:
         st.warning("⚠️ Please select a market first!")
@@ -675,11 +725,17 @@ def main_app():
             mode_badge = "🔄 SPOT" if bot.trading_mode == "spot" else "⚡ FUTURES"
             st.info(f"**Mode:** {mode_badge} | **Market:** {st.session_state.current_market}")
         
-        # Scan dengan simbol yang diformat sesuai mode
+        # ============================================
+        # POIN 5: Optimasi Scanning dengan SmartChain
+        # ============================================
         if st.button("🚀 Start Scan", key="start_scan"):
             with st.spinner("Scanning assets..."):
                 try:
-                    results = bot.scan_potential_assets(20)
+                    # Gunakan scan_potential_assets_optimized jika tersedia
+                    if hasattr(bot, 'scan_potential_assets_optimized'):
+                        results = bot.scan_potential_assets_optimized(20)
+                    else:
+                        results = bot.scan_potential_assets(20)
                     
                     if results:
                         # Process results
