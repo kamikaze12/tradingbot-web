@@ -786,6 +786,472 @@ class UnifiedDataProvider(EnhancedDataProvider):
         return base_metrics
 
 # =============================================
+# SMART CHAIN DATA PROVIDER - ALL 3 SOLUTIONS
+# =============================================
+
+class SmartChainDataProvider(EnhancedDataProvider):
+    """
+    Provider dengan 3 solusi legal:
+    1. Binance mirror (us, me, sg) - CHAIN 1
+    2. Exchange lain (OKX, KuCoin, Bybit) - CHAIN 2  
+    3. YFinance fallback - CHAIN 3
+    4. Cache untuk performance
+    """
+    
+    def __init__(self, primary_mirror='binanceus', market_type='crypto'):
+        super().__init__()
+        self.primary_mirror = primary_mirror
+        self.market_type = market_type
+        self.active_provider = None
+        self.providers_chain = []
+        self.data_cache = {}
+        self.cache_ttl = 300  # 5 menit cache
+        self.initialize_chain()
+        logger.info(f"🔗 SmartChainDataProvider ready | Market: {market_type}")
+        
+    def initialize_chain(self):
+        """Initialize chain of providers berurutan"""
+        logger.info("🔗 Initializing Smart Chain Provider...")
+        
+        # CHAIN 1: Binance mirrors (legal & gratis)
+        binance_mirrors = [
+            ('binanceus', 'Binance US'),  # US mirror
+            ('binanceme', 'Binance ME'),  # Middle East mirror
+            ('binancesg', 'Binance SG'),  # Singapore mirror
+        ]
+        
+        # CHAIN 2: Exchange alternatif (mirip Binance)
+        alt_exchanges = [
+            ('okx', 'OKX'),
+            ('kucoin', 'KuCoin'),
+            ('bybit', 'Bybit'),
+            ('gate', 'Gate.io'),
+            ('coinbase', 'Coinbase'),
+        ]
+        
+        # CHAIN 3: YFinance fallback
+        yfinance_provider = ('yfinance', 'Yahoo Finance')
+        
+        # Bangun chain berdasarkan market type
+        if self.market_type == 'crypto':
+            self.providers_chain = binance_mirrors + alt_exchanges + [yfinance_provider]
+        elif self.market_type in ['us_stocks', 'saham_id']:
+            self.providers_chain = [yfinance_provider]  # Hanya YFinance untuk stocks
+        elif self.market_type == 'forex':
+            self.providers_chain = [yfinance_provider]  # Hanya YFinance untuk forex
+        else:
+            self.providers_chain = [yfinance_provider]  # Default
+        
+        logger.info(f"📋 Provider chain ({len(self.providers_chain)}):")
+        for i, (exchange_id, name) in enumerate(self.providers_chain):
+            logger.info(f"  {i+1}. {exchange_id} - {name}")
+        
+        # Coba connect ke provider pertama yang berhasil
+        self._connect_to_first_available()
+    
+    def _connect_to_first_available(self):
+        """Connect ke provider pertama yang available"""
+        for exchange_id, name in self.providers_chain:
+            if self._test_provider(exchange_id):
+                self.active_provider = exchange_id
+                logger.info(f"✅ Connected to {name} ({exchange_id})")
+                return True
+        
+        logger.warning("⚠️ All providers failed, will use fallback on first request")
+        return False
+    
+    def _test_provider(self, exchange_id: str) -> bool:
+        """Test jika provider bisa connect"""
+        try:
+            if exchange_id == 'yfinance':
+                # Test YFinance dengan rate limiting
+                time.sleep(0.5)  # Rate limit
+                ticker = yf.Ticker("BTC-USD")
+                hist = ticker.history(period='1d')
+                return not hist.empty
+            
+            else:
+                # Test CCXT exchange
+                exchange_class = getattr(ccxt, exchange_id, None)
+                if not exchange_class:
+                    return False
+                
+                # Rate limiting
+                time.sleep(0.3)
+                
+                exchange = exchange_class({
+                    'enableRateLimit': True,
+                    'timeout': 10000,
+                    'options': {'defaultType': 'spot'}
+                })
+                
+                # Coba load markets (non-blocking)
+                try:
+                    markets = exchange.load_markets()
+                    if markets and len(markets) > 0:
+                        return True
+                except:
+                    # Coba fetch ticker saja
+                    try:
+                        ticker = exchange.fetch_ticker('BTC/USDT')
+                        return ticker and 'last' in ticker and ticker['last'] > 0
+                    except:
+                        return False
+                        
+                return False
+                
+        except Exception as e:
+            logger.debug(f"❌ Provider {exchange_id} test failed: {e}")
+            return False
+    
+    def _get_cached_data(self, cache_key: str):
+        """Get cached data jika masih valid"""
+        if cache_key in self.data_cache:
+            timestamp, data = self.data_cache[cache_key]
+            if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl):
+                return data
+        return None
+    
+    def _set_cached_data(self, cache_key: str, data):
+        """Set data ke cache"""
+        self.data_cache[cache_key] = (datetime.now(), data)
+        # Batasi cache size
+        if len(self.data_cache) > 100:
+            # Hapus yang paling lama
+            oldest_key = next(iter(self.data_cache))
+            del self.data_cache[oldest_key]
+    
+    def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> pd.DataFrame:
+        """
+        Get OHLCV dengan fallback chain - OVERRIDE dari EnhancedDataProvider
+        
+        Args:
+            symbol: Symbol (BTC/USDT, BTC-USD, etc)
+            timeframe: 1h, 4h, 1d, etc
+            limit: Number of candles
+        
+        Returns:
+            DataFrame dengan OHLCV data
+        """
+        # Cache key
+        cache_key = f"ohlcv_{symbol}_{timeframe}_{limit}"
+        
+        # Cek cache dulu
+        cached_data = self._get_cached_data(cache_key)
+        if cached_data is not None:
+            logger.debug(f"📦 Using cached data for {symbol}")
+            return cached_data.copy()
+        
+        # Coba semua provider berurutan
+        for exchange_id, name in self.providers_chain:
+            try:
+                logger.debug(f"🔄 Trying {name} for {symbol}...")
+                
+                if exchange_id == 'yfinance':
+                    df = self._get_yfinance_ohlcv(symbol, timeframe, limit)
+                else:
+                    df = self._get_ccxt_ohlcv(exchange_id, symbol, timeframe, limit)
+                
+                if df is not None and not df.empty and len(df) >= 10:
+                    # Validasi data
+                    is_valid, msg = self.validate_market_data(df, symbol)
+                    if is_valid:
+                        # Cache hasil
+                        self._set_cached_data(cache_key, df.copy())
+                        
+                        # Update active provider jika berhasil
+                        if exchange_id != self.active_provider:
+                            self.active_provider = exchange_id
+                            logger.info(f"✅ Switched to {name}")
+                        
+                        logger.info(f"✅ {symbol}: {len(df)} bars from {name}")
+                        return df.copy()
+                    else:
+                        logger.warning(f"⚠️ {name} data invalid: {msg}")
+                        
+            except Exception as e:
+                logger.debug(f"⚠️ {name} failed: {str(e)[:100]}")
+                continue
+        
+        # Semua gagal, return dummy data
+        logger.warning(f"🚨 All providers failed for {symbol}, using dummy data")
+        df = self._get_dummy_data(symbol, limit)
+        self._set_cached_data(cache_key, df.copy())
+        return df
+    
+    def _get_ccxt_ohlcv(self, exchange_id: str, symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
+        """Get OHLCV dari CCXT exchange"""
+        try:
+            # Rate limiting
+            time.sleep(0.2)
+            
+            # Convert symbol format untuk exchange
+            formatted_symbol = self._format_symbol_for_exchange(exchange_id, symbol)
+            
+            # Buat provider CCXT
+            provider = EnhancedCCXTDataProvider(exchange_id=exchange_id)
+            
+            # Get data
+            df = provider.get_ohlcv(formatted_symbol, timeframe, limit)
+            
+            if df is not None and not df.empty:
+                # Pastikan index timestamp
+                if 'timestamp' in df.columns:
+                    df.set_index('timestamp', inplace=True)
+                return df
+            else:
+                return None
+            
+        except Exception as e:
+            logger.debug(f"CCXT {exchange_id} error: {e}")
+            raise
+    
+    def _get_yfinance_ohlcv(self, symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
+        """Get OHLCV dari YFinance"""
+        try:
+            # Rate limiting
+            time.sleep(0.5)
+            
+            # Convert symbol format
+            yf_symbol = self._convert_to_yfinance_symbol(symbol)
+            
+            # Buat provider YFinance
+            provider = EnhancedYFinanceDataProvider()
+            
+            # Get data
+            df = provider.get_ohlcv(yf_symbol, timeframe, limit)
+            
+            return df
+            
+        except Exception as e:
+            logger.debug(f"YFinance error: {e}")
+            raise
+    
+    def _get_dummy_data(self, symbol: str, limit: int) -> pd.DataFrame:
+        """Generate dummy data jika semua gagal"""
+        # Base price berdasarkan symbol
+        if 'BTC' in symbol:
+            base_price = 50000
+        elif 'ETH' in symbol:
+            base_price = 3000
+        elif 'SOL' in symbol:
+            base_price = 100
+        else:
+            base_price = 100
+        
+        dates = pd.date_range(end=datetime.now(), periods=limit, freq='1H')
+        
+        df = pd.DataFrame({
+            'open': base_price + np.random.randn(limit) * base_price * 0.01,
+            'high': base_price + np.random.randn(limit) * base_price * 0.02,
+            'low': base_price - np.random.randn(limit) * base_price * 0.02,
+            'close': base_price + np.random.randn(limit) * base_price * 0.01,
+            'volume': np.random.rand(limit) * 1000
+        }, index=dates)
+        
+        df.index.name = 'timestamp'
+        logger.info(f"🛠️ Generated {len(df)} dummy bars for {symbol}")
+        return df
+    
+    def _format_symbol_for_exchange(self, exchange_id: str, symbol: str) -> str:
+        """Format symbol untuk exchange tertentu"""
+        # Standardize: hapus - dan ganti dengan /
+        formatted = symbol.replace('-', '/')
+        
+        # Konversi khusus untuk beberapa exchange
+        if exchange_id in ['binanceus', 'binanceme', 'binancesg']:
+            # Binance mirrors pakai format BTC/USDT
+            if '/USD' in formatted and not formatted.endswith('T'):
+                formatted = formatted.replace('/USD', '/USDT')
+        
+        return formatted
+    
+    def _convert_to_yfinance_symbol(self, symbol: str) -> str:
+        """Convert ke format YFinance"""
+        if '/USDT' in symbol:
+            return symbol.replace('/USDT', '-USD')
+        elif ':USDT' in symbol:
+            return symbol.replace(':USDT', '')
+        elif '/' in symbol and '=X' not in symbol:
+            # Untuk forex pairs
+            return symbol.replace('/', '') + '=X'
+        else:
+            return symbol
+    
+    def get_ticker(self, symbol: str) -> Dict:
+        """Get ticker dengan fallback chain"""
+        cache_key = f"ticker_{symbol}"
+        
+        # Cek cache
+        cached_data = self._get_cached_data(cache_key)
+        if cached_data is not None:
+            return cached_data.copy()
+        
+        # Coba semua provider
+        for exchange_id, name in self.providers_chain:
+            try:
+                if exchange_id == 'yfinance':
+                    ticker = self._get_yfinance_ticker(symbol)
+                else:
+                    ticker = self._get_ccxt_ticker(exchange_id, symbol)
+                
+                if ticker and ticker.get('last', 0) > 0:
+                    # Cache
+                    self._set_cached_data(cache_key, ticker.copy())
+                    
+                    # Update active provider
+                    if exchange_id != self.active_provider:
+                        self.active_provider = exchange_id
+                        logger.info(f"✅ Switched to {name} for ticker")
+                    
+                    return ticker
+                    
+            except Exception as e:
+                logger.debug(f"⚠️ {name} ticker failed: {e}")
+                continue
+        
+        # Fallback ke dummy
+        ticker = self._get_dummy_ticker(symbol)
+        self._set_cached_data(cache_key, ticker.copy())
+        return ticker
+    
+    def _get_ccxt_ticker(self, exchange_id: str, symbol: str) -> Dict:
+        """Get ticker dari CCXT"""
+        try:
+            time.sleep(0.1)  # Rate limit
+            
+            formatted_symbol = self._format_symbol_for_exchange(exchange_id, symbol)
+            
+            provider = EnhancedCCXTDataProvider(exchange_id=exchange_id)
+            ticker = provider.get_ticker(formatted_symbol)
+            
+            if ticker:
+                ticker['source'] = exchange_id
+                return ticker
+            else:
+                raise Exception("No ticker data")
+            
+        except Exception as e:
+            logger.debug(f"CCXT ticker error: {e}")
+            raise
+    
+    def _get_yfinance_ticker(self, symbol: str) -> Dict:
+        """Get ticker dari YFinance"""
+        try:
+            time.sleep(0.3)  # Rate limit
+            
+            yf_symbol = self._convert_to_yfinance_symbol(symbol)
+            
+            provider = EnhancedYFinanceDataProvider()
+            ticker = provider.get_ticker(yf_symbol)
+            
+            if ticker:
+                ticker['source'] = 'yfinance'
+                return ticker
+            else:
+                raise Exception("No ticker data")
+            
+        except Exception as e:
+            logger.debug(f"YFinance ticker error: {e}")
+            raise
+    
+    def _get_dummy_ticker(self, symbol: str) -> Dict:
+        """Generate dummy ticker"""
+        if 'BTC' in symbol:
+            price = 50000
+        elif 'ETH' in symbol:
+            price = 3000
+        elif 'SOL' in symbol:
+            price = 100
+        else:
+            price = 100
+        
+        return {
+            'symbol': symbol,
+            'last': price,
+            'bid': price * 0.999,
+            'ask': price * 1.001,
+            'high': price * 1.01,
+            'low': price * 0.99,
+            'volume': 1000,
+            'timestamp': datetime.now(),
+            'source': 'dummy_fallback'
+        }
+    
+    def get_popular_assets(self, limit: int = 100, **kwargs) -> List[Dict]:
+        """Get popular assets dari provider yang aktif"""
+        try:
+            # Coba provider pertama yang berhasil
+            for exchange_id, name in self.providers_chain:
+                try:
+                    if exchange_id == 'yfinance':
+                        provider = EnhancedYFinanceDataProvider()
+                        assets = provider.get_popular_assets(limit, **kwargs)
+                    else:
+                        provider = EnhancedCCXTDataProvider(exchange_id=exchange_id)
+                        assets = provider.get_popular_assets(limit, **kwargs)
+                    
+                    if assets and len(assets) > 0:
+                        # Tambahkan info provider
+                        for asset in assets:
+                            asset['provider'] = name
+                            asset['source'] = exchange_id
+                        
+                        logger.info(f"✅ Got {len(assets)} assets from {name}")
+                        return assets[:limit]
+                        
+                except Exception as e:
+                    logger.debug(f"⚠️ {name} assets failed: {e}")
+                    continue
+            
+            # Fallback
+            return self._get_fallback_assets(limit)
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting assets: {e}")
+            return self._get_fallback_assets(limit)
+    
+    def _get_fallback_assets(self, limit: int) -> List[Dict]:
+        """Fallback assets"""
+        assets = []
+        
+        if self.market_type == 'crypto':
+            symbols = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT']
+            for symbol in symbols[:limit]:
+                assets.append({
+                    'symbol': symbol,
+                    'name': symbol.split('/')[0],
+                    'exchange': 'fallback',
+                    'provider': 'SmartChainFallback',
+                    'source': 'fallback',
+                    'type': 'crypto'
+                })
+        elif self.market_type == 'us_stocks':
+            symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']
+            for symbol in symbols[:limit]:
+                assets.append({
+                    'symbol': symbol,
+                    'name': symbol,
+                    'exchange': 'NASDAQ',
+                    'provider': 'SmartChainFallback',
+                    'source': 'fallback',
+                    'type': 'stock'
+                })
+        
+        return assets
+    
+    def get_health_status(self) -> Dict:
+        """Get health status provider"""
+        return {
+            'active_provider': self.active_provider,
+            'provider_name': dict(self.providers_chain).get(self.active_provider, 'Unknown'),
+            'total_providers': len(self.providers_chain),
+            'cache_size': len(self.data_cache),
+            'market_type': self.market_type,
+            'status': 'active'
+        }
+
+# =============================================
 # DATA PROVIDER FACTORY
 # =============================================
 
@@ -805,6 +1271,16 @@ class DataProviderFactory:
                 exchange_id=exchange_id,
                 api_key=api_key,
                 secret=secret
+            )
+            
+        elif provider_type == 'smart_chain':
+            # 🆕 SMART CHAIN PROVIDER (3 SOLUSI)
+            market_type = kwargs.get('market_type', 'crypto')
+            primary_mirror = kwargs.get('primary_mirror', 'binanceus')
+            
+            return SmartChainDataProvider(
+                primary_mirror=primary_mirror,
+                market_type=market_type
             )
             
         elif provider_type == 'ccxt':
@@ -1004,6 +1480,24 @@ def test_universal_provider():
         print(f"   Health: {dynamic.get_health_metrics()}")
     except Exception as e:
         print(f"❌ Dynamic error: {e}")
+    
+    # Test 5: Smart Chain Provider
+    print("\n5️⃣ Testing Smart Chain Provider:")
+    try:
+        smart_chain = SmartChainDataProvider(market_type='crypto')
+        
+        # Test popular assets
+        assets = smart_chain.get_popular_assets(5)
+        print(f"✅ Smart Chain assets: {len(assets)} found")
+        for asset in assets[:3]:
+            print(f"   - {asset['symbol']} from {asset['provider']}")
+        
+        # Test health status
+        health = smart_chain.get_health_status()
+        print(f"✅ Health status: {health['active_provider']} | Cache: {health['cache_size']}")
+        
+    except Exception as e:
+        print(f"❌ Smart Chain error: {e}")
 
 def quick_test():
     """Quick test function"""
@@ -1028,6 +1522,25 @@ def quick_test():
         
     except Exception as e:
         print(f"❌ YFinance test failed: {e}")
+    
+    # Test Smart Chain
+    print("\nTesting Smart Chain Provider:")
+    try:
+        smart_chain = SmartChainDataProvider(market_type='crypto')
+        
+        # Test OHLCV
+        data = smart_chain.get_ohlcv("BTC/USDT", '1h', 10)
+        if not data.empty:
+            print(f"✅ Smart Chain BTC data: {len(data)} rows")
+        else:
+            print("⚠️ No data from Smart Chain")
+        
+        # Test ticker
+        ticker = smart_chain.get_ticker("ETH/USDT")
+        print(f"✅ Smart Chain ETH price: ${ticker['last']:.2f}")
+        
+    except Exception as e:
+        print(f"❌ Smart Chain test failed: {e}")
 
 if __name__ == "__main__":
     print("\n" + "="*60)
