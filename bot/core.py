@@ -55,8 +55,6 @@ logger = logging.getLogger(__name__)
 # =============================================
 
 # Import modul yang diperlukan dengan error handling yang lebih baik
-# PERBAIKAN: Handle setiap import secara terpisah untuk debug yang lebih baik
-
 print("\n" + "="*60)
 print("DEBUG IMPORTS - PERBAIKAN INDEKSASI")
 print("="*60)
@@ -123,7 +121,7 @@ except ImportError as e2:
 
 try:
     print("✅ Mencoba import SoundNotifier...")
-    from notifier import SoundNotifier  # HAPUS titik di depan
+    from notifier import SoundNotifier
     print("  ✅ SoundNotifier berhasil diimport")
 except ImportError as e3:
     print(f"  ❌ Gagal import SoundNotifier: {e3}")
@@ -199,7 +197,6 @@ except Exception as e:
             return [{'symbol': 'BTC/USDT', 'name': 'Bitcoin'}]
         
         def get_ohlcv(self, symbol, timeframe, limit):
-            # Return dummy data
             dates = pd.date_range(end=datetime.now(), periods=limit, freq='1H')
             df = pd.DataFrame({
                 'open': np.random.randn(limit) * 100 + 50000,
@@ -231,7 +228,7 @@ print("IMPORT COMPLETED")
 print("="*60 + "\n")
 
 # =============================================
-# HELPER FUNCTIONS - AUTO DETECTION
+# HELPER FUNCTIONS - AUTO DETECTION & CONVERSION
 # =============================================
 
 def auto_detect_trading_type(symbol: str) -> Tuple[str, str]:
@@ -242,11 +239,10 @@ def auto_detect_trading_type(symbol: str) -> Tuple[str, str]:
     symbol_upper = symbol.upper()
     
     # Deteksi futures dari format
-    futures_markers = [':USDT', ':USDT:', 'PERP', 'FUTURES', 'FUTURE']
+    futures_markers = [':USDT', ':USDT:', 'PERP', 'FUTURES', 'FUTURE', ':PERP']
     
     for marker in futures_markers:
         if marker in symbol_upper:
-            # Format futures untuk konsistensi
             formatted = symbol_upper.replace('-', '/').replace('_', '/')
             return "futures", formatted
     
@@ -254,12 +250,49 @@ def auto_detect_trading_type(symbol: str) -> Tuple[str, str]:
     formatted = symbol_upper.replace('-', '/').replace('_', '/')
     return "spot", formatted
 
+def convert_symbol_for_provider(symbol: str, provider_type: str) -> str:
+    """
+    Konversi simbol berdasarkan provider.
+    
+    Args:
+        symbol: Simbol asli (BTC/USDT, BTC-USDT, BTC/USDT:USDT)
+        provider_type: 'yfinance', 'ccxt', atau 'universal'
+    
+    Returns:
+        Simbol yang diformat sesuai provider
+    """
+    if provider_type == 'yfinance':
+        # Konversi untuk Yahoo Finance
+        if '/USDT' in symbol:
+            # Crypto: BTC/USDT -> BTC-USD
+            return symbol.replace('/USDT', '-USD')
+        elif ':USDT' in symbol:
+            # Futures: BTC/USDT:USDT -> BTC-USD
+            return symbol.replace(':USDT', '').replace('/', '-') + '-USD'
+        elif '/' in symbol:
+            # Pasangan lain: EUR/USD -> EURUSD=X
+            base, quote = symbol.split('/')
+            if quote in ['USD', 'EUR', 'GBP', 'JPY']:
+                return f"{base}{quote}=X"
+            else:
+                return symbol.replace('/', '-')
+        else:
+            return symbol.replace('/', '-')
+    
+    elif provider_type == 'ccxt':
+        # Untuk CCXT, format standar
+        return symbol.replace('-', '/').replace('_', '/')
+    
+    else:  # universal
+        # Format universal untuk kebanyakan provider
+        return symbol.replace('-', '/').replace('_', '/')
+
 # =============================================
-# ENHANCED BACKTEST ENGINE DARI CORE (1).PY
+# ENHANCED BACKTEST ENGINE
 # =============================================
 
 class BacktestEngine:
-    """Enhanced backtesting engine dengan advanced features dari core (1).py"""
+    """Enhanced backtesting engine dengan advanced features"""
     
     def __init__(self, initial_balance=10000):
         self.initial_balance = initial_balance
@@ -272,7 +305,7 @@ class BacktestEngine:
             # Extract parameters
             atr_multiplier = kwargs.get('atr_multiplier', 1.0)
             entry_range_pct = kwargs.get('entry_range_pct', 0.02)
-            commission = kwargs.get('commission', 0.001)  # 0.1% commission
+            commission = kwargs.get('commission', 0.001)
             
             balance = self.initial_balance
             position = 0
@@ -347,10 +380,10 @@ class BacktestEngine:
                                 current_drawdown = (max_balance - balance) / max_balance
                                 max_drawdown = max(max_drawdown, current_drawdown)
                 
-                # Update equity curve (include unrealized P&L)
+                # Update equity curve
                 if position != 0 and len(trades) > 0:
                     current_trade = trades[-1]
-                    if current_trade.get('exit_time') is None:  # Position still open
+                    if current_trade.get('exit_time') is None:
                         unrealized_pnl = (current_price - current_trade['entry_price']) * current_trade['size'] * position
                         current_equity = balance + unrealized_pnl
                     else:
@@ -386,10 +419,8 @@ class BacktestEngine:
                 test_data = df.iloc[start_idx + period_length//2:end_idx]
                 
                 if len(train_data) > 100 and len(test_data) > 50:
-                    # Optimize parameters on training data
                     optimized_params = self._optimize_parameters(train_data, strategy_class, **kwargs)
                     
-                    # Test on out-of-sample data
                     strategy = strategy_class(**optimized_params)
                     period_result = self.run_backtest(test_data, strategy, **optimized_params)
                     
@@ -400,7 +431,6 @@ class BacktestEngine:
                     
                     logger.info(f"  Period {i+1}: {period_result.get('total_trades', 0)} trades, Win Rate: {period_result.get('win_rate', 0):.1%}")
             
-            # Aggregate results
             if results:
                 aggregate = self._aggregate_walk_forward_results(results)
                 return {
@@ -424,7 +454,6 @@ class BacktestEngine:
             
             logger.info("⚙️ Running parameter optimization...")
             
-            # Generate parameter combinations
             param_combinations = self._generate_parameter_combinations(param_grid)
             
             for i, params in enumerate(param_combinations):
@@ -432,7 +461,6 @@ class BacktestEngine:
                     strategy = strategy_class(**params)
                     result = self.run_backtest(df, strategy, **params)
                     
-                    # Use Sharpe ratio as optimization score
                     score = result.get('sharpe_ratio', 0)
                     
                     optimization_result = {
@@ -444,7 +472,7 @@ class BacktestEngine:
                     }
                     results.append(optimization_result)
                     
-                    if score > best_score and result.get('total_trades', 0) >= 5:  # Minimum trades requirement
+                    if score > best_score and result.get('total_trades', 0) >= 5:
                         best_score = score
                         best_params = params.copy()
                     
@@ -455,13 +483,12 @@ class BacktestEngine:
                     logger.warning(f"  Skipping combination {params}: {e}")
                     continue
             
-            # Sort results by score
             results.sort(key=lambda x: x['score'], reverse=True)
             
             return {
                 'best_params': best_params,
                 'best_score': best_score,
-                'top_results': results[:10],  # Top 10 results
+                'top_results': results[:10],
                 'all_results': results
             }
             
@@ -475,7 +502,6 @@ class BacktestEngine:
             if not trades or len(trades) < 10:
                 return {"error": "Insufficient trades for Monte Carlo simulation"}
             
-            # Extract P&L values from trades
             pnl_values = [t.get('net_pnl', t.get('pnl', 0)) for t in trades if t.get('pnl') is not None]
             
             if len(pnl_values) < 10:
@@ -487,7 +513,6 @@ class BacktestEngine:
             logger.info(f"🎲 Running Monte Carlo simulation ({num_simulations} iterations)...")
             
             for i in range(num_simulations):
-                # Random sampling with replacement
                 sampled_pnls = np.random.choice(pnl_values, size=num_trades, replace=True)
                 sim_total = np.sum(sampled_pnls)
                 sim_win_rate = np.sum(np.array(sampled_pnls) > 0) / num_trades
@@ -498,11 +523,9 @@ class BacktestEngine:
                     'avg_trade': np.mean(sampled_pnls)
                 })
             
-            # Calculate statistics
             total_pnls = [s['total_pnl'] for s in simulations]
             win_rates = [s['win_rate'] for s in simulations]
             
-            # Confidence intervals
             pnl_sorted = sorted(total_pnls)
             win_rate_sorted = sorted(win_rates)
             
@@ -531,12 +554,10 @@ class BacktestEngine:
     
     def _should_enter_trade(self, analysis, current_price):
         """Enhanced entry logic"""
-        # ✅ PERBAIKAN: Terima sinyal SHORT dengan skor negatif kuat
         score = analysis.get('score', 0)
         if (score >= 2 or score <= -2) and analysis.get('risk_metrics', {}).get('reward_ratio', 0) > 1.5:
-            # Additional filters
-            if analysis.get('volume_ratio', 0) > 0.8:  # Minimum volume
-                if analysis.get('rsi', 50) not in [0, 100]:  # Valid RSI
+            if analysis.get('volume_ratio', 0) > 0.8:
+                if analysis.get('rsi', 50) not in [0, 100]:
                     return True
         return False
     
@@ -545,19 +566,16 @@ class BacktestEngine:
         entry_price = trade['entry_price']
         
         if trade['action'] == 'LONG':
-            # Profit taking
             if current_price >= entry_price * 1.05:
                 return True
-            # Stop loss
             if current_price <= entry_price * 0.98:
                 return True
-            # Trailing stop (if price moved up then reversed)
             if hasattr(self, 'highest_price'):
                 if current_price <= self.highest_price * 0.97:
                     return True
             else:
                 self.highest_price = current_price
-        else:  # SHORT
+        else:
             if current_price <= entry_price * 0.95:
                 return True
             if current_price >= entry_price * 1.02:
@@ -572,24 +590,21 @@ class BacktestEngine:
     
     def _calculate_position_size(self, balance, current_price, atr):
         """Position sizing with risk management"""
-        risk_per_trade = 0.02  # 2% risk per trade
+        risk_per_trade = 0.02
         risk_amount = balance * risk_per_trade
         
         if atr > 0:
-            # Use ATR for position sizing
-            position_size = risk_amount / (atr * 2)  # Stop loss at 2 ATR
+            position_size = risk_amount / (atr * 2)
         else:
-            # Fallback to percentage-based sizing
-            position_size = (balance * 0.1) / current_price  # 10% of balance
+            position_size = (balance * 0.1) / current_price
         
-        return min(position_size, (balance * 0.2) / current_price)  # Max 20% per trade
+        return min(position_size, (balance * 0.2) / current_price)
     
     def _calculate_comprehensive_performance_metrics(self, trades, equity_curve):
         """Enhanced performance metrics"""
         if not trades or len(equity_curve) < 2:
             return self._get_empty_results()
             
-        # Basic metrics
         closed_trades = [t for t in trades if t.get('exit_time') is not None]
         winning_trades = [t for t in closed_trades if t.get('net_pnl', t.get('pnl', 0)) > 0]
         losing_trades = [t for t in closed_trades if t.get('net_pnl', t.get('pnl', 0)) <= 0]
@@ -597,25 +612,21 @@ class BacktestEngine:
         total_trades = len(closed_trades)
         win_rate = len(winning_trades) / total_trades if total_trades else 0
         
-        # P&L metrics
         total_pnl = sum(t.get('net_pnl', t.get('pnl', 0)) for t in closed_trades)
         avg_win = np.mean([t.get('net_pnl', t.get('pnl', 0)) for t in winning_trades]) if winning_trades else 0
         avg_loss = np.mean([t.get('net_pnl', t.get('pnl', 0)) for t in losing_trades]) if losing_trades else 0
         profit_factor = abs(sum(t.get('net_pnl', t.get('pnl', 0)) for t in winning_trades) / 
                            sum(t.get('net_pnl', t.get('pnl', 0)) for t in losing_trades)) if losing_trades else float('inf')
         
-        # Risk metrics
         returns = np.diff(equity_curve) / np.array(equity_curve[:-1])
         volatility = np.std(returns) * np.sqrt(252) if len(returns) > 1 else 0
         sharpe_ratio = np.mean(returns) / np.std(returns) * np.sqrt(252) if len(returns) > 1 and np.std(returns) > 0 else 0
         
-        # Drawdown analysis
         equity_array = np.array(equity_curve)
         peak = np.maximum.accumulate(equity_array)
         drawdown = (equity_array - peak) / peak
         max_drawdown = np.min(drawdown) if len(drawdown) > 0 else 0
         
-        # Trade statistics
         trade_durations = []
         for trade in closed_trades:
             if 'entry_time' in trade and 'exit_time' in trade:
@@ -631,7 +642,7 @@ class BacktestEngine:
             'losing_trades': len(losing_trades),
             'win_rate': win_rate,
             'total_pnl': total_pnl,
-            'net_pnl': total_pnl,  # Including commissions
+            'net_pnl': total_pnl,
             'avg_win': avg_win,
             'avg_loss': avg_loss,
             'profit_factor': profit_factor,
@@ -660,14 +671,12 @@ class BacktestEngine:
     
     def _optimize_parameters(self, df, strategy_class, **kwargs):
         """Simple parameter optimization for walk-forward"""
-        # This is a simplified version - in practice you might want more sophisticated optimization
         default_params = {
             'atr_multiplier': 1.0,
             'entry_range_pct': 0.02,
             'market_type': kwargs.get('market_type', 'crypto')
         }
         
-        # Test a few parameter combinations
         best_score = -float('inf')
         best_params = default_params
         
@@ -716,7 +725,6 @@ class BacktestEngine:
         win_rates = [r.get('win_rate', 0) for r in results]
         pnls = [r.get('total_pnl', 0) for r in results]
         
-        # Consistency based on win rate stability and P&L consistency
         win_rate_consistency = 1 - np.std(win_rates) / (np.mean(win_rates) + 1e-8)
         pnl_consistency = sum(1 for pnl in pnls if pnl > 0) / len(pnls)
         
@@ -761,7 +769,7 @@ class EnhancedPosition:
     position_size: float
     initial_stop_loss: float
     current_stop_loss: float
-    take_profits: List[float]  # Multiple TP levels
+    take_profits: List[float]
     trailing_enabled: bool = False
     trailing_distance: float = 0.0
     partial_tp_executed: List[float] = None
@@ -788,7 +796,7 @@ class EnhancedPosition:
                 self.current_stop_loss = new_stop
                 self.last_updated = datetime.now()
                 return True
-        else:  # SHORT
+        else:
             new_stop = current_price + self.trailing_distance
             if new_stop < self.current_stop_loss:
                 self.current_stop_loss = new_stop
@@ -809,7 +817,7 @@ class EnhancedPosition:
             'timestamp': datetime.now()
         })
         
-        if self.position_size <= 0.001:  # Minimum position size
+        if self.position_size <= 0.001:
             self.state = PositionState.CLOSED
             
         return close_size
@@ -826,7 +834,7 @@ class EnhancedPosition:
             elif self.take_profits and current_price >= max(self.take_profits):
                 should_close = True
                 reason = "Final TP hit"
-        else:  # SHORT
+        else:
             if current_price >= self.current_stop_loss:
                 should_close = True
                 reason = "Stop loss hit"
@@ -843,12 +851,11 @@ class EnhancedPositionManager:
         self.db_handler = db_handler
         self.positions: Dict[str, EnhancedPosition] = {}
         self.max_positions = 10
-        self.max_portfolio_risk = 0.02  # 2% max portfolio risk
+        self.max_portfolio_risk = 0.02
         
     def calculate_position_size(self, symbol: str, entry_price: float, stop_loss: float, 
                               account_balance: float, risk_per_trade: float = 0.01) -> float:
         """Calculate position size based on risk management"""
-        # **FIXED: Validasi entry_price dan stop_loss**
         if entry_price <= 0 or stop_loss <= 0:
             logger.warning(f"Invalid prices for {symbol}: entry={entry_price}, sl={stop_loss}")
             return 0.0
@@ -862,7 +869,6 @@ class EnhancedPositionManager:
         price_risk = abs(entry_price - stop_loss)
         position_size = risk_amount / price_risk
         
-        # Limit position size to 20% of account balance
         max_position_value = account_balance * 0.2
         max_position_size = max_position_value / entry_price
         
@@ -873,24 +879,20 @@ class EnhancedPositionManager:
                      account_balance: float, trailing_distance: float = 0.0) -> Optional[EnhancedPosition]:
         """Open new position dengan enhanced management"""
         
-        # **FIXED: Validasi entry_price**
         if entry_price <= 0:
             logger.error(f"Cannot open position for {symbol}: Invalid entry price {entry_price}")
             return None
         
-        # Check maximum positions
         if len(self.positions) >= self.max_positions:
             logger.warning(f"Maximum positions reached ({self.max_positions}), cannot open new position for {symbol}")
             return None
         
-        # Calculate position size
         position_size = self.calculate_position_size(symbol, entry_price, stop_loss, account_balance)
         
         if position_size <= 0:
             logger.warning(f"Invalid position size for {symbol}")
             return None
         
-        # Create enhanced position
         position = EnhancedPosition(
             symbol=symbol,
             market_type=market_type,
@@ -906,7 +908,6 @@ class EnhancedPositionManager:
         
         self.positions[symbol] = position
         
-        # Save to database
         try:
             position_id = self.db_handler.save_position(
                 symbol=symbol,
@@ -933,21 +934,19 @@ class EnhancedPositionManager:
             return None
     
     def get_position_id_from_symbol(self, symbol: str, market_type: str) -> Optional[int]:
-        """Get position ID from symbol - FIXED VERSION"""
+        """Get position ID from symbol"""
         try:
             active_positions = self.db_handler.get_active_positions(market_type)
             position_id = None
             
             for pos in active_positions:
-                # Handle both dictionary and tuple responses
                 if isinstance(pos, dict):
                     if pos.get('symbol') == symbol:
                         position_id = pos.get('id')
                         break
                 else:
-                    # Fallback for tuple response (backward compatibility)
-                    if len(pos) > 1 and pos[1] == symbol:  # symbol column
-                        position_id = pos[0]  # id column
+                    if len(pos) > 1 and pos[1] == symbol:
+                        position_id = pos[0]
                         break
             
             return position_id
@@ -967,15 +966,12 @@ class EnhancedPositionManager:
             current_price = price_data[symbol]
             close_position, reason = position.should_close_position(current_price)
             
-            # Update trailing stop
             if position.trailing_enabled:
                 position.update_trailing_stop(current_price)
             
-            # Check partial TP opportunities
             partial_tp_executed = self._check_partial_tp(position, current_price)
             
             if close_position:
-                # Close position
                 success = self.close_position(symbol, current_price, reason)
                 results[symbol] = {
                     'action': 'closed',
@@ -990,7 +986,6 @@ class EnhancedPositionManager:
                     'price': current_price
                 }
             else:
-                # Update current price in database
                 try:
                     self.db_handler.update_position_current_price(symbol, current_price)
                 except Exception as e:
@@ -1007,10 +1002,8 @@ class EnhancedPositionManager:
         
         for i, tp_level in enumerate(position.take_profits):
             if position.action == "LONG" and current_price >= tp_level:
-                # Check if this TP level hasn't been executed yet
                 tp_executed = any(tp.get('level', i) == i for tp in position.partial_tp_executed)
                 if not tp_executed:
-                    # Execute 33% partial TP for each level
                     size = position.execute_partial_tp(tp_level, 0.33)
                     executed_size += size
                     logger.info(f"Partial TP executed for {position.symbol} at {tp_level:.4f}, size: {size:.4f}")
@@ -1025,7 +1018,7 @@ class EnhancedPositionManager:
         return executed_size
     
     def close_position(self, symbol: str, close_price: float, reason: str = "manual") -> bool:
-        """Close position - FIXED VERSION"""
+        """Close position"""
         if symbol not in self.positions:
             logger.warning(f"Position for {symbol} not found in local manager")
             return False
@@ -1033,7 +1026,6 @@ class EnhancedPositionManager:
         position = self.positions[symbol]
         
         try:
-            # Find position ID from database using new method
             position_id = self.get_position_id_from_symbol(symbol, position.market_type)
             
             if position_id:
@@ -1069,7 +1061,7 @@ class EnhancedPositionManager:
             
             if position.action == "LONG":
                 pnl = (current_price - position.entry_price) * position.position_size
-            else:  # SHORT
+            else:
                 pnl = (position.entry_price - current_price) * position.position_size
             
             total_value += position_value
@@ -1106,9 +1098,8 @@ class EnsembleMLModel:
         self.scalers = {}
         self.feature_importance = {}
         self.is_trained = False
-        self.model_weights = {}  # Dynamic model weighting
+        self.model_weights = {}
         
-        # Feature configuration
         self.feature_config = {
             'price_features': ['rsi', 'macd', 'sma_20', 'sma_50', 'ema_12', 'ema_26'],
             'volume_features': ['volume_ratio', 'obv', 'volume_sma_ratio'],
@@ -1161,11 +1152,11 @@ class EnsembleMLModel:
                     solver='liblinear'
                 )
             
-            self.scalers[model_type] = RobustScaler()  # Less sensitive to outliers
-            self.model_weights[model_type] = 1.0  # Initial equal weights
+            self.scalers[model_type] = RobustScaler()
+            self.model_weights[model_type] = 1.0
     
     def advanced_feature_engineering(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Advanced feature engineering dengan technical indicators - FIXED ATR"""
+        """Advanced feature engineering dengan technical indicators"""
         if df is None or len(df) < 50:
             return pd.DataFrame()
         
@@ -1173,70 +1164,52 @@ class EnsembleMLModel:
         prices = df['close'].values
         volumes = df['volume'].values if 'volume' in df.columns else np.ones(len(df))
         
-        # **FIXED: Validasi data harga**
         if len(prices) == 0 or (prices <= 0).any():
             logger.warning("Invalid price data in feature engineering")
             return pd.DataFrame()
         
-        # Price-based features
         if len(prices) >= 20:
-            # RSI
             features['rsi'] = self._calculate_rsi(prices)
-            
-            # MACD
             features['macd'] = self._calculate_macd(prices)
-            
-            # Moving averages
             features['sma_20'] = np.mean(prices[-20:])
             features['sma_50'] = np.mean(prices[-min(50, len(prices)):])
             features['ema_12'] = self._calculate_ema(prices, 12)
             features['ema_26'] = self._calculate_ema(prices, 26)
             
-            # Bollinger Bands
             bb_upper, bb_lower, bb_middle = self._calculate_bollinger_bands(prices)
             features['bb_width'] = (bb_upper - bb_lower) / bb_middle if bb_middle > 0 else 0
-            
-            # Price position in BB
             features['bb_position'] = (prices[-1] - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
         
-        # Volume features
         if len(volumes) >= 20:
             features['volume_ratio'] = volumes[-1] / np.mean(volumes[-20:]) if np.mean(volumes[-20:]) > 0 else 1
             features['volume_sma_ratio'] = volumes[-1] / np.mean(volumes) if np.mean(volumes) > 0 else 1
             features['obv'] = self._calculate_obv(prices, volumes)
         
-        # Volatility features
         if len(prices) >= 20:
             features['atr'] = self._calculate_atr(df) if len(df) >= 14 else 0.02
             
-            # ✅ PERBAIKAN: Pastikan ATR minimal 0.1% dari harga
             if features['atr'] <= 0:
-                features['atr'] = prices[-1] * 0.001  # Minimal 0.1% dari harga terkini
+                features['atr'] = prices[-1] * 0.001
                 
             returns = np.diff(prices) / prices[:-1]
             features['volatility'] = np.std(returns) * np.sqrt(252) if len(returns) > 1 else 0.02
         
-        # Momentum features
         if len(prices) >= 10:
             features['momentum_5'] = (prices[-1] / prices[-5] - 1) * 100 if prices[-5] > 0 else 0
             features['momentum_10'] = (prices[-1] / prices[-10] - 1) * 100 if prices[-10] > 0 else 0
             features['williams_r'] = self._calculate_williams_r(df)
             features['cci'] = self._calculate_cci(df)
         
-        # Statistical features
         if len(prices) >= 20:
             features['skewness'] = stats.skew(prices[-20:])
             features['kurtosis'] = stats.kurtosis(prices[-20:])
             features['z_score'] = (prices[-1] - np.mean(prices[-20:])) / np.std(prices[-20:]) if np.std(prices[-20:]) > 0 else 0
         
-        # Pattern and trend features (simplified)
         if len(prices) >= 10:
             features['trend_strength'] = self._calculate_trend_strength(prices)
-            # Simple pattern score based on recent price action
             recent_trend = np.polyfit(range(5), prices[-5:], 1)[0]
             features['pattern_score'] = recent_trend * 100
         
-        # Ensure no NaN values
         for key in features:
             if np.isnan(features[key]) or np.isinf(features[key]):
                 features[key] = 0.0
@@ -1300,7 +1273,6 @@ class EnsembleMLModel:
         """Calculate ATR dengan fallback yang lebih baik"""
         try:
             if len(df) < period:
-                # Jika data kurang, return default 2% dari harga
                 return df['close'].iloc[-1] * 0.02 if len(df) > 0 else 0.02
                 
             high = df['high'].values
@@ -1316,13 +1288,11 @@ class EnsembleMLModel:
             
             atr_value = np.mean(tr[-period:]) if len(tr) >= period else np.mean(tr)
             
-            # ✅ PERBAIKAN: Pastikan ATR tidak 0
             if atr_value <= 0:
-                atr_value = df['close'].iloc[-1] * 0.01  # Fallback 1% dari harga
+                atr_value = df['close'].iloc[-1] * 0.01
                 
             return atr_value
         except:
-            # Fallback ke 2% dari harga terkini
             return df['close'].iloc[-1] * 0.02 if len(df) > 0 else 0.02
     
     def _calculate_williams_r(self, df, period=14):
@@ -1361,7 +1331,7 @@ class EnsembleMLModel:
         x = np.arange(period)
         y = prices[-period:]
         slope, _, r_value, _, _ = stats.linregress(x, y)
-        return slope * r_value ** 2  # Combine slope and R-squared
+        return slope * r_value ** 2
     
     def train_ensemble(self, X: np.ndarray, y: np.ndarray, validation_size: float = 0.2):
         """Train ensemble of models dengan cross-validation"""
@@ -1369,7 +1339,6 @@ class EnsembleMLModel:
             logger.warning("Insufficient data for training ensemble")
             return False
         
-        # Split data
         X_train, X_val, y_train, y_val = train_test_split(
             X, y, test_size=validation_size, shuffle=False, random_state=42
         )
@@ -1378,14 +1347,11 @@ class EnsembleMLModel:
         
         for model_name, model in self.models.items():
             try:
-                # Scale features
                 X_train_scaled = self.scalers[model_name].fit_transform(X_train)
                 X_val_scaled = self.scalers[model_name].transform(X_val)
                 
-                # Train model
                 model.fit(X_train_scaled, y_train)
                 
-                # Validate model
                 y_pred = model.predict(X_val_scaled)
                 accuracy = accuracy_score(y_val, y_pred)
                 precision, recall, f1, _ = precision_recall_fscore_support(y_val, y_pred, average='weighted')
@@ -1397,17 +1363,15 @@ class EnsembleMLModel:
                     'f1': f1
                 }
                 
-                # Update model weights based on performance
-                self.model_weights[model_name] = f1  # Use F1 score as weight
+                self.model_weights[model_name] = f1
                 
                 logger.info(f"Model {model_name} trained - Accuracy: {accuracy:.3f}, F1: {f1:.3f}")
                 
             except Exception as e:
                 logger.error(f"Error training {model_name}: {e}")
                 model_scores[model_name] = {'accuracy': 0, 'f1': 0}
-                self.model_weights[model_name] = 0.1  # Minimal weight
+                self.model_weights[model_name] = 0.1
         
-        # Normalize weights
         total_weight = sum(self.model_weights.values())
         if total_weight > 0:
             for model_name in self.model_weights:
@@ -1428,7 +1392,7 @@ class EnsembleMLModel:
         
         for model_name, model in self.models.items():
             try:
-                if self.model_weights[model_name] > 0.01:  # Only use models with meaningful weights
+                if self.model_weights[model_name] > 0.01:
                     X_scaled = self.scalers[model_name].transform(X)
                     
                     if hasattr(model, 'predict_proba'):
@@ -1437,7 +1401,7 @@ class EnsembleMLModel:
                         prediction = np.argmax(proba)
                     else:
                         prediction = model.predict(X_scaled)[0]
-                        confidence = 0.5  # Default confidence
+                        confidence = 0.5
                     
                     predictions.append(prediction)
                     confidences.append(confidence)
@@ -1450,7 +1414,6 @@ class EnsembleMLModel:
         if not predictions:
             return 0.5, 0
         
-        # Weighted voting
         weighted_predictions = np.average(predictions, weights=weights)
         final_prediction = 1 if weighted_predictions > 0.5 else 0
         final_confidence = np.average(confidences, weights=weights)
@@ -1465,9 +1428,9 @@ class PortfolioOptimizer:
     """Advanced portfolio optimization menggunakan Modern Portfolio Theory"""
     
     def __init__(self):
-        self.risk_free_rate = 0.02  # 2% risk-free rate
-        self.max_allocation_per_asset = 0.2  # 20% max per asset
-        self.min_allocation_per_asset = 0.05  # 5% min per asset
+        self.risk_free_rate = 0.02
+        self.max_allocation_per_asset = 0.2
+        self.min_allocation_per_asset = 0.05
     
     def mean_variance_optimization(self, expected_returns: List[float], 
                                  covariance_matrix: np.ndarray,
@@ -1478,17 +1441,13 @@ class PortfolioOptimizer:
         if n_assets == 0:
             return {'weights': [], 'sharpe_ratio': 0, 'portfolio_return': 0, 'portfolio_risk': 0}
         
-        # Simple optimization (in practice, use scipy.optimize)
         try:
-            # Equal weight baseline
             equal_weights = np.ones(n_assets) / n_assets
             
-            # Calculate portfolio metrics
             port_return = np.dot(equal_weights, expected_returns)
             port_risk = np.sqrt(np.dot(equal_weights.T, np.dot(covariance_matrix, equal_weights)))
             sharpe_ratio = (port_return - self.risk_free_rate) / port_risk if port_risk > 0 else 0
             
-            # Apply constraints
             weights = self._apply_allocation_constraints(equal_weights)
             
             return {
@@ -1501,7 +1460,6 @@ class PortfolioOptimizer:
             
         except Exception as e:
             logger.error(f"Portfolio optimization error: {e}")
-            # Fallback to equal weighting
             weights = np.ones(n_assets) / n_assets
             return {
                 'weights': weights.tolist(),
@@ -1516,12 +1474,10 @@ class PortfolioOptimizer:
         if not volatility_estimates or len(volatility_estimates) == 0:
             return []
         
-        # Inverse volatility weighting
         inv_volatility = [1/v if v > 0 else 0 for v in volatility_estimates]
         total_inv_vol = sum(inv_volatility)
         
         if total_inv_vol == 0:
-            # Equal weight fallback
             return [1/len(volatility_estimates)] * len(volatility_estimates)
         
         weights = [inv_vol / total_inv_vol for inv_vol in inv_volatility]
@@ -1532,15 +1488,12 @@ class PortfolioOptimizer:
         if not signals:
             return []
         
-        # Sort signals by score (absolute value for both LONG and SHORT)
         sorted_signals = sorted(signals, key=lambda x: abs(x.get('score', 0)), reverse=True)
         
-        # Calculate scores and volatilities
         scores = [abs(s.get('score', 0)) for s in sorted_signals]
         volatilities = [s.get('volatility', 0.02) for s in sorted_signals]
         
         if sum(scores) == 0:
-            # Equal allocation fallback
             base_allocation = total_capital / len(signals)
             return [
                 {
@@ -1552,19 +1505,16 @@ class PortfolioOptimizer:
                 for s in sorted_signals
             ]
         
-        # Weight by score and inverse volatility
         weights = []
         for i, signal in enumerate(sorted_signals):
             score_weight = scores[i] / sum(scores)
-            vol_weight = 1 / (volatilities[i] + 0.01)  # Add small constant to avoid division by zero
+            vol_weight = 1 / (volatilities[i] + 0.01)
             combined_weight = score_weight * vol_weight
             weights.append(combined_weight)
         
-        # Normalize weights
         total_weight = sum(weights)
         normalized_weights = [w / total_weight for w in weights]
         
-        # Apply constraints
         constrained_weights = self._apply_allocation_constraints(normalized_weights)
         
         allocations = []
@@ -1590,20 +1540,16 @@ class PortfolioOptimizer:
         n_assets = len(weights)
         constrained_weights = np.array(weights, dtype=float)
         
-        # Apply minimum allocation
         min_weight = self.min_allocation_per_asset
         constrained_weights[constrained_weights < min_weight] = 0
         
-        # Apply maximum allocation
         max_weight = self.max_allocation_per_asset
         constrained_weights[constrained_weights > max_weight] = max_weight
         
-        # Renormalize if necessary
         total_weight = np.sum(constrained_weights)
         if total_weight > 0:
             constrained_weights /= total_weight
         else:
-            # Fallback to equal weighting
             constrained_weights = np.ones(n_assets) / n_assets
         
         return constrained_weights.tolist()
@@ -1612,14 +1558,11 @@ class PortfolioOptimizer:
                                     covariance_matrix: np.ndarray, 
                                     points: int = 20) -> List[Dict]:
         """Calculate efficient frontier points"""
-        # Simplified implementation
-        # In practice, use proper quadratic programming
         frontiers = []
         
         for i in range(points):
             target_return = np.min(expected_returns) + (np.max(expected_returns) - np.min(expected_returns)) * i / points
             
-            # Simple equal weight approximation for demo
             weights = np.ones(len(expected_returns)) / len(expected_returns)
             portfolio_return = np.dot(weights, expected_returns)
             portfolio_risk = np.sqrt(np.dot(weights.T, np.dot(covariance_matrix, weights)))
@@ -1633,11 +1576,11 @@ class PortfolioOptimizer:
         return frontiers
 
 # =============================================
-# ENHANCED ML BOT DARI CORE (1).PY
+# ENHANCED ML BOT
 # =============================================
 
 class MLEnhancedBot:
-    """Machine Learning enhanced trading bot dengan model real dari core (1).py"""
+    """Machine Learning enhanced trading bot"""
     
     def __init__(self, model_type='random_forest'):
         self.model_type = model_type
@@ -1648,29 +1591,23 @@ class MLEnhancedBot:
         self.scaler_path = "models/scaler.pkl"
         self.feature_importance = {}
         
-        # Buat directory models jika belum ada
         os.makedirs("models", exist_ok=True)
         
-        # Coba load model yang sudah ada
         self.load_model()
 
     def load_model(self):
-        """Load model dan scaler yang sudah ditraining - FIXED"""
+        """Load model dan scaler yang sudah ditraining"""
         try:
-            # Cek apakah file exists dan valid
             if (os.path.exists(self.model_path) and 
                 os.path.exists(self.scaler_path) and
-                os.path.getsize(self.model_path) > 1000):  # Minimal file size
+                os.path.getsize(self.model_path) > 1000):
                 
-                # Clear any existing model first
                 self.model = None
                 self.scaler = None
                 
-                # Load dengan error handling yang lebih baik
                 self.model = joblib.load(self.model_path)
                 self.scaler = joblib.load(self.scaler_path)
                 
-                # Validate loaded model
                 if (hasattr(self.model, 'predict') and 
                     hasattr(self.scaler, 'transform')):
                     self.is_trained = True
@@ -1687,7 +1624,6 @@ class MLEnhancedBot:
                 
         except Exception as e:
             logger.error(f"❌ Error loading model: {e}")
-            # Initialize new model sebagai fallback
             self._initialize_model()
             return False
 
@@ -1732,23 +1668,19 @@ class MLEnhancedBot:
             targets = []
             
             for symbol, data in historical_data.items():
-                if len(data) < 100:  # Minimal data points
+                if len(data) < 100:
                     continue
                     
-                # Extract features untuk setiap point dalam data
-                for i in range(50, len(data) - 10):  # Leave room for future prediction
+                for i in range(50, len(data) - 10):
                     current_window = data.iloc[:i+1]
-                    future_window = data.iloc[i+1:i+11]  # 10 period ke depan
+                    future_window = data.iloc[i+1:i+11]
                     
-                    # Extract features
                     features = self._extract_detailed_features(current_window)
                     if features:
-                        # Determine target (1 jika harga naik, 0 jika turun)
                         current_price = current_window['close'].iloc[-1]
                         future_max = future_window['close'].max()
                         future_min = future_window['close'].min()
                         
-                        # Target: 1 jika naik 2%, -1 jika turun 2%, 0 jika sideways
                         price_change = (future_max - current_price) / current_price
                         if price_change >= 0.02:
                             target = 1
@@ -1760,7 +1692,7 @@ class MLEnhancedBot:
                         features_list.append(features)
                         targets.append(target)
             
-            if len(features_list) < 100:  # Minimal training samples
+            if len(features_list) < 100:
                 return None, None
                 
             return np.array(features_list), np.array(targets)
@@ -1781,7 +1713,6 @@ class MLEnhancedBot:
             
             logger.info(f"📊 Training data shape: {X.shape}, targets: {y.shape}")
             
-            # Split data dengan time series split
             tscv = TimeSeriesSplit(n_splits=5)
             accuracies = []
             
@@ -1789,30 +1720,24 @@ class MLEnhancedBot:
                 X_train, X_test = X[train_idx], X[test_idx]
                 y_train, y_test = y[train_idx], y[test_idx]
                 
-                # Scale features
                 X_train_scaled = self.scaler.fit_transform(X_train)
                 X_test_scaled = self.scaler.transform(X_test)
                 
-                # Train model
                 self.model.fit(X_train_scaled, y_train)
                 
-                # Evaluate
                 y_pred = self.model.predict(X_test_scaled)
                 accuracy = accuracy_score(y_test, y_pred)
                 accuracies.append(accuracy)
             
-            # Final training dengan semua data
             X_scaled = self.scaler.fit_transform(X)
             self.model.fit(X_scaled, y)
             
-            # Calculate feature importance
             if hasattr(self.model, 'feature_importances_'):
                 feature_names = [
                     'rsi', 'macd', 'sma_20', 'sma_50', 'ema_12', 'ema_26',
                     'atr', 'volume_ratio', 'price_change_1d', 'price_change_5d',
                     'volatility', 'momentum', 'williams_r', 'cci', 'obv'
                 ]
-                # Pastikan jumlah feature matches
                 if len(self.model.feature_importances_) == len(feature_names):
                     self.feature_importance = dict(zip(feature_names, self.model.feature_importances_))
                 else:
@@ -1824,7 +1749,6 @@ class MLEnhancedBot:
             logger.info(f"✅ Model training completed! Average Accuracy: {avg_accuracy:.3f}")
             logger.info(f"📈 Feature Importance: {self.feature_importance}")
             
-            # Save model
             self.save_model()
             return True
             
@@ -1840,30 +1764,21 @@ class MLEnhancedBot:
                 
             features = {}
             
-            # Price-based features
             prices = df['close']
             volumes = df['volume']
             
-            # RSI
             features['rsi'] = self._calculate_rsi(prices)
-            
-            # MACD
             features['macd'] = self._calculate_macd(prices)
-            
-            # Moving Averages
             features['sma_20'] = prices.rolling(20).mean().iloc[-1] if len(prices) >= 20 else prices.mean()
             features['sma_50'] = prices.rolling(50).mean().iloc[-1] if len(prices) >= 50 else prices.mean()
             features['ema_12'] = prices.ewm(span=12).mean().iloc[-1]
             features['ema_26'] = prices.ewm(span=26).mean().iloc[-1]
             
-            # ATR
             features['atr'] = self._calculate_atr(df)
             
-            # Volume features
             vol_mean = volumes.rolling(20).mean().iloc[-1] if len(volumes) >= 20 else volumes.mean()
             features['volume_ratio'] = volumes.iloc[-1] / vol_mean if vol_mean > 0 else 1
             
-            # Price changes
             if len(df) > 1:
                 features['price_change_1d'] = (prices.iloc[-1] - prices.iloc[-2]) / prices.iloc[-2] if prices.iloc[-2] != 0 else 0
             else:
@@ -1874,22 +1789,12 @@ class MLEnhancedBot:
             else:
                 features['price_change_5d'] = 0
             
-            # Volatility
             features['volatility'] = prices.pct_change().std() * np.sqrt(252) if len(prices) > 1 else 0.02
-            
-            # Momentum
             features['momentum'] = (prices.iloc[-1] - prices.iloc[-10]) / prices.iloc[-10] if len(prices) > 10 and prices.iloc[-10] != 0 else 0
-            
-            # Williams %R
             features['williams_r'] = self._calculate_williams_r(df)
-            
-            # CCI
             features['cci'] = self._calculate_cci(df)
-            
-            # OBV
             features['obv'] = self._calculate_obv(df)
             
-            # Pastikan tidak ada NaN values
             for key, value in features.items():
                 if pd.isna(value):
                     features[key] = 0
@@ -1927,21 +1832,17 @@ class MLEnhancedBot:
         """Predict menggunakan model ML"""
         try:
             if not self.is_trained or self.model is None:
-                return 0.5, 0  # Return default confidence dan direction
+                return 0.5, 0
             
-            # Extract features
             features_df = self.extract_features(df)
             if features_df.empty:
                 return 0.5, 0
             
-            # Scale features
             features_scaled = self.scaler.transform(features_df)
             
-            # Predict
             prediction = self.model.predict(features_scaled)[0]
             probabilities = self.model.predict_proba(features_scaled)[0]
             
-            # Confidence score (ambil probability tertinggi)
             confidence = np.max(probabilities)
             
             return confidence, prediction
@@ -1960,7 +1861,6 @@ class MLEnhancedBot:
             features_list = []
             symbol_features = {}
             
-            # Extract features untuk semua symbols
             for symbol, df in symbols_data.items():
                 features_df = self.extract_features(df)
                 if not features_df.empty:
@@ -1970,14 +1870,12 @@ class MLEnhancedBot:
             if not features_list:
                 return {}
             
-            # Batch prediction
             features_array = np.array(features_list)
             features_scaled = self.scaler.transform(features_array)
             
             batch_predictions = self.model.predict(features_scaled)
             batch_probabilities = self.model.predict_proba(features_scaled)
             
-            # Map predictions back to symbols
             for i, (symbol, features) in enumerate(symbol_features.items()):
                 if i < len(batch_predictions):
                     predictions[symbol] = {
@@ -2066,11 +1964,11 @@ class MLEnhancedBot:
             return 0
 
 # =============================================
-# ENHANCED TRADING BOT CORE - UNIFIED PROVIDER
+# ENHANCED TRADING BOT CORE - UNIVERSAL PROVIDER
 # =============================================
 
 class EnhancedTradingBot:
-    """Enhanced trading bot dengan UNIFIED provider"""
+    """Enhanced trading bot dengan UNIVERSAL provider"""
     
     def __init__(self, config=None):
         if config is None:
@@ -2083,12 +1981,12 @@ class EnhancedTradingBot:
         
         self.mode = None
         
-        # **PERBAIKAN UTAMA: Hapus leverage untuk futures**
-        self.leverage = 1  # Default leverage 1x (no leverage)
+        # **PERBAIKAN: Leverage default 1x**
+        self.leverage = 1
         
-        # Initialize UNIFIED provider 🔥
+        # **PERBAIKAN UTAMA: Setup provider universal**
         self.data_provider = None
-        self._setup_unified_provider()
+        self._setup_universal_provider()
         
         # Initialize components
         self.strategy = None
@@ -2107,12 +2005,12 @@ class EnhancedTradingBot:
         self.max_drawdown_limit = self.config.get("max_drawdown_limit", 0.1)
         self.daily_loss_limit = self.config.get("daily_loss_limit", 0.05)
         
-        # Tambah config untuk trading mode
-        self.trading_mode = self.config.get("trading_mode", "spot")  # "spot" atau "futures"
+        # Trading mode
+        self.trading_mode = self.config.get("trading_mode", "spot")
         
         # **PERBAIKAN: Hapus leverage dari config**
         if 'leverage' in self.config:
-            self.config['leverage'] = 1  # Force leverage 1x
+            self.config['leverage'] = 1
         
         # Monitoring
         self.daily_pnl = 0.0
@@ -2120,7 +2018,7 @@ class EnhancedTradingBot:
         self.current_drawdown = 0.0
         self.trading_enabled = True
         
-        # Threading - 🚨 PERBAIKAN: Inisialisasi atribut yang hilang
+        # Threading
         self.scheduler_thread = None
         self.stop_scheduler = False
         self.scanning_in_progress = False
@@ -2130,7 +2028,7 @@ class EnhancedTradingBot:
         self.ml_predictions_cache = {}
         self.last_ml_update = 0
         
-        logger.info("✅ Enhanced TradingBot initialized dengan UnifiedProvider")
+        logger.info("✅ Enhanced TradingBot initialized dengan Universal Provider")
 
     def validate_market_data(self, df: pd.DataFrame, symbol: str, debug_mode: bool = False) -> Tuple[bool, str]:
         """Validasi data market dengan logging lebih detail"""
@@ -2170,7 +2068,6 @@ class EnhancedTradingBot:
             min_price = df['close'].min()
             max_price = df['close'].max()
             
-            # 🚨 TAMBAHKAN: Log harga rata-rata untuk debug
             if debug_mode:
                 logger.debug(f"🔍 DEBUG {symbol}: Avg price = {avg_price:.8f}, Min = {min_price:.8f}, Max = {max_price:.8f}")
             
@@ -2205,67 +2102,97 @@ class EnhancedTradingBot:
         
         return True, "Data validation passed"
 
-    def _setup_unified_provider(self):
-        """Setup UnifiedDataProvider dengan auto-fallback ke YFinance"""
+    def _setup_universal_provider(self):
+        """Setup provider universal berdasarkan mode"""
         try:
-            # Gunakan UnifiedDataProvider yang sudah diimport
-            if 'UnifiedDataProvider' in globals() and UnifiedDataProvider is not None:
-                self.data_provider = UnifiedDataProvider(
-                    market_type="crypto",
-                    trading_mode="spot"
-                )
-            else:
-                raise Exception("UnifiedDataProvider not available")
+            # **PERBAIKAN UTAMA: Gunakan provider yang tepat berdasarkan mode**
+            market_type = self.config.get("market_type", "crypto")
             
-            # **PERBAIKAN: Cek jika provider menggunakan YFinance sebagai fallback**
-            if hasattr(self.data_provider, 'get_health_metrics'):
-                health = self.data_provider.get_health_metrics()
-                if health.get('using_yfinance', False):
-                    logger.info("ℹ️ Using YFinance as data source (auto-fallback activated)")
+            if market_type == 'crypto':
+                # Coba CCXT terlebih dahulu untuk crypto
+                try:
+                    if EnhancedCCXTDataProvider:
+                        self.data_provider = EnhancedCCXTDataProvider(
+                            exchange_id='binance',
+                            api_key='',
+                            secret=''
+                        )
+                        logger.info("✅ Using CCXT (Binance) for crypto data")
+                        
+                        # Test koneksi
+                        try:
+                            test_data = self.data_provider.get_ohlcv("BTC/USDT", '1h', 10)
+                            if not test_data.empty:
+                                logger.info(f"✅ CCXT connected, sample data: {len(test_data)} bars")
+                        except Exception as e:
+                            logger.warning(f"⚠️ CCXT test failed: {e}")
+                            # Fallback ke YFinance
+                            if EnhancedYFinanceDataProvider:
+                                self.data_provider = EnhancedYFinanceDataProvider()
+                                logger.warning("⚠️ Falling back to YFinance for crypto")
+                    else:
+                        raise Exception("CCXT provider not available")
+                        
+                except Exception as e:
+                    logger.error(f"❌ CCXT setup failed: {e}")
+                    if EnhancedYFinanceDataProvider:
+                        self.data_provider = EnhancedYFinanceDataProvider()
+                        logger.info("✅ Using YFinance for crypto (fallback)")
+            
+            elif market_type in ['us_stocks', 'saham_id', 'forex']:
+                # Untuk stocks/forex, langsung YFinance
+                if EnhancedYFinanceDataProvider:
+                    self.data_provider = EnhancedYFinanceDataProvider()
+                    logger.info(f"✅ Using YFinance for {market_type}")
                 else:
-                    logger.info(f"✅ Using {health.get('active_exchange', 'CCXT')} as data source")
-            else:
-                logger.info(f"✅ Using {self.data_provider.active_exchange} as data source")
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to setup unified provider: {e}")
+                    raise Exception("YFinance provider not available")
             
-            # **PERBAIKAN: Force fallback ke YFinance jika tersedia**
-            if 'EnhancedYFinanceDataProvider' in globals() and EnhancedYFinanceDataProvider is not None:
-                self.data_provider = EnhancedYFinanceDataProvider(
-                    market_type="crypto"
-                )
-                logger.warning("⚠️ Force fallback to YFinance due to provider error")
             else:
-                # Buat dummy provider
-                logger.warning("⚠️ Creating dummy data provider")
-                class DummyDataProvider:
-                    def __init__(self, *args, **kwargs):
-                        self.market_type = kwargs.get('market_type', 'crypto')
-                        self.trading_mode = kwargs.get('trading_mode', 'spot')
-                        self.active_exchange = 'dummy'
-                    
-                    def get_popular_assets(self, limit=100):
-                        return [{'symbol': 'BTC/USDT', 'name': 'Bitcoin'}]
-                    
-                    def get_ohlcv(self, symbol, timeframe, limit):
-                        dates = pd.date_range(end=datetime.now(), periods=limit, freq='1H')
-                        df = pd.DataFrame({
-                            'open': np.random.randn(limit) * 100 + 50000,
-                            'high': np.random.randn(limit) * 200 + 51000,
-                            'low': np.random.randn(limit) * 200 + 49000,
-                            'close': np.random.randn(limit) * 100 + 50000,
-                            'volume': np.random.rand(limit) * 1000
-                        }, index=dates)
-                        return df
-                    
-                    def get_ticker(self, symbol):
-                        return {'last': 50000, 'bid': 49900, 'ask': 50100}
-                    
-                    def search_assets(self, query, limit):
-                        return [{'symbol': 'BTC/USDT', 'name': 'Bitcoin'}]
+                # Default ke UnifiedDataProvider jika ada
+                if UnifiedDataProvider:
+                    self.data_provider = UnifiedDataProvider(
+                        market_type=market_type,
+                        trading_mode=self.config.get("trading_mode", "spot")
+                    )
+                    logger.info(f"✅ Using UnifiedDataProvider for {market_type}")
+                else:
+                    raise Exception("No provider available")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to setup universal provider: {e}")
+            
+            # Buat dummy provider sebagai last resort
+            class DummyDataProvider:
+                def __init__(self, *args, **kwargs):
+                    self.market_type = kwargs.get('market_type', 'crypto')
+                    self.trading_mode = kwargs.get('trading_mode', 'spot')
+                    self.active_exchange = 'dummy'
                 
-                self.data_provider = DummyDataProvider()
+                def get_popular_assets(self, limit=100, asset_type='spot'):
+                    return [{'symbol': 'BTC/USDT', 'name': 'Bitcoin'}]
+                
+                def get_ohlcv(self, symbol, timeframe, limit):
+                    dates = pd.date_range(end=datetime.now(), periods=limit, freq='1H')
+                    df = pd.DataFrame({
+                        'open': np.random.randn(limit) * 100 + 50000,
+                        'high': np.random.randn(limit) * 200 + 51000,
+                        'low': np.random.randn(limit) * 200 + 49000,
+                        'close': np.random.randn(limit) * 100 + 50000,
+                        'volume': np.random.rand(limit) * 1000
+                    }, index=dates)
+                    return df
+                
+                def get_ticker(self, symbol):
+                    return {'last': 50000, 'bid': 49900, 'ask': 50100}
+                
+                def search_assets(self, query, limit):
+                    return [{'symbol': 'BTC/USDT', 'name': 'Bitcoin'}]
+            
+            self.data_provider = DummyDataProvider()
+            logger.warning("⚠️ Using dummy data provider")
+            return False
 
     def load_config(self):
         """Load configuration dengan error handling"""
@@ -2283,12 +2210,12 @@ class EnhancedTradingBot:
             self.config = self._get_default_config()
     
     def _get_default_config(self):
-        """Get default configuration - UPDATED"""
+        """Get default configuration"""
         return {
             "timeframe": "1h",
             "atr_multiplier": 1.0,
             "entry_range_pct": 0.02,
-            "exchange_crypto": "bybit",  # Default ke Bybit
+            "exchange_crypto": "binance",
             "analysis_coins_limit": 150,
             "ohlcv_limit": 200,
             "min_score": 2,
@@ -2303,9 +2230,8 @@ class EnhancedTradingBot:
             "enable_trailing_stop": True,
             "partial_tp_enabled": True,
             "trading_mode": "spot",
-            "futures_symbol_format": "binance",
-            "default_exchange": "bybit",  # Default exchange
-            "leverage": 1  # **PERBAIKAN: Default leverage 1x**
+            "default_exchange": "binance",
+            "leverage": 1
         }
     
     def save_config(self):
@@ -2341,7 +2267,6 @@ class EnhancedTradingBot:
             return []
         
         try:
-            # Panggil tanpa parameter asset_type
             assets = self.data_provider.get_popular_assets(limit)
             
             # Tambahkan auto-detected type
@@ -2357,7 +2282,7 @@ class EnhancedTradingBot:
             return []
 
     def scan_potential_assets(self, limit=25, search_query: str = None):
-        """Scan dengan auto-detection"""
+        """Scan sederhana dengan provider universal"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -2372,13 +2297,12 @@ class EnhancedTradingBot:
                 self.scanning_in_progress = False
                 return []
             
-            # Gunakan analysis_coins_limit untuk jumlah assets
             assets_limit = self.config.get("analysis_coins_limit", 150)
             
             logger.info(f"🔍 Scanning for {limit} signals...")
             logger.info(f"📊 Will analyze up to {assets_limit} assets")
             
-            # Get assets menggunakan method baru (tanpa asset_type)
+            # Get assets
             assets = self.get_popular_assets(assets_limit)
             
             if not assets:
@@ -2387,12 +2311,11 @@ class EnhancedTradingBot:
                 return []
             
             logger.info(f"📊 Scanning {len(assets)} assets...")
-            logger.info(f"📋 Sample assets: {[a['symbol'] for a in assets[:5]]}")
             
             signals = []
             scan_delay = self.config.get("scan_delay", 0.3)
             
-            for i, asset in enumerate(assets[:50]):  # Batasi untuk testing
+            for i, asset in enumerate(assets[:50]):
                 try:
                     symbol = asset.get('symbol')
                     asset_name = asset.get('name', symbol)
@@ -2404,24 +2327,12 @@ class EnhancedTradingBot:
                     
                     logger.info(f"  [{i+1}/{len(assets[:50])}] Analyzing: {symbol} (Type: {detected_type})")
                     
-                    # Get current price
-                    ticker = self.data_provider.get_ticker(formatted_symbol)
-                    if not ticker or ticker.get('last', 0) <= 0:
-                        logger.info(f"    ⚠️ Invalid price for {symbol}: {ticker}")
-                        continue
-                    
-                    current_price = ticker['last']
-                    logger.info(f"    Current price: {current_price}")
-                    
-                    # Get OHLCV data untuk analysis MENGGUNAKAN get_trading_data
+                    # **PERBAIKAN: Gunakan get_trading_data untuk membersihkan data**
                     if get_trading_data is not None:
                         df = get_trading_data(formatted_symbol, self.data_provider)
-                        logger.info(f"    ✅ Menggunakan get_trading_data untuk membersihkan data")
                     else:
                         df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
-                        logger.info(f"    ℹ️ get_trading_data tidak tersedia, menggunakan data langsung")
                     
-                    # Validasi data sebelum analisis
                     if df is None or len(df) < 50:
                         logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df else 0} bars")
                         continue
@@ -2437,8 +2348,10 @@ class EnhancedTradingBot:
                     # Pilih strategi berdasarkan tipe
                     if detected_type == "futures":
                         strategy = self._create_futures_strategy()
+                        leverage = 5  # Default untuk futures
                     else:
                         strategy = self._create_spot_strategy()
+                        leverage = 1  # No leverage untuk spot
                     
                     # Analyze dengan strategy
                     analysis = strategy.analyze(df)
@@ -2461,23 +2374,24 @@ class EnhancedTradingBot:
                             'name': asset_name,
                             'score': round(score, 2),
                             'action': action,
-                            'entry_price': round(analysis.get('entry_price', current_price), 4),
-                            'sl': round(analysis.get('sl', current_price * 0.97), 4),
-                            'tp1': round(analysis.get('tp1', current_price * 1.03), 4),
-                            'tp2': round(analysis.get('tp2', current_price * 1.06), 4),
-                            'tp3': round(analysis.get('tp3', current_price * 1.09), 4),
-                            'current_price': round(current_price, 4),
+                            'entry_price': round(analysis.get('entry_price', df['close'].iloc[-1] if len(df) > 0 else 0), 4),
+                            'sl': round(analysis.get('sl', df['close'].iloc[-1] * 0.97 if len(df) > 0 else 0), 4),
+                            'tp1': round(analysis.get('tp1', df['close'].iloc[-1] * 1.03 if len(df) > 0 else 0), 4),
+                            'tp2': round(analysis.get('tp2', df['close'].iloc[-1] * 1.06 if len(df) > 0 else 0), 4),
+                            'tp3': round(analysis.get('tp3', df['close'].iloc[-1] * 1.09 if len(df) > 0 else 0), 4),
+                            'current_price': round(df['close'].iloc[-1] if len(df) > 0 else 0, 4),
                             'ml_confidence': round(analysis.get('ml_confidence', 0), 2),
                             'rsi': round(analysis.get('rsi', 50), 2),
                             'volume_ratio': round(analysis.get('volume_ratio', 1), 2),
                             'market_type': self.mode,
-                            'trading_mode': detected_type,  # gunakan detected_type
-                            'provider': 'unified',
-                            'asset_type': detected_type  # untuk kompatibilitas
+                            'trading_mode': detected_type,
+                            'provider': 'universal',
+                            'asset_type': detected_type,
+                            'leverage': leverage
                         }
                         
                         signals.append(signal_data)
-                        logger.info(f"✅ Signal: {formatted_symbol} | {action} | Score: {score:.2f} | Type: {detected_type}")
+                        logger.info(f"✅ Signal: {formatted_symbol} | {action} | Score: {score:.2f} | Type: {detected_type} | Leverage: {leverage}x")
                         
                         # Stop jika sudah cukup sinyal
                         if len(signals) >= limit:
@@ -2493,7 +2407,7 @@ class EnhancedTradingBot:
             
             logger.info(f"🎯 Scan completed: {len(signals)} signals found")
             
-            # Sort signals by score absolute value (terbaik ke terburuk)
+            # Sort signals by score absolute value
             if signals:
                 signals.sort(key=lambda x: abs(x['score']), reverse=True)
                 logger.info("🏆 Top signals:")
@@ -2521,14 +2435,12 @@ class EnhancedTradingBot:
         # **PERBAIKAN UTAMA: Untuk spot crypto, hanya LONG yang diperbolehkan**
         if action == 'SHORT' and self.mode == 'crypto' and detected_type == 'spot':
             logger.debug(f"🚫 SHORT blocked for {self.mode} (spot mode)")
-            
             analysis['action'] = 'NEUTRAL'
             analysis['score'] = 0
         
-        # Block SHORT untuk market lain (forex, saham_id, us_stocks)
+        # Block SHORT untuk market lain
         elif action == 'SHORT' and self.mode in ['forex', 'saham_id', 'us_stocks']:
             logger.debug(f"🚫 SHORT blocked for {self.mode}")
-            
             analysis['action'] = 'NEUTRAL'
             analysis['score'] = 0
         
@@ -2588,7 +2500,6 @@ class EnhancedTradingBot:
             return {"error": "No data provider available"}
             
         try:
-            # Auto detect type
             detected_type, formatted_symbol = auto_detect_trading_type(symbol)
             
             if timeframe is None:
@@ -2641,7 +2552,6 @@ class EnhancedTradingBot:
             return self.portfolio_optimizer.momentum_based_allocation(signals, total_capital)
         except Exception as e:
             logger.error(f"Portfolio optimization error: {e}")
-            # Fallback to simple allocation
             return self._simple_allocation_fallback(signals, total_capital)
     
     def _simple_allocation_fallback(self, signals: List[Dict], total_capital: float) -> List[Dict]:
@@ -2749,7 +2659,6 @@ class EnhancedTradingBot:
     def calculate_custom_entry(self, symbol, entry_price, action="LONG"):
         """Calculate custom entry dengan TP/SL"""
         try:
-            # Auto detect type
             detected_type, formatted_symbol = auto_detect_trading_type(symbol)
             
             # Get data menggunakan get_trading_data jika tersedia
@@ -2817,7 +2726,7 @@ class EnhancedTradingBot:
     # =============================================
 
     def set_mode(self, mode):
-        """Set trading mode dengan futures support - SIMPLIFIED VERSION"""
+        """Set trading mode dengan universal provider"""
         try:
             self.mode = mode.lower()
             
@@ -2826,23 +2735,18 @@ class EnhancedTradingBot:
             
             logger.info(f"🎯 Setting market mode to: {self.mode.upper()}")
             
-            # Update UnifiedDataProvider dengan mode baru
-            logger.info(f"🔄 Configuring UnifiedProvider for {self.mode}...")
+            # Update provider dengan mode baru
+            logger.info(f"🔄 Reconfiguring UniversalProvider for {self.mode}...")
             
             try:
-                # Update provider configuration
-                if hasattr(self.data_provider, 'market_type'):
-                    self.data_provider.market_type = self.mode
+                # Update config
+                self.config["market_type"] = self.mode
                 
-                # Jika UnifiedProvider mendukung reinitialization
-                if hasattr(self.data_provider, 'reinitialize'):
-                    self.data_provider.reinitialize(
-                        market_type=self.mode
-                    )
+                # Reinitialize provider
+                self._setup_universal_provider()
                 
-                # Setup strategy menggunakan create_strategy_for_symbol jika tersedia
+                # Setup strategy
                 if create_strategy_for_symbol is not None:
-                    # Coba gunakan strategi otomatis untuk simbol sample
                     sample_symbol = "BTC/USDT" if self.mode == 'crypto' else "AAPL" if self.mode == 'us_stocks' else "BBCA.JK"
                     
                     try:
@@ -2860,7 +2764,6 @@ class EnhancedTradingBot:
                             entry_range_pct=self.config.get("entry_range_pct", 0.02),
                         )
                 else:
-                    # Fallback ke TechnicalAnalysisStrategy
                     self.strategy = TechnicalAnalysisStrategy(
                         market_type=self.mode,
                         trading_type="spot",
@@ -2895,7 +2798,7 @@ class EnhancedTradingBot:
     def _test_provider_connection(self):
         """Test provider connection"""
         try:
-            logger.info("🧪 Testing UnifiedProvider connection...")
+            logger.info("🧪 Testing UniversalProvider connection...")
             
             # Get popular assets
             assets = self.get_popular_assets(5)
@@ -2911,7 +2814,7 @@ class EnhancedTradingBot:
                 detected_type = asset.get('detected_type', 'spot')
                 asset_symbols.append(f"{symbol} ({detected_type})")
             
-            # Test OHLCV untuk asset pertama menggunakan get_trading_data jika tersedia
+            # Test OHLCV untuk asset pertama menggunakan get_trading_data
             if assets:
                 test_symbol = assets[0].get('formatted_symbol', assets[0].get('symbol'))
                 logger.info(f"  Testing OHLCV for: {test_symbol}")
@@ -2943,18 +2846,18 @@ class EnhancedTradingBot:
 # =============================================
 
 class TradingCore:
-    """Main trading engine dengan unified provider"""
+    """Main trading engine dengan universal provider"""
     
     def __init__(self, config=None):
         self.config = config or {}
         
-        # Setup unified data provider
+        # Setup universal data provider
         self.data_provider = self._setup_data_provider()
         
         # Setup trading mode
         self.trading_type = self.config.get("trading_mode", "spot")
         
-        # Setup strategy menggunakan create_strategy_for_symbol jika tersedia
+        # Setup strategy
         try:
             if create_strategy_for_symbol is not None:
                 sample_symbol = "BTC/USDT" if self.config.get("market_type", "crypto") == "crypto" else "AAPL"
@@ -2966,7 +2869,6 @@ class TradingCore:
                 )
                 logger.info(f"✅ Created auto-detected strategy untuk {self.config.get('market_type', 'crypto')} ({self.trading_type})")
             else:
-                # Fallback ke TechnicalAnalysisStrategy
                 from strategies import TechnicalAnalysisStrategy
                 self.strategy = TechnicalAnalysisStrategy(
                     market_type=self.config.get("market_type", "crypto"),
@@ -2977,7 +2879,6 @@ class TradingCore:
                 logger.info(f"✅ Menggunakan TechnicalAnalysisStrategy untuk {self.config.get('market_type', 'crypto')} ({self.trading_type})")
         except ImportError as e:
             print(f"❌ Gagal import strategies di TradingCore: {e}")
-            # Dummy strategy
             class DummyStrategy:
                 def analyze(self, *args, **kwargs):
                     return {'action': 'NEUTRAL', 'score': 0}
@@ -2986,38 +2887,60 @@ class TradingCore:
         logger.info(f"🚀 TradingCore initialized | Mode: {self.trading_type}")
     
     def _setup_data_provider(self):
-        """Setup unified data provider"""
+        """Setup universal data provider"""
         try:
-            provider = UnifiedDataProvider(
-                market_type=self.config.get("market_type", "crypto"),
-                trading_mode=self.config.get("trading_mode", "spot"),
-                default_exchange=self.config.get("default_exchange", "bybit")
-            )
+            # Gunakan provider berdasarkan market type
+            market_type = self.config.get("market_type", "crypto")
             
-            logger.info(f"✅ Using UnifiedDataProvider with {provider.active_exchange}")
-            return provider
+            if market_type == 'crypto':
+                # Coba CCXT terlebih dahulu
+                if EnhancedCCXTDataProvider:
+                    provider = EnhancedCCXTDataProvider(
+                        exchange_id='binance',
+                        api_key='',
+                        secret=''
+                    )
+                    logger.info("✅ Using CCXT (Binance) for crypto data")
+                    return provider
+                else:
+                    # Fallback ke YFinance
+                    if EnhancedYFinanceDataProvider:
+                        provider = EnhancedYFinanceDataProvider()
+                        logger.info("✅ Using YFinance for crypto (fallback)")
+                        return provider
+            
+            elif market_type in ['us_stocks', 'saham_id', 'forex']:
+                # Untuk stocks/forex, gunakan YFinance
+                if EnhancedYFinanceDataProvider:
+                    provider = EnhancedYFinanceDataProvider()
+                    logger.info(f"✅ Using YFinance for {market_type}")
+                    return provider
+            
+            # Default ke UnifiedDataProvider jika ada
+            if UnifiedDataProvider:
+                provider = UnifiedDataProvider(
+                    market_type=self.config.get("market_type", "crypto"),
+                    trading_mode=self.config.get("trading_mode", "spot"),
+                    default_exchange=self.config.get("default_exchange", "binance")
+                )
+                logger.info(f"✅ Using UnifiedDataProvider with {provider.active_exchange}")
+                return provider
+            
+            raise Exception("No provider available")
             
         except Exception as e:
-            logger.error(f"❌ Failed to setup unified provider: {e}")
-            # Fallback ke dynamic provider
-            try:
-                from data_provider import DynamicDataProvider
-                return DynamicDataProvider(
-                    market_type=self.config.get("market_type", "crypto"),
-                    trading_mode=self.config.get("trading_mode", "spot")
-                )
-            except ImportError:
-                # Last resort: create simple provider
-                class SimpleProvider:
-                    def __init__(self, *args, **kwargs):
-                        pass
-                    def get_ohlcv(self, *args, **kwargs):
-                        return pd.DataFrame()
-                    def get_ticker(self, *args, **kwargs):
-                        return {'last': 0}
-                    def get_popular_assets(self, *args, **kwargs):
-                        return []
-                return SimpleProvider()
+            logger.error(f"❌ Failed to setup universal provider: {e}")
+            # Last resort: create simple provider
+            class SimpleProvider:
+                def __init__(self, *args, **kwargs):
+                    pass
+                def get_ohlcv(self, *args, **kwargs):
+                    return pd.DataFrame()
+                def get_ticker(self, *args, **kwargs):
+                    return {'last': 0}
+                def get_popular_assets(self, *args, **kwargs):
+                    return []
+            return SimpleProvider()
     
     def set_mode(self, market_type):
         """Set trading mode dengan update provider"""
@@ -3059,7 +2982,7 @@ class TradingCore:
         return True
     
     def scan_market(self, scan_type="standard", limit=50):
-        """Scan market dengan unified provider"""
+        """Scan market dengan universal provider"""
         try:
             logger.info(f"🔍 Scanning {self.trading_type} market ({scan_type})...")
             
@@ -3074,7 +2997,7 @@ class TradingCore:
             
             # Proses scanning...
             results = []
-            for asset in assets[:20]:  # Batasi untuk testing
+            for asset in assets[:20]:
                 symbol = asset['symbol'] if isinstance(asset, dict) else asset
                 
                 try:
@@ -3133,9 +3056,9 @@ TradingBot = EnhancedTradingBot
 # TESTING FUNCTIONALITY
 # =============================================
 
-def test_unified_provider():
-    """Test bot dengan unified provider"""
-    print("🧪 Testing TradingBot dengan UNIFIED PROVIDER...")
+def test_universal_provider():
+    """Test bot dengan universal provider"""
+    print("🧪 Testing TradingBot dengan UNIVERSAL PROVIDER...")
     print("="*60)
     
     bot = EnhancedTradingBot()
@@ -3160,7 +3083,7 @@ def test_unified_provider():
         
         if signals:
             for i, signal in enumerate(signals[:10]):
-                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Type: {signal.get('trading_mode', 'N/A')})")
+                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Type: {signal.get('trading_mode', 'N/A')}, Leverage: {signal.get('leverage', 1)}x)")
         else:
             print("   ℹ️ No signals found - this is normal with real data")
     
@@ -3189,9 +3112,10 @@ def test_unified_provider():
             print("   ℹ️ No Indonesian stock signals found - this is normal with real data")
     
     print("\n" + "="*60)
-    print("✅ Test completed - Bot menggunakan UnifiedDataProvider dengan auto-detection")
+    print("✅ Test completed - Bot menggunakan Universal Provider dengan auto-detection")
     print("   Auto-detect spot/futures dari simbol")
-    print("   Single interface tanpa parameter asset_type")
+    print("   Leverage auto-detection (1x untuk spot, 5x untuk futures)")
+    print("   Menggunakan get_trading_data untuk membersihkan data")
 
 def test_data_cleaner_integration():
     """Test integrasi data cleaner di core.py"""
@@ -3202,16 +3126,16 @@ def test_data_cleaner_integration():
     bot = EnhancedTradingBot()
     
     # Test symbols yang bermasalah
-    test_symbols = ["BONK/USDT:USDT", "CATI/USDT:USDT", "100MAD/USDT"]
+    test_symbols = ["BONK/USDT:USDT", "CATI/USDT:USDT", "100MAD/USDT", "BTC/USDT", "ETH/USDT"]
     
     for symbol in test_symbols:
         print(f"\n🔍 Testing {symbol} dengan get_trading_data")
         
         if get_trading_data is not None:
             data = get_trading_data(symbol, bot.data_provider)
-            if data is not None:
+            if data is not None and not data.empty:
                 print(f"   ✅ Clean data: {len(data)} bars")
-                if not data.empty and 'close' in data.columns:
+                if 'close' in data.columns:
                     current_price = data['close'].iloc[-1]
                     print(f"   📊 Current price: ${current_price:.6f}")
                     
@@ -3221,39 +3145,53 @@ def test_data_cleaner_integration():
                     else:
                         print(f"   👍 No price 100 detected")
             else:
-                print(f"   ❌ get_trading_data returned None")
+                print(f"   ❌ get_trading_data returned None atau empty")
         else:
             print(f"   ℹ️ get_trading_data not available")
     
     # Test scan dengan symbols bermasalah
     print("\n🧪 Testing scanning dengan symbols bermasalah...")
     
-    # Create a test with problem symbols
     bot.set_mode("crypto")
     
-    # Mock some assets
+    # Test beberapa simbol
     test_assets = [
         {'symbol': 'BONK/USDT:USDT', 'name': 'Bonk'},
         {'symbol': 'CATI/USDT:USDT', 'name': 'Cati'},
         {'symbol': 'BTC/USDT', 'name': 'Bitcoin'},
+        {'symbol': 'ETH/USDT', 'name': 'Ethereum'},
     ]
     
     for asset in test_assets:
         print(f"\n🔍 Processing {asset['symbol']}")
+        
+        # Auto-detect type
+        detected_type, formatted_symbol = auto_detect_trading_type(asset['symbol'])
+        print(f"   Detected type: {detected_type}")
+        
         if get_trading_data is not None:
-            data = get_trading_data(asset['symbol'], bot.data_provider)
-            if data is None:
+            data = get_trading_data(formatted_symbol, bot.data_provider)
+            if data is None or data.empty:
                 print(f"   ❌ Data tidak valid, akan di-skip")
             else:
                 print(f"   ✅ Data valid: {len(data)} bars")
                 print(f"   📊 Price range: ${data['close'].min():.6f} - ${data['close'].max():.6f}")
+                
+                # Validasi data
+                is_valid, msg = bot.validate_market_data(data, asset['symbol'], debug_mode=True)
+                if is_valid:
+                    print(f"   👍 Data validation passed")
+                else:
+                    print(f"   ⚠️ Data validation failed: {msg}")
 
 if __name__ == "__main__":
-    test_unified_provider()
+    test_universal_provider()
     test_data_cleaner_integration()
     
     print("\n" + "="*60)
-    print("🎯 CORE.PY READY WITH AUTO-DETECTION")
+    print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER")
     print("🎯 Menggunakan get_trading_data untuk membersihkan data")
-    print("🎯 Auto-detect spot/futures dari simbol tanpa parameter asset_type")
+    print("🎯 Auto-detect spot/futures dari simbol")
+    print("🎯 Leverage auto-detection (1x spot, 5x futures)")
+    print("🎯 Provider universal (CCXT untuk crypto, YFinance untuk stocks/forex)")
     print("="*60)
