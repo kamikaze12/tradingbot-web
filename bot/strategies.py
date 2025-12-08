@@ -32,25 +32,62 @@ def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
     HANYA ambil data jika bersih dari masalah harga 100 dan masalah umum lainnya.
     """
     try:
-        # Clean symbol untuk yfinance
-        clean_symbol = symbol.split(':')[0] if ':' in symbol else symbol
-        clean_symbol = clean_symbol.replace('/', '-').replace('USDT-', '')
+        # 🚨 **PERBAIKAN UTAMA: Gunakan provider jika diberikan**
+        if provider is not None and hasattr(provider, 'get_ohlcv'):
+            try:
+                logger.info(f"📊 Getting data for {symbol} from {provider.__class__.__name__}...")
+                df = provider.get_ohlcv(symbol, timeframe, limit=lookback)
+                
+                if df is None or df.empty:
+                    logger.warning(f"Provider returned empty data for {symbol}")
+                    # Fallback ke yfinance
+                    provider = None
+                else:
+                    # Standardize column names untuk data dari provider
+                    column_mapping = {
+                        'Open': 'open',
+                        'High': 'high', 
+                        'Low': 'low',
+                        'Close': 'close',
+                        'Volume': 'volume'
+                    }
+                    
+                    for old, new in column_mapping.items():
+                        if old in df.columns:
+                            df = df.rename(columns={old: new})
+                    
+                    logger.info(f"✅ Data from provider: {len(df)} bars")
+                    
+            except Exception as provider_error:
+                logger.warning(f"Provider failed for {symbol}: {provider_error}, falling back to yfinance")
+                # Fallback ke yfinance jika provider gagal
+                provider = None
         
-        # ⏰ TAMBAH RATE LIMITING - delay 1 detik antara request
-        time.sleep(0.5)  # Dikurangi dari 1.0 ke 0.5 untuk lebih cepat
-        
-        # Download data dari yfinance
-        logger.info(f"📥 Downloading {clean_symbol} from YFinance...")
-        df = yf.download(clean_symbol, period=f'{lookback}d', interval=timeframe, progress=False)
+        # Jika provider None atau gagal, gunakan yfinance
+        if provider is None:
+            # ⏰ TAMBAH RATE LIMITING - delay 1 detik antara request
+            time.sleep(0.5)  # Dikurangi dari 1.0 ke 0.5 untuk lebih cepat
+            
+            # Clean symbol untuk yfinance
+            clean_symbol = symbol.split(':')[0] if ':' in symbol else symbol
+            clean_symbol = clean_symbol.replace('/', '-').replace('USDT-', '')
+            
+            # Download data dari yfinance
+            logger.info(f"📥 Downloading {clean_symbol} from YFinance...")
+            df = yf.download(clean_symbol, period=f'{lookback}d', interval=timeframe, progress=False)
+            
+            if df.empty:
+                logger.warning(f"No data for {symbol}")
+                return pd.DataFrame()
         
         if df.empty:
-            logger.warning(f"No data for {symbol}")
+            logger.warning(f"Empty DataFrame after provider for {symbol}")
             return pd.DataFrame()
         
         # 🚨 **CEK DAN PERBAIKI HARGA 100** - DIPERBAIKI: GUNAKAN .any()
-        if 'Close' in df.columns:
+        if 'close' in df.columns:
             # Deteksi harga stuck di 100 - GUNAKAN OPERASI VECTOR
-            price_diff = abs(df['Close'] - 100.0)
+            price_diff = abs(df['close'] - 100.0)
             mask_100 = price_diff < 0.001
             
             if mask_100.any():  # ← GUNAKAN .any() untuk Series
@@ -58,27 +95,27 @@ def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
                 logger.warning(f"Found {count_100} bars with close price 100 in {symbol}. Fixing...")
                 
                 # Ganti harga 100 dengan NaN
-                df.loc[mask_100, 'Close'] = np.nan
+                df.loc[mask_100, 'close'] = np.nan
                 
                 # Forward fill untuk ganti NaN dengan harga sebelumnya
-                df['Close'] = df['Close'].ffill()
+                df['close'] = df['close'].ffill()
                 
                 # Backfill untuk kasus harga awal 100
-                df['Close'] = df['Close'].bfill()
+                df['close'] = df['close'].bfill()
         
         # Pastikan harga tidak aneh
-        if 'Close' in df.columns:
+        if 'close' in df.columns:
             # Hapus baris dengan harga <= 0 - GUNAKAN BOOLEAN INDEXING
-            df = df[df['Close'] > 0]
+            df = df[df['close'] > 0]
             
             # Hapus baris dengan harga tidak realistic
-            df = df[df['Close'] < 1000000]
+            df = df[df['close'] < 1000000]
             
             # Hapus baris dengan pergerakan aneh (high < low)
-            if 'High' in df.columns and 'Low' in df.columns:
-                df = df[df['High'] >= df['Low']]
+            if 'high' in df.columns and 'low' in df.columns:
+                df = df[df['high'] >= df['low']]
         
-        # Standardize column names
+        # Standardize column names (jika belum)
         column_mapping = {
             'Open': 'open',
             'High': 'high', 
@@ -127,6 +164,61 @@ def get_trading_data(symbol, provider=None):
     Wrapper function untuk digunakan di strategi trading.
     HANYA return data jika benar-benar bersih.
     """
+    # 🚨 **PERBAIKAN: Gunakan provider langsung jika tersedia**
+    if provider is not None and hasattr(provider, 'get_ohlcv'):
+        try:
+            logger.info(f"🔍 Getting OHLCV for {symbol} from {provider.__class__.__name__}")
+            
+            # Ambil data dari provider (SmartChainDataProvider/Binance)
+            df = provider.get_ohlcv(symbol, '1h', 100)
+            
+            if df is None or df.empty:
+                logger.warning(f"Provider returned no data for {symbol}")
+                return None
+            
+            # Standardize column names
+            column_mapping = {
+                'Open': 'open',
+                'High': 'high', 
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume'
+            }
+            
+            for old, new in column_mapping.items():
+                if old in df.columns:
+                    df = df.rename(columns={old: new})
+            
+            # Validasi data
+            if 'close' in df.columns:
+                # Pastikan TIDAK ADA harga 100
+                if (abs(df['close'] - 100.0) < 0.001).any():
+                    logger.error(f"🚨 {symbol} has price 100 from provider, rejecting!")
+                    return None
+                
+                # Pastikan harga realistic
+                current_price = df['close'].iloc[-1]
+                
+                if current_price <= 0 or current_price > 1000000:
+                    logger.warning(f"⚠️ {symbol} has unrealistic price: {current_price}")
+                    return None
+                
+                # Cek pergerakan harga (tidak stuck)
+                if len(df) > 10:
+                    price_changes = df['close'].diff().abs().sum()
+                    if price_changes < (current_price * 0.0001 * len(df)):
+                        logger.warning(f"⚠️ {symbol} has flatline prices")
+                        return None
+            
+            logger.info(f"✅ Valid data from provider for {symbol}: {len(df)} bars")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error getting data from provider: {e}")
+            # Fallback ke get_clean_data
+            pass
+    
+    # Fallback ke get_clean_data jika provider tidak tersedia atau gagal
     data = get_clean_data(symbol, provider)
     
     # 🚨 **TAMBAH VALIDASI FINAL** - DIPERBAIKI: GUNAKAN .any()
