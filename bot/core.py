@@ -75,6 +75,7 @@ SolanaPumpFunProvider = None
 EnhancedDexScreenerProvider = None
 get_trading_data = None
 create_strategy_for_symbol = None
+SmartChainDataProvider = None
 
 try:
     print("✅ Mencoba import strategies...")
@@ -139,6 +140,10 @@ try:
     print("✅ Modul data_provider berhasil diimport")
     
     # Assign setiap class secara individual
+    if hasattr(data_provider_module, 'SmartChainDataProvider'):
+        SmartChainDataProvider = data_provider_module.SmartChainDataProvider
+        print("  ✅ SmartChainDataProvider ditemukan")
+    
     if hasattr(data_provider_module, 'UnifiedDataProvider'):
         UnifiedDataProvider = data_provider_module.UnifiedDataProvider
         print("  ✅ UnifiedDataProvider ditemukan")
@@ -213,6 +218,7 @@ except Exception as e:
         def search_assets(self, query, limit):
             return [{'symbol': 'BTC/USDT', 'name': 'Bitcoin'}]
     
+    SmartChainDataProvider = None
     EnhancedYFinanceDataProvider = UnifiedDataProvider
     DataProviderMonitor = None
     DynamicDataProvider = UnifiedDataProvider
@@ -1874,7 +1880,7 @@ class MLEnhancedBot:
             features_scaled = self.scaler.transform(features_array)
             
             batch_predictions = self.model.predict(features_scaled)
-            batch_probabilities = self.model.predict_proba(features_scaled)
+            batch_probabilities = self.model.predict_proba(features_array)
             
             for i, (symbol, features) in enumerate(symbol_features.items()):
                 if i < len(batch_predictions):
@@ -2103,67 +2109,64 @@ class EnhancedTradingBot:
         return True, "Data validation passed"
 
     def _setup_universal_provider(self):
-        """Setup provider universal berdasarkan mode"""
+        """Setup provider universal dengan SmartChain priority"""
         try:
-            # **PERBAIKAN UTAMA: Gunakan provider yang tepat berdasarkan mode**
             market_type = self.config.get("market_type", "crypto")
             
-            if market_type == 'crypto':
-                # Coba CCXT terlebih dahulu untuk crypto
+            logger.info(f"🔧 Setting up provider for {market_type} market...")
+            
+            # Priority order dari config
+            provider_priority = self.config.get("provider_priority", "smart_chain")
+            
+            if provider_priority == "smart_chain" and SmartChainDataProvider is not None:
+                # Coba SmartChainDataProvider terlebih dahulu
                 try:
-                    if EnhancedCCXTDataProvider:
-                        self.data_provider = EnhancedCCXTDataProvider(
-                            exchange_id='binance',
-                            api_key='',
-                            secret=''
-                        )
-                        logger.info("✅ Using CCXT (Binance) for crypto data")
-                        
-                        # Test koneksi
-                        try:
-                            test_data = self.data_provider.get_ohlcv("BTC/USDT", '1h', 10)
-                            if not test_data.empty:
-                                logger.info(f"✅ CCXT connected, sample data: {len(test_data)} bars")
-                        except Exception as e:
-                            logger.warning(f"⚠️ CCXT test failed: {e}")
-                            # Fallback ke YFinance
-                            if EnhancedYFinanceDataProvider:
-                                self.data_provider = EnhancedYFinanceDataProvider()
-                                logger.warning("⚠️ Falling back to YFinance for crypto")
-                    else:
-                        raise Exception("CCXT provider not available")
-                        
-                except Exception as e:
-                    logger.error(f"❌ CCXT setup failed: {e}")
-                    if EnhancedYFinanceDataProvider:
-                        self.data_provider = EnhancedYFinanceDataProvider()
-                        logger.info("✅ Using YFinance for crypto (fallback)")
-            
-            elif market_type in ['us_stocks', 'saham_id', 'forex']:
-                # Untuk stocks/forex, langsung YFinance
-                if EnhancedYFinanceDataProvider:
-                    self.data_provider = EnhancedYFinanceDataProvider()
-                    logger.info(f"✅ Using YFinance for {market_type}")
-                else:
-                    raise Exception("YFinance provider not available")
-            
-            else:
-                # Default ke UnifiedDataProvider jika ada
-                if UnifiedDataProvider:
-                    self.data_provider = UnifiedDataProvider(
-                        market_type=market_type,
-                        trading_mode=self.config.get("trading_mode", "spot")
+                    primary_mirror = self.config.get("primary_mirror", "binanceus")
+                    self.data_provider = SmartChainDataProvider(
+                        primary_mirror=primary_mirror,
+                        market_type=market_type
                     )
-                    logger.info(f"✅ Using UnifiedDataProvider for {market_type}")
-                else:
-                    raise Exception("No provider available")
+                    logger.info(f"✅ Using SmartChainDataProvider with primary mirror: {primary_mirror}")
+                    return True
+                except Exception as e:
+                    logger.warning(f"⚠️ SmartChainDataProvider failed: {e}")
             
-            return True
+            # Fallback ke UnifiedDataProvider
+            if UnifiedDataProvider is not None:
+                try:
+                    exchange_id = self.config.get("exchange_crypto", "binance")
+                    self.data_provider = UnifiedDataProvider(
+                        exchange_id=exchange_id,
+                        api_key='',
+                        secret=''
+                    )
+                    logger.info(f"✅ Using UnifiedDataProvider with exchange: {exchange_id}")
+                    return True
+                except Exception as e:
+                    logger.warning(f"⚠️ UnifiedDataProvider failed: {e}")
             
-        except Exception as e:
-            logger.error(f"❌ Failed to setup universal provider: {e}")
+            # Fallback ke EnhancedCCXTDataProvider untuk crypto
+            if market_type == 'crypto' and EnhancedCCXTDataProvider is not None:
+                try:
+                    exchange_id = self.config.get("exchange_crypto", "binance")
+                    self.data_provider = EnhancedCCXTDataProvider(
+                        exchange_id=exchange_id,
+                        api_key='',
+                        secret=''
+                    )
+                    logger.info(f"✅ Using EnhancedCCXTDataProvider: {exchange_id}")
+                    return True
+                except Exception as e:
+                    logger.warning(f"⚠️ EnhancedCCXTDataProvider failed: {e}")
             
-            # Buat dummy provider sebagai last resort
+            # Ultimate fallback: YFinance
+            if EnhancedYFinanceDataProvider is not None:
+                self.data_provider = EnhancedYFinanceDataProvider()
+                logger.info(f"✅ Using EnhancedYFinanceDataProvider for {market_type}")
+                return True
+            
+            # Dummy fallback
+            logger.error("❌ All providers failed, using dummy provider")
             class DummyDataProvider:
                 def __init__(self, *args, **kwargs):
                     self.market_type = kwargs.get('market_type', 'crypto')
@@ -2192,6 +2195,10 @@ class EnhancedTradingBot:
             
             self.data_provider = DummyDataProvider()
             logger.warning("⚠️ Using dummy data provider")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to setup universal provider: {e}")
             return False
 
     def load_config(self):
@@ -2231,7 +2238,10 @@ class EnhancedTradingBot:
             "partial_tp_enabled": True,
             "trading_mode": "spot",
             "default_exchange": "binance",
-            "leverage": 1
+            "leverage": 1,
+            # Tambahan untuk SmartChainDataProvider
+            "provider_priority": "smart_chain",
+            "primary_mirror": "binanceus"
         }
     
     def save_config(self):
@@ -2721,6 +2731,52 @@ class EnhancedTradingBot:
                 'sl': entry_price * 0.97
             }
 
+    def get_provider_health(self):
+        """Get provider health information"""
+        if not hasattr(self, 'data_provider'):
+            return {'status': 'no_provider', 'type': 'unknown'}
+        
+        try:
+            # Untuk SmartChainDataProvider
+            if hasattr(self.data_provider, 'get_health_status'):
+                health = self.data_provider.get_health_status()
+                health['provider_type'] = 'smart_chain'
+                health['provider_class'] = self.data_provider.__class__.__name__
+                return health
+            
+            # Untuk UnifiedDataProvider
+            elif hasattr(self.data_provider, 'get_health_metrics'):
+                health = self.data_provider.get_health_metrics()
+                health['provider_type'] = 'unified'
+                health['provider_class'] = self.data_provider.__class__.__name__
+                return health
+            
+            # Untuk EnhancedCCXTDataProvider
+            elif hasattr(self.data_provider, 'get_health_metrics'):
+                health = self.data_provider.get_health_metrics()
+                health['provider_type'] = 'ccxt'
+                health['provider_class'] = self.data_provider.__class__.__name__
+                return health
+            
+            # Untuk EnhancedYFinanceDataProvider
+            elif hasattr(self.data_provider, 'get_health_metrics'):
+                health = self.data_provider.get_health_metrics()
+                health['provider_type'] = 'yfinance'
+                health['provider_class'] = self.data_provider.__class__.__name__
+                return health
+            
+            # Fallback
+            else:
+                return {
+                    'provider_type': 'unknown',
+                    'provider_class': self.data_provider.__class__.__name__,
+                    'status': 'active' if self.data_provider else 'inactive'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error getting provider health: {e}")
+            return {'status': 'error', 'error': str(e)}
+
     # =============================================
     # SET MODE METHOD (SIMPLIFIED)
     # =============================================
@@ -3194,4 +3250,5 @@ if __name__ == "__main__":
     print("🎯 Auto-detect spot/futures dari simbol")
     print("🎯 Leverage auto-detection (1x spot, 5x futures)")
     print("🎯 Provider universal (CCXT untuk crypto, YFinance untuk stocks/forex)")
+    print("🎯 SmartChainDataProvider sebagai prioritas utama")
     print("="*60)
