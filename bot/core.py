@@ -2292,7 +2292,7 @@ class EnhancedTradingBot:
             return []
 
     def scan_potential_assets(self, limit=25, search_query: str = None):
-        """Scan sederhana dengan provider universal"""
+        """Scan sederhana dengan provider universal - PERBAIKAN UTAMA"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -2311,6 +2311,7 @@ class EnhancedTradingBot:
             
             logger.info(f"🔍 Scanning for {limit} signals...")
             logger.info(f"📊 Will analyze up to {assets_limit} assets")
+            logger.info(f"🏢 Using provider: {self.data_provider.__class__.__name__}")
             
             # Get assets
             assets = self.get_popular_assets(assets_limit)
@@ -2337,10 +2338,12 @@ class EnhancedTradingBot:
                     
                     logger.info(f"  [{i+1}/{len(assets[:50])}] Analyzing: {symbol} (Type: {detected_type})")
                     
-                    # **PERBAIKAN: Gunakan get_trading_data untuk membersihkan data**
+                    # **PERBAIKAN UTAMA: Gunakan get_trading_data jika tersedia, kalau tidak gunakan provider langsung**
                     if get_trading_data is not None:
+                        logger.info(f"    🔧 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
                         df = get_trading_data(formatted_symbol, self.data_provider)
                     else:
+                        logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
                         df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
                     
                     if df is None or len(df) < 50:
@@ -2470,6 +2473,7 @@ class EnhancedTradingBot:
                 logger.info(f"🔍 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
                 df = get_trading_data(formatted_symbol, self.data_provider)
             else:
+                logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
             
             if df is None or len(df) < 50:
@@ -2519,8 +2523,10 @@ class EnhancedTradingBot:
             
             # Get data menggunakan get_trading_data jika tersedia
             if get_trading_data is not None:
+                logger.info(f"  🔧 Menggunakan get_trading_data untuk data bersih")
                 df = get_trading_data(formatted_symbol, self.data_provider)
             else:
+                logger.info(f"  🔧 Menggunakan provider {self.data_provider.__class__.__name__}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
             
             if df is None or len(df) < 100:
@@ -2855,6 +2861,7 @@ class EnhancedTradingBot:
         """Test provider connection"""
         try:
             logger.info("🧪 Testing UniversalProvider connection...")
+            logger.info(f"  Provider: {self.data_provider.__class__.__name__}")
             
             # Get popular assets
             assets = self.get_popular_assets(5)
@@ -2877,8 +2884,10 @@ class EnhancedTradingBot:
                 
                 # Gunakan get_trading_data jika tersedia untuk membersihkan data
                 if get_trading_data is not None:
+                    logger.info(f"    🔧 Menggunakan get_trading_data")
                     df = get_trading_data(test_symbol, self.data_provider)
                 else:
+                    logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__}")
                     df = self.data_provider.get_ohlcv(test_symbol, '1h', 10)
                 
                 # Validasi data dengan debug mode
