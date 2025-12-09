@@ -291,6 +291,11 @@ class TradingStrategy(ABC):
             logger.error(f"Missing columns for {symbol}: {df.columns.tolist()}")
             return self._get_fallback_data(symbol)
         
+        # ✅ TAMBAH: Clean NaN/inf lebih agresif
+        df = df.replace([np.inf, -np.inf], np.nan)
+        for col in required_cols:
+            df[col] = df[col].ffill().bfill().fillna(0)  # Fill nan dengan 0 kalau masih ada
+        
         # 3. Cek harga stuck (no movement)
         last_10_prices = df['close'].tail(10).values
         if len(set(last_10_prices)) <= 2:
@@ -1428,17 +1433,20 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 logger.warning(f"Data insufficient for {symbol}: {len(df) if df is not None else 0} bars")
                 return self._get_default_analysis(symbol)
             
-            # 2. Skip jika data tidak valid
+            # 2. Preprocess data
+            df = self._preprocess_and_validate(df, symbol)
+            
+            # 3. Skip jika data tidak valid
             if self._should_skip_symbol(df, symbol):
                 return self._get_safe_neutral_signal(symbol)
             
-            # 3. Ambil harga sekarang
+            # 4. Ambil harga sekarang
             current_price = df['close'].iloc[-1]
             
-            # 4. Hitung indikator teknis (SAMA untuk spot/futures)
+            # 5. Hitung indikator teknis (SAMA untuk spot/futures)
             indicators = self._calculate_enhanced_indicators(df)
             
-            # 5. Tentukan sinyal berdasarkan indikator
+            # 6. Tentukan sinyal berdasarkan indikator
             rsi = indicators['rsi_14']
             macd_signal = indicators['macd_line'] > indicators['macd_signal']
             bb_position = indicators['bb_position']
@@ -1456,7 +1464,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             if bb_position < 0.2: score += 2
             elif bb_position > 0.8: score -= 2
             
-            # 6. Tentukan action
+            # 7. Tentukan action
             if score >= 3:
                 action = "LONG"
             elif score <= -3:
@@ -1464,7 +1472,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             else:
                 action = "NEUTRAL"
             
-            # 7. Hitung entry range berdasarkan trading_type
+            # 8. Hitung entry range berdasarkan trading_type
             if self.trading_type == "futures":
                 # Futures: range lebih lebar
                 entry_range = self.entry_range_pct * 1.5
@@ -1472,7 +1480,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 # Spot: range normal
                 entry_range = self.entry_range_pct
             
-            # 8. Hitung TP/SL
+            # 9. Hitung TP/SL
             entry_calc = self.calculate_custom_entry(
                 symbol=symbol or "UNKNOWN",
                 current_price=current_price,
@@ -1480,7 +1488,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 df=df
             )
             
-            # 9. Return hasil
+            # 10. Return hasil
             result = {
                 'action': action,
                 'score': score,
@@ -1507,13 +1515,13 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 'confidence': min(abs(score) / 10.0, 1.0)
             }
             
-            # 10. Tambahkan indikator tambahan
+            # 11. Tambahkan indikator tambahan
             result.update({
                 'macd_line': indicators['macd_line'],
                 'macd_signal': indicators['macd_signal'],
                 'bb_position': bb_position,
                 'volatility': indicators['volatility'],
-                'trend_strength': self._calculate_trend_strength(df['close'].values),
+                'trend_strength': self._calculate_trend_strength(df),
                 'trend_direction': 'BULLISH' if indicators['momentum_5'] > 0 else 'BEARISH' if indicators['momentum_5'] < 0 else 'NEUTRAL',
                 'market_regime': self._analyze_market_regime(df, score, indicators['volatility'], result['trend_strength']).value,
                 'pattern_count': len(self.pattern_detector.detect_comprehensive_patterns(df, symbol))
@@ -1686,18 +1694,33 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             current_price = df['close'].iloc[-1] if 'close' in df.columns and len(df) > 0 else 100.0
             return current_price * 0.02
     
-    def _calculate_trend_strength(self, prices: np.ndarray) -> float:
-        """Calculate trend strength using linear regression"""
-        if len(prices) < 5:
-            return 0.0
+    def _calculate_trend_strength(self, df: pd.DataFrame) -> float:
+        """Hitung kekuatan trend dengan linear regression"""
+        try:
+            prices = df['close'].values[-50:]
+            if len(prices) < 2:  # ✅ FIX: Cek length minimal
+                return 0.0
+            
+            # ✅ FIX: Cek jika prices constant (all same)
+            if np.all(prices == prices[0]):
+                logger.warning("Constant prices detected, returning neutral trend")
+                return 0.0
+            
+            x = np.arange(len(prices))
+            slope, intercept, r_value, p_value, std_err = stats.linregress(x, prices)
+            
+            # Normalize slope
+            normalized_slope = slope / np.mean(prices) if np.mean(prices) > 0 else 0
+            
+            # Trend strength = normalized slope * r_squared
+            trend_strength = normalized_slope * (r_value ** 2)
+            
+            # Clamp between -1 and 1
+            return max(min(trend_strength, 1.0), -1.0)
         
-        x = np.arange(len(prices))
-        slope, _, r_value, _, _ = stats.linregress(x, prices)
-        
-        normalized_slope = abs(slope) / np.mean(prices) if np.mean(prices) > 0 else 0
-        trend_strength = normalized_slope * (r_value ** 2)
-        
-        return min(trend_strength, 1.0)
+        except (ValueError, Exception) as e:  # ✅ FIX: Catch all errors
+            logger.warning(f"Trend calculation failed for {df.index[-1] if not df.empty else 'unknown'}: {str(e)}. Returning neutral 0.0")
+            return 0.0  # Default neutral
     
     def _analyze_market_regime(self, df: pd.DataFrame, base_score: float, volatility: float, trend_strength: float) -> MarketRegime:
         """Determine market regime"""
