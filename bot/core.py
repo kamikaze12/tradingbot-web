@@ -2459,7 +2459,9 @@ class EnhancedTradingBot:
                         logger.info(f"    ⚠️ No analysis for {symbol}")
                         continue
                     
-                    # **PERBAIKAN UTAMA: Apply market constraints - untuk spot crypto hanya LONG**
+                    # **PERUBAHAN PENTING: HAPUS blokir SHORT untuk crypto spot**
+                    # Biarkan SHORT muncul untuk semua crypto (spot & futures)
+                    # Hanya blokir untuk market lain
                     analysis = self._apply_market_constraints(analysis, detected_type)
                     
                     score = analysis.get('score', 0)
@@ -2532,17 +2534,14 @@ class EnhancedTradingBot:
             
         action = analysis.get('action', 'NEUTRAL')
         
-        # **PERBAIKAN UTAMA: Untuk spot crypto, hanya LONG yang diperbolehkan**
-        if action == 'SHORT' and self.mode == 'crypto' and detected_type == 'spot':
-            logger.debug(f"🚫 SHORT blocked for {self.mode} (spot mode)")
-            analysis['action'] = 'NEUTRAL'
-            analysis['score'] = 0
-        
-        # Block SHORT untuk market lain
-        elif action == 'SHORT' and self.mode in ['forex', 'saham_id', 'us_stocks']:
+        # **PERUBAHAN PENTING: HAPUS blokir SHORT untuk crypto spot**
+        # Hanya blokir SHORT untuk market lain (forex, saham_id, us_stocks)
+        if action == 'SHORT' and self.mode in ['forex', 'saham_id', 'us_stocks']:
             logger.debug(f"🚫 SHORT blocked for {self.mode}")
             analysis['action'] = 'NEUTRAL'
             analysis['score'] = 0
+        
+        # **CATATAN: SHORT untuk crypto (spot & futures) TIDAK DIBLOKIR**
         
         return analysis
 
@@ -3267,8 +3266,10 @@ def test_universal_provider():
     print("\n" + "="*60)
     print("✅ Test completed - Bot menggunakan Universal Provider dengan auto-detection")
     print("   Auto-detect spot/futures dari simbol")
-    print("   Leverage auto-detection (1x untuk spot, 5x untuk futures)")
+    print("   Leverage auto-detection (1x spot, 5x futures)")
     print("   Menggunakan get_trading_data untuk membersihkan data")
+    print("   SHORT diizinkan untuk crypto (spot & futures)")
+    print("   SHORT diblokir untuk forex, saham_id, us_stocks")
 
 def test_data_cleaner_integration():
     """Test integrasi data cleaner di core.py"""
@@ -3349,4 +3350,6 @@ if __name__ == "__main__":
     print("🎯 Provider universal (CCXT untuk crypto, YFinance untuk stocks/forex)")
     print("🎯 SmartChainDataProvider sebagai prioritas utama")
     print("🎯 Filter aset berdasarkan market mode (crypto, saham_id, forex, us_stocks)")
+    print("🎯 SHORT DIIZINKAN untuk crypto (spot & futures)")
+    print("🎯 SHORT DIBLOKIR untuk forex, saham_id, us_stocks")
     print("="*60)
