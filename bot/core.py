@@ -2367,7 +2367,7 @@ class EnhancedTradingBot:
                         leverage = 1  # No leverage untuk spot
                     
                     # Analyze dengan strategy
-                    analysis = strategy.analyze(df)
+                    analysis = strategy.analyze(df, symbol)
                     if not analysis:
                         logger.info(f"    ⚠️ No analysis for {symbol}")
                         continue
