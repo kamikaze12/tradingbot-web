@@ -4,6 +4,7 @@ import time
 import json
 import warnings
 import joblib
+import random
 from datetime import datetime, timedelta
 import threading
 import schedule
@@ -2272,23 +2273,109 @@ class EnhancedTradingBot:
         )
 
     def get_popular_assets(self, limit=100):
-        """Get all popular assets - biar strategi yang filter"""
+        """Get popular assets berdasarkan market mode - PERBAIKAN UTAMA"""
         if not self.data_provider:
+            logger.warning("No data provider, returning empty list")
             return []
         
         try:
-            assets = self.data_provider.get_popular_assets(limit)
+            logger.info(f"🔄 Getting {limit} popular assets for {self.mode} market...")
             
-            # Tambahkan auto-detected type
+            # Get assets dari provider
+            assets = []
+            if hasattr(self.data_provider, 'get_popular_assets'):
+                assets = self.data_provider.get_popular_assets(limit=limit * 2)  # Get more untuk difilter
+            else:
+                logger.warning("Provider tidak memiliki get_popular_assets method")
+                return []
+            
+            if not assets:
+                return []
+            
+            # Filter dan proses berdasarkan mode
+            processed_assets = []
+            
             for asset in assets:
-                symbol = asset['symbol']
-                trading_type, formatted_symbol = auto_detect_trading_type(symbol)
-                asset['detected_type'] = trading_type
-                asset['formatted_symbol'] = formatted_symbol
+                try:
+                    # Handle format asset
+                    if isinstance(asset, dict):
+                        symbol = asset.get('symbol', '')
+                        name = asset.get('name', symbol)
+                    else:
+                        symbol = str(asset)
+                        name = symbol
+                    
+                    if not symbol:
+                        continue
+                    
+                    # Auto-detect trading type
+                    trading_type, formatted_symbol = auto_detect_trading_type(symbol)
+                    
+                    # Filter berdasarkan market mode
+                    if self.mode == "crypto":
+                        # Crypto: hanya terima USDT pairs dan futures
+                        if any(x in symbol.upper() for x in ['/USDT', ':USDT', 'USDT']):
+                            processed_assets.append({
+                                'symbol': symbol,
+                                'name': name,
+                                'detected_type': trading_type,
+                                'formatted_symbol': formatted_symbol
+                            })
+                    
+                    elif self.mode == "forex":
+                        # Forex: hanya currency pairs
+                        forex_markers = ['/USD', '/EUR', '/JPY', '/GBP', '/CHF', '/CAD', '/AUD', '/NZD']
+                        if any(x in symbol.upper() for x in forex_markers):
+                            processed_assets.append({
+                                'symbol': symbol,
+                                'name': name,
+                                'detected_type': "spot",
+                                'formatted_symbol': formatted_symbol
+                            })
+                    
+                    elif self.mode == "saham_id":
+                        # Saham Indonesia: harus ada .JK
+                        if '.JK' in symbol.upper():
+                            processed_assets.append({
+                                'symbol': symbol,
+                                'name': name,
+                                'detected_type': "spot",
+                                'formatted_symbol': formatted_symbol
+                            })
+                    
+                    elif self.mode == "us_stocks":
+                        # US Stocks: biasanya ticker singkat tanpa /
+                        if '/' not in symbol and ':' not in symbol:
+                            processed_assets.append({
+                                'symbol': symbol,
+                                'name': name,
+                                'detected_type': "spot",
+                                'formatted_symbol': formatted_symbol
+                            })
+                    
+                    else:
+                        # Untuk mode lain, terima semua
+                        processed_assets.append({
+                            'symbol': symbol,
+                            'name': name,
+                            'detected_type': trading_type,
+                            'formatted_symbol': formatted_symbol
+                        })
+                    
+                except Exception as e:
+                    logger.debug(f"Skipping asset {asset}: {e}")
+                    continue
             
-            return assets
+            # Acak urutan aset untuk menghindari bias
+            random.shuffle(processed_assets)
+            
+            # Limit hasil
+            result = processed_assets[:limit]
+            logger.info(f"✅ Found {len(result)} assets for {self.mode} market")
+            return result
+            
         except Exception as e:
-            logger.error(f"Error: {e}")
+            logger.error(f"Error getting popular assets: {e}")
             return []
 
     def scan_potential_assets(self, limit=25, search_query: str = None):
@@ -2313,7 +2400,7 @@ class EnhancedTradingBot:
             logger.info(f"📊 Will analyze up to {assets_limit} assets")
             logger.info(f"🏢 Using provider: {self.data_provider.__class__.__name__}")
             
-            # Get assets
+            # Get assets menggunakan metode yang sudah diperbaiki
             assets = self.get_popular_assets(assets_limit)
             
             if not assets:
@@ -2858,43 +2945,44 @@ class EnhancedTradingBot:
             return False
 
     def _test_provider_connection(self):
-        """Test provider connection"""
+        """Test provider connection - PERBAIKAN UTAMA"""
         try:
             logger.info("🧪 Testing UniversalProvider connection...")
             logger.info(f"  Provider: {self.data_provider.__class__.__name__}")
             
-            # Get popular assets
+            # Test get popular assets menggunakan metode yang sudah diperbaiki
             assets = self.get_popular_assets(5)
             
             if not assets:
                 logger.warning("⚠️ No assets returned from provider")
                 return []
             
-            # Format asset symbols
+            # Format asset symbols untuk display
             asset_symbols = []
             for asset in assets[:5]:
                 symbol = asset.get('symbol', 'Unknown')
+                name = asset.get('name', 'N/A')
                 detected_type = asset.get('detected_type', 'spot')
-                asset_symbols.append(f"{symbol} ({detected_type})")
+                asset_symbols.append(f"{symbol} ({name}) [{detected_type}]")
             
-            # Test OHLCV untuk asset pertama menggunakan get_trading_data
+            # Test OHLCV untuk asset pertama
             if assets:
-                test_symbol = assets[0].get('formatted_symbol', assets[0].get('symbol'))
+                test_asset = assets[0]
+                test_symbol = test_asset.get('formatted_symbol', test_asset.get('symbol'))
                 logger.info(f"  Testing OHLCV for: {test_symbol}")
                 
-                # Gunakan get_trading_data jika tersedia untuk membersihkan data
+                # Gunakan get_trading_data jika tersedia
                 if get_trading_data is not None:
-                    logger.info(f"    🔧 Menggunakan get_trading_data")
                     df = get_trading_data(test_symbol, self.data_provider)
                 else:
-                    logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__}")
                     df = self.data_provider.get_ohlcv(test_symbol, '1h', 10)
                 
-                # Validasi data dengan debug mode
+                # Validasi data
                 if df is not None and len(df) > 0:
                     is_valid, msg = self.validate_market_data(df, test_symbol, debug_mode=True)
                     if is_valid:
                         logger.info(f"  ✅ OHLCV data: {len(df)} bars (valid)")
+                        logger.info(f"  📊 Price range: ${df['close'].min():.2f} - ${df['close'].max():.2f}")
                     else:
                         logger.warning(f"  ⚠️ OHLCV data validation failed: {msg}")
                 else:
@@ -3260,4 +3348,5 @@ if __name__ == "__main__":
     print("🎯 Leverage auto-detection (1x spot, 5x futures)")
     print("🎯 Provider universal (CCXT untuk crypto, YFinance untuk stocks/forex)")
     print("🎯 SmartChainDataProvider sebagai prioritas utama")
+    print("🎯 Filter aset berdasarkan market mode (crypto, saham_id, forex, us_stocks)")
     print("="*60)
