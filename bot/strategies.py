@@ -279,6 +279,7 @@ class TradingStrategy(ABC):
     
     def _preprocess_and_validate(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """Preprocess data dan validasi kualitas"""
+        
         # 1. Cek data kosong
         if df is None or df.empty:
             logger.error(f"Empty data for {symbol}")
@@ -1514,15 +1515,18 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 'confidence': min(abs(score) / 10.0, 1.0)
             }
             
-            # 11. Tambahkan indikator tambahan
+            # 11. Hitung trend_strength terlebih dahulu
+            ts = self._calculate_trend_strength(df, symbol)
+            
+            # 12. Tambahkan indikator tambahan
             result.update({
                 'macd_line': indicators['macd_line'],
                 'macd_signal': indicators['macd_signal'],
                 'bb_position': bb_position,
                 'volatility': indicators['volatility'],
-                'trend_strength': self._calculate_trend_strength(df, symbol),
+                'trend_strength': ts,
                 'trend_direction': 'BULLISH' if indicators['momentum_5'] > 0 else 'BEARISH' if indicators['momentum_5'] < 0 else 'NEUTRAL',
-                'market_regime': self._analyze_market_regime(df, score, indicators['volatility'], result['trend_strength']).value,
+                'market_regime': self._analyze_market_regime(df, score, indicators['volatility'], ts).value,
                 'pattern_count': len(self.pattern_detector.detect_comprehensive_patterns(df, symbol))
             })
             
@@ -1700,24 +1704,23 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             if len(prices) < 2:
                 return 0.0
             
-            # NEW FIX: Handle nan/inf secara eksplisit sebelum process
+            # FIX: Clean nan/inf/constant
             prices = np.nan_to_num(prices, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            # Cek jika prices constant atau all zero
-            if np.all(prices == 0) or np.all(prices == prices[0]):
-                logger.warning(f"Constant or zero prices detected for {symbol if symbol else 'unknown'}, returning neutral trend")
+            if not np.all(np.isfinite(prices)) or np.all(prices == prices[0]) or np.all(prices == 0):
+                logger.warning(f"Invalid prices (nan/inf/constant/zero) for {symbol}, returning 0.0")
                 return 0.0
             
             x = np.arange(len(prices))
             slope, intercept, r_value, p_value, std_err = stats.linregress(x, prices)
             
-            normalized_slope = slope / np.mean(prices) if np.mean(prices) > 0 else 0
+            mean_price = np.mean(prices)
+            normalized_slope = slope / mean_price if mean_price > 0 else 0
             trend_strength = normalized_slope * (r_value ** 2)
             
             return max(min(trend_strength, 1.0), -1.0)
         
         except (ValueError, Exception) as e:
-            logger.warning(f"Trend calculation failed for {symbol if symbol else 'unknown'}: {str(e)}. Returning neutral 0.0")
+            logger.warning(f"Trend calc failed for {symbol}: {str(e)}. Return 0.0")
             return 0.0
     
     def _analyze_market_regime(self, df: pd.DataFrame, base_score: float, volatility: float, trend_strength: float) -> MarketRegime:
