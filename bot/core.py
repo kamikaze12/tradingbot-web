@@ -27,6 +27,219 @@ import concurrent.futures
 from scipy import stats
 
 # =============================================
+# SCALPING CONFIGURATION
+# =============================================
+SCALPING_CONFIG = {
+    "timeframe": "5m",           # 5 menit untuk scalping
+    "lookback": 150,             # ~12.5 jam data
+    "min_score": 4.0,            # Minimal score untuk eksekusi
+    "long_bias": 0.3,            # Sedikit bias long
+    "max_signals": 10,           # Maksimal sinyal per scan
+    "min_volume_usd": 500000,    # Minimal volume $500k
+    "price_filter": {
+        "min": 0.01,             # Harga minimal $0.01
+        "max": 1000              # Harga maksimal $1000
+    },
+    "provider_priority": ["binance", "kucoin", "yfinance"],  # Prioritize real data
+    "skip_dummy_data": True      # Skip aset dengan dummy data
+}
+
+# =============================================
+# SCALPING STRATEGY
+# =============================================
+class ScalpingStrategy:
+    """Scalping strategy untuk trading cepat dengan timeframe kecil"""
+    
+    def __init__(self, market_type='crypto', trading_type='spot', leverage=1):
+        self.market_type = market_type
+        self.trading_type = trading_type
+        self.leverage = leverage
+        self.timeframe = "5m"
+        self.lookback = 150
+        
+    def analyze(self, df, symbol=None):
+        """Analisis untuk scalping dengan timeframe 5m"""
+        if df is None or len(df) < 50:
+            return None
+            
+        try:
+            # Indicators khusus scalping
+            close = df['close'].values
+            high = df['high'].values
+            low = df['low'].values
+            
+            # RSI cepat (7 period)
+            rsi = self._calculate_rsi(close, 7)
+            
+            # EMA cepat (5, 10)
+            ema_5 = self._calculate_ema(close, 5)
+            ema_10 = self._calculate_ema(close, 10)
+            
+            # Volume spike detection
+            volume_ratio = self._calculate_volume_ratio(df)
+            
+            # Price momentum (5 bar)
+            momentum_5 = (close[-1] / close[-5] - 1) * 100 if len(close) >= 5 else 0
+            
+            # Volatilitas intraday
+            volatility = self._calculate_volatility(df)
+            
+            # Support/Resistance detection
+            support, resistance = self._find_support_resistance(df)
+            
+            # Score calculation
+            score = 0
+            
+            # Trend alignment (EMA 5 > EMA 10 = bullish)
+            if ema_5 > ema_10:
+                score += 1.5
+            
+            # RSI conditions
+            if rsi < 30:
+                score += 1.0  # Oversold
+            elif rsi > 70:
+                score -= 1.0  # Overbought
+            
+            # Volume confirmation
+            if volume_ratio > 1.5:
+                score += 0.5
+            
+            # Momentum positive
+            if momentum_5 > 0.5:
+                score += 0.5
+            
+            # Current price near support
+            current_price = close[-1]
+            if current_price <= support * 1.02:
+                score += 1.0  # Near support, good for LONG
+            
+            # Current price near resistance
+            if current_price >= resistance * 0.98:
+                score -= 1.0  # Near resistance, good for SHORT
+            
+            # Volatility filter (skip too volatile)
+            if volatility > 0.05:  # 5% volatility in 5m
+                score *= 0.5
+            
+            # Determine action
+            if score >= 2:
+                action = "LONG"
+            elif score <= -2:
+                action = "SHORT"
+            else:
+                action = "NEUTRAL"
+            
+            # Calculate TP/SL levels
+            atr = self._calculate_atr(df)
+            
+            if action == "LONG":
+                sl = current_price - (atr * 1.5)
+                tp1 = current_price + (atr * 1.0)
+                tp2 = current_price + (atr * 2.0)
+                tp3 = current_price + (atr * 3.0)
+            elif action == "SHORT":
+                sl = current_price + (atr * 1.5)
+                tp1 = current_price - (atr * 1.0)
+                tp2 = current_price - (atr * 2.0)
+                tp3 = current_price - (atr * 3.0)
+            else:
+                sl = tp1 = tp2 = tp3 = current_price
+            
+            return {
+                'action': action,
+                'score': score,
+                'entry_price': current_price,
+                'sl': sl,
+                'tp1': tp1,
+                'tp2': tp2,
+                'tp3': tp3,
+                'rsi': rsi,
+                'volume_ratio': volume_ratio,
+                'momentum': momentum_5,
+                'volatility': volatility,
+                'support': support,
+                'resistance': resistance,
+                'strategy': 'scalping'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in scalping analysis: {e}")
+            return None
+    
+    def _calculate_rsi(self, prices, period=14):
+        """Calculate RSI"""
+        if len(prices) < period + 1:
+            return 50
+        delta = np.diff(prices)
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        
+        avg_gain = np.mean(gain[-period:])
+        avg_loss = np.mean(loss[-period:])
+        
+        if avg_loss == 0:
+            return 100
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+    
+    def _calculate_ema(self, prices, period):
+        """Calculate EMA"""
+        if len(prices) < period:
+            return np.mean(prices)
+        return pd.Series(prices).ewm(span=period).mean().iloc[-1]
+    
+    def _calculate_volume_ratio(self, df, period=20):
+        """Calculate volume ratio"""
+        if len(df) < period:
+            return 1
+        current_volume = df['volume'].iloc[-1] if 'volume' in df.columns else 0
+        avg_volume = df['volume'].rolling(period).mean().iloc[-1]
+        return current_volume / avg_volume if avg_volume > 0 else 1
+    
+    def _calculate_volatility(self, df, period=20):
+        """Calculate volatility"""
+        if len(df) < period:
+            return 0.02
+        returns = df['close'].pct_change().dropna()
+        volatility = returns.rolling(period).std().iloc[-1]
+        return volatility if not pd.isna(volatility) else 0.02
+    
+    def _find_support_resistance(self, df, lookback=50):
+        """Find support and resistance levels"""
+        if len(df) < lookback:
+            return df['low'].min(), df['high'].max()
+        
+        recent_lows = df['low'].iloc[-lookback:].nsmallest(3).values
+        recent_highs = df['high'].iloc[-lookback:].nlargest(3).values
+        
+        support = np.mean(recent_lows) if len(recent_lows) > 0 else df['low'].min()
+        resistance = np.mean(recent_highs) if len(recent_highs) > 0 else df['high'].max()
+        
+        return support, resistance
+    
+    def _calculate_atr(self, df, period=14):
+        """Calculate ATR"""
+        try:
+            if len(df) < period:
+                return df['close'].iloc[-1] * 0.02
+            
+            high = df['high'].values
+            low = df['low'].values
+            close = df['close'].values
+            
+            tr = np.zeros(len(high))
+            for i in range(1, len(high)):
+                tr1 = high[i] - low[i]
+                tr2 = abs(high[i] - close[i-1])
+                tr3 = abs(low[i] - close[i-1])
+                tr[i] = max(tr1, tr2, tr3)
+            
+            atr_value = np.mean(tr[-period:]) if len(tr) >= period else np.mean(tr)
+            return max(atr_value, df['close'].iloc[-1] * 0.001)
+        except:
+            return df['close'].iloc[-1] * 0.02
+
+# =============================================
 # EMERGENCY IMPORT FIX - UNTUK STRUKTUR FOLDER BOT
 # =============================================
 
@@ -2007,6 +2220,10 @@ class EnhancedTradingBot:
         self.portfolio_optimizer = PortfolioOptimizer()
         self.backtest_engine = BacktestEngine()
         
+        # Scalping configuration
+        self.scalping_mode = False
+        self.scalping_config = SCALPING_CONFIG.copy()
+        
         # Configuration
         self.risk_per_trade = self.config.get("risk_per_trade", 0.01)
         self.max_drawdown_limit = self.config.get("max_drawdown_limit", 0.1)
@@ -2271,6 +2488,14 @@ class EnhancedTradingBot:
             atr_multiplier=self.config.get("atr_multiplier", 1.0),
             entry_range_pct=self.config.get("entry_range_pct", 0.02),
         )
+    
+    def _create_scalping_strategy(self):
+        """Create scalping strategy"""
+        return ScalpingStrategy(
+            market_type=self.mode,
+            trading_type="spot",
+            leverage=1
+        )
 
     def get_popular_assets(self, limit=100):
         """Get popular assets berdasarkan market mode - PERBAIKAN UTAMA"""
@@ -2425,13 +2650,47 @@ class EnhancedTradingBot:
                     
                     logger.info(f"  [{i+1}/{len(assets[:50])}] Analyzing: {symbol} (Type: {detected_type})")
                     
-                    # **PERBAIKAN UTAMA: Gunakan get_trading_data jika tersedia, kalau tidak gunakan provider langsung**
-                    if get_trading_data is not None:
-                        logger.info(f"    🔧 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
-                        df = get_trading_data(formatted_symbol, self.data_provider)
+                    # **SCALPING MODE FILTERS**
+                    if self.scalping_mode:
+                        # Gunakan parameter dari scalping config
+                        timeframe = self.scalping_config.get("timeframe", "5m")
+                        limit = self.scalping_config.get("lookback", 150)
+                        
+                        logger.info(f"    ⚡ Scalping mode: {timeframe} timeframe, {limit} bars")
+                        df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
+                        
+                        if df is None or len(df) < 50:
+                            logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df else 0} bars")
+                            continue
+                        
+                        # Filter harga untuk scalping
+                        current_price = df['close'].iloc[-1]
+                        price_filter = self.scalping_config["price_filter"]
+                        if current_price < price_filter["min"] or current_price > price_filter["max"]:
+                            logger.info(f"    ⚠️ Price filter failed for {symbol}: {current_price}")
+                            continue
+                        
+                        # Filter volume untuk scalping
+                        if 'volume' in df.columns and 'close' in df.columns:
+                            lookback = min(20, len(df))
+                            volume_usd = (df['volume'].iloc[-lookback:] * df['close'].iloc[-lookback:]).mean()
+                            if volume_usd < self.scalping_config["min_volume_usd"]:
+                                logger.info(f"    ⚠️ Volume filter failed for {symbol}: {volume_usd}")
+                                continue
+                        
+                        # Skip dummy data untuk scalping
+                        if self.scalping_config.get("skip_dummy_data", True):
+                            if df['close'].std() < 0.001:
+                                logger.info(f"    ⚠️ Dummy data filter failed for {symbol}")
+                                continue
                     else:
-                        logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
-                        df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
+                        # **NORMAL MODE**
+                        if get_trading_data is not None:
+                            logger.info(f"    🔧 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
+                            df = get_trading_data(formatted_symbol, self.data_provider)
+                        else:
+                            logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
+                            df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
                     
                     if df is None or len(df) < 50:
                         logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df else 0} bars")
@@ -2445,8 +2704,12 @@ class EnhancedTradingBot:
                     
                     logger.info(f"    📊 OHLCV data: {len(df)} bars, price range: {df['close'].min():.2f}-{df['close'].max():.2f}")
                     
-                    # Pilih strategi berdasarkan tipe
-                    if detected_type == "futures":
+                    # Pilih strategi berdasarkan mode
+                    if self.scalping_mode:
+                        strategy = self._create_scalping_strategy()
+                        leverage = 1  # No leverage untuk scalping spot
+                        detected_type = "spot"  # Scalping hanya untuk spot
+                    elif detected_type == "futures":
                         strategy = self._create_futures_strategy()
                         leverage = 5  # Default untuk futures
                     else:
@@ -2464,10 +2727,21 @@ class EnhancedTradingBot:
                     # Hanya blokir untuk market lain
                     analysis = self._apply_market_constraints(analysis, detected_type)
                     
+                    # Tambahkan long bias untuk scalping
+                    if self.scalping_mode and analysis:
+                        long_bias = self.scalping_config.get("long_bias", 0.0)
+                        if long_bias != 0 and analysis.get('action') == 'LONG':
+                            analysis['score'] += long_bias
+                            logger.info(f"    📈 Applied long bias: +{long_bias}")
+                    
                     score = analysis.get('score', 0)
                     action = analysis.get('action', 'NEUTRAL')
                     
-                    min_score = self.config.get("min_score", 2.0)
+                    # Gunakan min_score yang berbeda untuk scalping
+                    if self.scalping_mode:
+                        min_score = self.scalping_config.get("min_score", 4.0)
+                    else:
+                        min_score = self.config.get("min_score", 2.0)
                     
                     # Check jika signal valid
                     if abs(score) >= min_score and action != 'NEUTRAL':
@@ -2489,14 +2763,16 @@ class EnhancedTradingBot:
                             'trading_mode': detected_type,
                             'provider': 'universal',
                             'asset_type': detected_type,
-                            'leverage': leverage
+                            'leverage': leverage,
+                            'strategy': 'scalping' if self.scalping_mode else 'standard'
                         }
                         
                         signals.append(signal_data)
-                        logger.info(f"✅ Signal: {formatted_symbol} | {action} | Score: {score:.2f} | Type: {detected_type} | Leverage: {leverage}x")
+                        logger.info(f"✅ Signal: {formatted_symbol} | {action} | Score: {score:.2f} | Type: {detected_type} | Strategy: {'SCALPING' if self.scalping_mode else 'STANDARD'}")
                         
                         # Stop jika sudah cukup sinyal
-                        if len(signals) >= limit:
+                        max_signals = self.scalping_config.get("max_signals", 10) if self.scalping_mode else limit
+                        if len(signals) >= max_signals:
                             break
                     
                     # Rate limiting
@@ -2514,7 +2790,7 @@ class EnhancedTradingBot:
                 signals.sort(key=lambda x: abs(x['score']), reverse=True)
                 logger.info("🏆 Top signals:")
                 for i, signal in enumerate(signals[:min(10, len(signals))]):
-                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']} | Mode: {signal.get('trading_mode', 'N/A')}")
+                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']} | Mode: {signal.get('trading_mode', 'N/A')} | Strategy: {signal.get('strategy', 'N/A')}")
             else:
                 logger.info("ℹ️ No signals found with current criteria")
             
@@ -2876,71 +3152,70 @@ class EnhancedTradingBot:
     def set_mode(self, mode):
         """Set trading mode dengan universal provider"""
         try:
-            self.mode = mode.lower()
+            # Check jika mode scalping
+            if mode == "scalping":
+                self.scalping_mode = True
+                mode = "crypto"  # Scalping hanya untuk crypto
+                logger.info(f"🎯 Setting market mode to: SCALPING (crypto spot)")
+            else:
+                self.scalping_mode = False
+                self.mode = mode.lower()
+                logger.info(f"🎯 Setting market mode to: {self.mode.upper()}")
             
             # Stop existing tasks
             self.stop_background_tasks()
             
-            logger.info(f"🎯 Setting market mode to: {self.mode.upper()}")
+            # Update config
+            self.config["market_type"] = self.mode
             
-            # Update provider dengan mode baru
+            # Reinitialize provider
             logger.info(f"🔄 Reconfiguring UniversalProvider for {self.mode}...")
+            self._setup_universal_provider()
             
-            try:
-                # Update config
-                self.config["market_type"] = self.mode
+            # Setup strategy
+            if create_strategy_for_symbol is not None:
+                sample_symbol = "BTC/USDT" if self.mode == 'crypto' else "AAPL" if self.mode == 'us_stocks' else "BBCA.JK"
                 
-                # Reinitialize provider
-                self._setup_universal_provider()
-                
-                # Setup strategy
-                if create_strategy_for_symbol is not None:
-                    sample_symbol = "BTC/USDT" if self.mode == 'crypto' else "AAPL" if self.mode == 'us_stocks' else "BBCA.JK"
-                    
-                    try:
-                        self.strategy = create_strategy_for_symbol(
-                            sample_symbol,
-                            market_type=self.mode
-                        )
-                        logger.info(f"✅ Created auto-detected strategy for {self.mode}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Auto strategy creation failed: {e}, falling back to TechnicalAnalysisStrategy")
-                        self.strategy = TechnicalAnalysisStrategy(
-                            market_type=self.mode,
-                            trading_type="spot",
-                            atr_multiplier=self.config.get("atr_multiplier", 1.0),
-                            entry_range_pct=self.config.get("entry_range_pct", 0.02),
-                        )
-                else:
+                try:
+                    self.strategy = create_strategy_for_symbol(
+                        sample_symbol,
+                        market_type=self.mode
+                    )
+                    logger.info(f"✅ Created auto-detected strategy for {self.mode}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Auto strategy creation failed: {e}, falling back to TechnicalAnalysisStrategy")
                     self.strategy = TechnicalAnalysisStrategy(
                         market_type=self.mode,
                         trading_type="spot",
                         atr_multiplier=self.config.get("atr_multiplier", 1.0),
                         entry_range_pct=self.config.get("entry_range_pct", 0.02),
                     )
+            else:
+                self.strategy = TechnicalAnalysisStrategy(
+                    market_type=self.mode,
+                    trading_type="spot",
+                    atr_multiplier=self.config.get("atr_multiplier", 1.0),
+                    entry_range_pct=self.config.get("entry_range_pct", 0.02),
+                )
+            
+            # Test provider connection
+            test_assets = self._test_provider_connection()
+            
+            if test_assets:
+                logger.info(f"✅ Provider ready for {self.mode}")
+                logger.info(f"📋 Sample assets: {test_assets[:3]}")
                 
-                # Test provider connection
-                test_assets = self._test_provider_connection()
-                
-                if test_assets:
-                    logger.info(f"✅ Provider ready for {self.mode}")
-                    logger.info(f"📋 Sample assets: {test_assets[:3]}")
-                    
-                    # Start background tasks
-                    self.start_background_tasks()
-                    return True
-                else:
-                    logger.warning(f"⚠️ Provider test returned no assets, but continuing...")
-                    self.start_background_tasks()
-                    return True
-                    
-            except Exception as e:
-                logger.error(f"❌ Failed to configure provider: {e}")
-                logger.error(traceback.format_exc())
-                return False
+                # Start background tasks
+                self.start_background_tasks()
+                return True
+            else:
+                logger.warning(f"⚠️ Provider test returned no assets, but continuing...")
+                self.start_background_tasks()
+                return True
                 
         except Exception as e:
-            logger.error(f"Error setting mode {mode}: {e}")
+            logger.error(f"❌ Failed to configure provider: {e}")
+            logger.error(traceback.format_exc())
             return False
 
     def _test_provider_connection(self):
@@ -3263,6 +3538,24 @@ def test_universal_provider():
         else:
             print("   ℹ️ No Indonesian stock signals found - this is normal with real data")
     
+    # Test scalping mode
+    print("\n5. Testing SCALPING mode...")
+    success = bot.set_mode("scalping")
+    
+    if success:
+        print("✅ Scalping mode set successfully")
+        
+        # Test scanning scalping
+        print("\n6. Testing SCALPING scanning...")
+        signals = bot.scan_potential_assets(limit=5)
+        print(f"   Found {len(signals)} scalping signals")
+        
+        if signals:
+            for i, signal in enumerate(signals[:5]):
+                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Strategy: {signal.get('strategy', 'N/A')})")
+        else:
+            print("   ℹ️ No scalping signals found - this is normal with strict filters")
+    
     print("\n" + "="*60)
     print("✅ Test completed - Bot menggunakan Universal Provider dengan auto-detection")
     print("   Auto-detect spot/futures dari simbol")
@@ -3270,6 +3563,7 @@ def test_universal_provider():
     print("   Menggunakan get_trading_data untuk membersihkan data")
     print("   SHORT diizinkan untuk crypto (spot & futures)")
     print("   SHORT diblokir untuk forex, saham_id, us_stocks")
+    print("   SCALPING mode dengan filter ketat dan timeframe 5m")
 
 def test_data_cleaner_integration():
     """Test integrasi data cleaner di core.py"""
@@ -3338,9 +3632,60 @@ def test_data_cleaner_integration():
                 else:
                     print(f"   ⚠️ Data validation failed: {msg}")
 
+def test_scalping_filters():
+    """Test filter scalping"""
+    print("\n" + "="*60)
+    print("TESTING SCALPING FILTERS")
+    print("="*60)
+    
+    bot = EnhancedTradingBot()
+    bot.set_mode("scalping")
+    
+    print(f"\n📊 Scalping Configuration:")
+    print(f"   Timeframe: {bot.scalping_config['timeframe']}")
+    print(f"   Min Score: {bot.scalping_config['min_score']}")
+    print(f"   Min Volume USD: ${bot.scalping_config['min_volume_usd']:,}")
+    print(f"   Price Range: ${bot.scalping_config['price_filter']['min']} - ${bot.scalping_config['price_filter']['max']}")
+    print(f"   Long Bias: {bot.scalping_config['long_bias']}")
+    print(f"   Max Signals: {bot.scalping_config['max_signals']}")
+    print(f"   Skip Dummy Data: {bot.scalping_config['skip_dummy_data']}")
+    
+    # Test beberapa aset dengan filter
+    test_prices = [
+        ("Asset murah", 0.005, 1000),
+        ("Asset normal", 50.0, 1000000),
+        ("Asset mahal", 1500.0, 500000),
+        ("Asset volume rendah", 10.0, 10000),
+    ]
+    
+    for name, price, volume in test_prices:
+        print(f"\n🔍 Testing {name}:")
+        print(f"   Price: ${price:.4f}, Volume: ${volume:,}")
+        
+        # Simulasi dataframe
+        df = pd.DataFrame({
+            'close': [price] * 100,
+            'volume': [volume] * 100,
+            'high': [price * 1.01] * 100,
+            'low': [price * 0.99] * 100,
+            'open': [price] * 100
+        })
+        
+        # Apply filters
+        price_filter = bot.scalping_config["price_filter"]
+        min_volume = bot.scalping_config["min_volume_usd"]
+        
+        price_ok = price_filter["min"] <= price <= price_filter["max"]
+        volume_ok = volume >= min_volume
+        
+        print(f"   Price filter: {'✅' if price_ok else '❌'} ({price_filter['min']} - {price_filter['max']})")
+        print(f"   Volume filter: {'✅' if volume_ok else '❌'} (min ${min_volume:,})")
+        print(f"   Overall: {'✅ ACCEPTED' if price_ok and volume_ok else '❌ REJECTED'}")
+
 if __name__ == "__main__":
     test_universal_provider()
     test_data_cleaner_integration()
+    test_scalping_filters()
     
     print("\n" + "="*60)
     print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER")
@@ -3352,4 +3697,11 @@ if __name__ == "__main__":
     print("🎯 Filter aset berdasarkan market mode (crypto, saham_id, forex, us_stocks)")
     print("🎯 SHORT DIIZINKAN untuk crypto (spot & futures)")
     print("🎯 SHORT DIBLOKIR untuk forex, saham_id, us_stocks")
+    print("🎯 SCALPING MODE dengan konfigurasi khusus:")
+    print("   - Timeframe 5m untuk trading cepat")
+    print("   - Filter harga ($0.01 - $1000)")
+    print("   - Minimal volume $500k")
+    print("   - Skip dummy data")
+    print("   - Long bias 0.3")
+    print("   - Minimal score 4.0")
     print("="*60)
