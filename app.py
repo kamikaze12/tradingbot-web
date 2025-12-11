@@ -175,19 +175,19 @@ load_dotenv()
 st.set_page_config(page_title="TradingBot Pro", layout="wide")
 
 # ====================================
-# SCALPING CONFIGURATION FOR APP
+# SCALPING CONFIGURATION FOR APP - PERBAIKAN
 # ====================================
 
 SCALPING_CONFIG_APP = {
     "timeframe": "5m",            # 5 menit untuk scalping
     "lookback": 150,              # ~12.5 jam data
-    "min_score": 4.0,             # Minimal score untuk eksekusi
+    "min_score": 3.0,             # 🔥 PERBAIKAN: Turunkan dari 4.0 ke 3.0
     "long_bias": 0.3,             # Bias positif untuk counter bias SHORT
     "max_signals": 10,            # Maksimal sinyal per scan
-    "min_volume_usd": 500000,     # Minimal volume $500k
+    "min_volume_usd": 100000,     # 🔥 PERBAIKAN: Turunkan dari 500k ke 100k
     "price_filter": {
         "min": 0.01,              # Harga minimal $0.01
-        "max": 1000               # Harga maksimal $1000
+        "max": 500                # 🔥 PERBAIKAN: Turunkan dari 1000 ke 500
     },
     "entry_range_pct": 0.008,     # 0.8% entry range untuk scalping
     "atr_multiplier": 0.7,        # ATR multiplier untuk TP/SL ketat
@@ -520,11 +520,11 @@ def run_scheduler(bot):
         time.sleep(1)
 
 # ====================================
-# SCALPING SPECIFIC FUNCTIONS
+# SCALPING SPECIFIC FUNCTIONS - PERBAIKAN
 # ====================================
 
 def filter_for_scalping(assets, bot):
-    """Filter assets yang cocok untuk scalping"""
+    """Filter assets yang cocok untuk scalping - VERSION IMPROVED"""
     filtered = []
     
     for asset in assets:
@@ -533,50 +533,60 @@ def filter_for_scalping(assets, bot):
             if not symbol:
                 continue
             
-            # Skip jika terlalu murah atau mahal
+            # 🔥 PERBAIKAN: Dapatkan score dan harga
+            current_score = asset.get('score', 0)
             current_price = get_valid_price(asset, symbol, bot)
-            if current_price < SCALPING_CONFIG_APP["price_filter"]["min"] or current_price > SCALPING_CONFIG_APP["price_filter"]["max"]:
+            
+            # 🔥 PERBAIKAN: Gunakan threshold yang lebih realistis
+            # Untuk scalping, kita butuh sinyal yang jelas (score tinggi)
+            if abs(current_score) < SCALPING_CONFIG_APP["min_score"]:
                 continue
             
-            # Skip jika volume rendah
-            if asset.get('volume', 0) < 100000:
+            # Skip jika harga di luar range yang wajar untuk scalping
+            if current_price < 0.05 or current_price > 200:  # Lebih fleksibel
                 continue
             
-            # Skip jika volatilitas tidak memenuhi syarat
-            if asset.get('volatility', 0) < SCALPING_CONFIG_APP["min_volatility"]:
-                continue
+            # Hitung scalping suitability score
+            suitability_score = 0
             
-            # Tambahkan score tambahan untuk assets yang bagus untuk scalping
-            scalping_score = 0
+            # 🔥 PERBAIKAN: Bonus untuk score tinggi
+            if abs(current_score) >= 3.5:
+                suitability_score += 3
+            elif abs(current_score) >= 3.0:
+                suitability_score += 2
+            elif abs(current_score) >= 2.5:
+                suitability_score += 1
             
-            # Bonus untuk volatilitas optimal (2-8%)
-            volatility = asset.get('volatility', 0)
-            if 0.02 <= volatility <= 0.08:
-                scalping_score += 2
+            # Bonus untuk harga optimal untuk scalping ($0.5 - $50)
+            if 0.5 <= current_price <= 50:
+                suitability_score += 2
+            elif 0.1 <= current_price < 0.5 or 50 < current_price <= 100:
+                suitability_score += 1
             
-            # Bonus untuk volume tinggi
+            # Bonus untuk action yang jelas (bukan NEUTRAL)
+            action = asset.get('action', 'NEUTRAL')
+            if action != 'NEUTRAL':
+                suitability_score += 1
+            
+            # Bonus untuk volume yang cukup
             volume = asset.get('volume', 0)
-            if volume > 1000000:
-                scalping_score += 1
+            if volume > 500000:
+                suitability_score += 1
             
-            # Bonus untuk harga dalam range optimal ($1 - $100)
-            if 1 <= current_price <= 100:
-                scalping_score += 1
+            asset['scalping_score'] = suitability_score
+            asset['scalping_suitable'] = suitability_score >= 3  # Minimal 3 poin
             
-            # Tambahkan scalping score ke asset
-            asset['scalping_score'] = scalping_score
-            asset['scalping_suitable'] = scalping_score >= 2
-            
-            if scalping_score >= 2:
+            if suitability_score >= 2:  # Lebih banyak aset lolos filter
                 filtered.append(asset)
                 
         except Exception as e:
+            print(f"⚠️ Error filtering {asset.get('symbol', 'unknown')} for scalping: {e}")
             continue
     
-    return sorted(filtered, key=lambda x: x.get('scalping_score', 0), reverse=True)
+    return sorted(filtered, key=lambda x: abs(x.get('score', 0)), reverse=True)
 
 def display_scalping_signal(signal, index):
-    """Display scalping signal dengan format khusus"""
+    """Display scalping signal dengan format khusus - IMPROVED"""
     symbol = signal.get('symbol', 'UNKNOWN')
     action = signal.get('action', 'NEUTRAL')
     score = signal.get('score', 0)
@@ -584,18 +594,21 @@ def display_scalping_signal(signal, index):
     confidence = signal.get('confidence', 0.5)
     bias_applied = signal.get('long_bias_applied', 0)
     
-    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+    # 🔥 PERBAIKAN: Warna dan emoji yang lebih jelas
+    if action == "LONG":
+        color = "🟢"
+        emoji = "🚀" if confidence > 0.7 else "📈"
+    elif action == "SHORT":
+        color = "🔴"
+        emoji = "💣" if confidence > 0.7 else "📉"
+    else:
+        color = "⚪"
+        emoji = "⚡"
+    
+    col1, col2, col3, col4 = st.columns([2, 1.5, 1.5, 1])
     
     with col1:
-        # Emoji untuk scalping
-        if action == "LONG":
-            emoji = "🚀" if confidence > 0.7 else "📈"
-        elif action == "SHORT":
-            emoji = "💣" if confidence > 0.7 else "📉"
-        else:
-            emoji = "⚡"
-        
-        st.write(f"{index}. {emoji} **{symbol}**")
+        st.write(f"{index}. {color} {emoji} **{symbol}**")
         st.write(f"   Action: `{action}` | Score: `{score:.1f}`")
         
         # Tampilkan bias info
@@ -611,7 +624,9 @@ def display_scalping_signal(signal, index):
         entry_low = signal.get('entry_range_low', 0)
         entry_high = signal.get('entry_range_high', 0)
         if entry_low and entry_high:
+            range_pct = ((entry_high - entry_low) / current_price) * 100
             st.write(f"🎯 Range: `{entry_low:.5f}` - `{entry_high:.5f}`")
+            st.write(f"📏 Range Size: `{range_pct:.2f}%`")
     
     with col3:
         # TP levels untuk scalping
@@ -621,24 +636,32 @@ def display_scalping_signal(signal, index):
         sl = signal.get('sl', 0)
         
         if action == "LONG":
-            st.write(f"📈 TP1: `{tp1:.5f}`")
-            st.write(f"📈 TP2: `{tp2:.5f}`")
+            tp_emoji = "📈"
+            risk_reward = (tp1 - current_price) / (current_price - sl) if (current_price - sl) > 0 else 0
         else:
-            st.write(f"📉 TP1: `{tp1:.5f}`")
-            st.write(f"📉 TP2: `{tp2:.5f}`")
+            tp_emoji = "📉"
+            risk_reward = (current_price - tp1) / (sl - current_price) if (sl - current_price) > 0 else 0
+        
+        st.write(f"{tp_emoji} TP1: `{tp1:.5f}`")
+        st.write(f"{tp_emoji} TP2: `{tp2:.5f}`")
+        st.write(f"📊 R/R: `{risk_reward:.2f}`")
     
     with col4:
         # Scalping specific info
-        st.write(f"⚡ Scalping Score: `{scalping_score}/5`")
+        st.write(f"⚡ Scalping Score: `{scalping_score}/7`")
         st.write(f"🎯 Confidence: `{confidence:.1%}`")
         st.write(f"🛡️ SL: `{sl:.5f}`")
         
         if signal.get('scalping_suitable', False):
-            st.success("✅ Suitable for Scalping")
+            st.success("✅ Good for Scalping")
         else:
-            st.warning("⚠️ Limited scalping")
+            st.warning("⚠️ Limited suitability")
     
-    return st.button(f"Select for Scalping", key=f"select_scalping_{index}")
+    # 🔥 PERBAIKAN: Tombol yang lebih jelas
+    button_key = f"select_scalping_{symbol}_{index}"
+    if st.button(f"📌 Select {symbol}", key=button_key):
+        return True
+    return False
 
 # ====================================
 # Main App - SIMPLIFIED VERSION
@@ -700,6 +723,10 @@ def main_app():
         st.session_state.latest_results = []
         st.session_state.scalping_mode = False  # 🔥 NEW: Scalping mode flag
         st.session_state.scalping_config = SCALPING_CONFIG_APP  # 🔥 NEW: Store config
+        
+        # 🔥 PERBAIKAN: Tambahkan session state untuk debug
+        st.session_state.last_scan_time = None
+        st.session_state.scan_attempts = 0
 
     # Sidebar
     with st.sidebar:
@@ -717,13 +744,33 @@ def main_app():
         
         if scalping_mode:
             st.success("⚡ SCALPING MODE ACTIVE")
-            st.info("""
+            
+            # 🔥 PERBAIKAN: Tampilkan konfigurasi yang bisa diubah di sidebar
+            with st.expander("⚡ Scalping Settings"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    min_score_sidebar = st.slider("Min Score", 2.0, 5.0, 
+                                                 value=SCALPING_CONFIG_APP["min_score"], 
+                                                 step=0.5, key="sidebar_min_score")
+                with col2:
+                    price_max = st.slider("Max Price ($)", 10, 1000, 
+                                         value=SCALPING_CONFIG_APP["price_filter"]["max"], 
+                                         step=10, key="sidebar_price_max")
+                
+                if st.button("Apply Settings", key="apply_scalping_settings"):
+                    SCALPING_CONFIG_APP["min_score"] = min_score_sidebar
+                    SCALPING_CONFIG_APP["price_filter"]["max"] = price_max
+                    st.session_state.scalping_config = SCALPING_CONFIG_APP
+                    st.success("✅ Settings applied!")
+                    st.rerun()
+            
+            st.info(f"""
             **Scalping Parameters:**
             - Timeframe: 5m
-            - Min Score: 4.0
+            - Min Score: {SCALPING_CONFIG_APP["min_score"]}
             - Long Bias: +0.3
             - Entry Range: 0.8%
-            - TP/SL: Tight (ATR x 0.7)
+            - Max Price: ${SCALPING_CONFIG_APP["price_filter"]["max"]}
             """)
         
         st.divider()
@@ -898,7 +945,7 @@ def main_app():
         "📈 History", "📡 Live Scanner", "🤖 ML Backtest", "⚖️ Portfolio"
     ])
 
-    # Tab 1: Scan Assets (Regular)
+    # Tab 1: Scan Assets (Regular) - PERBAIKAN
     with tab1:
         st.subheader("📊 Scan Potential Assets")
         
@@ -910,6 +957,14 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_info.append("⚡ **SCALPING:** ON")
+            # 🔥 PERBAIKAN: Tampilkan konfigurasi scalping
+            st.info(f"""
+            ⚡ **SCALPING CONFIGURATION:**
+            - Min Score: `{SCALPING_CONFIG_APP['min_score']}`
+            - Price Range: `${SCALPING_CONFIG_APP['price_filter']['min']}` - `${SCALPING_CONFIG_APP['price_filter']['max']}`
+            - Long Bias: `{SCALPING_CONFIG_APP['long_bias']}`
+            - Entry Range: `{SCALPING_CONFIG_APP['entry_range_pct']*100:.1f}%`
+            """)
         
         if mode_info:
             st.info(" | ".join(mode_info))
@@ -930,7 +985,7 @@ def main_app():
                 try:
                     # 🔥 PERBAIKAN: Gunakan jumlah yang sesuai
                     if st.session_state.scalping_mode:
-                        limit = 15  # Lebih sedikit untuk scalping
+                        limit = 20  # Lebih banyak untuk scalping
                     else:
                         limit = 20
                     
@@ -961,26 +1016,57 @@ def main_app():
                                 
                                 validated_result = validate_and_fix_price_levels(result, formatted_symbol, bot)
                                 
-                                # 🔥 NEW: Pisahkan hasil untuk scalping
+                                # 🔥 PERBAIKAN: Filter untuk scalping yang lebih fleksibel
                                 if st.session_state.scalping_mode:
-                                    # Tambahkan filter untuk scalping
+                                    current_score = validated_result.get('score', 0)
                                     current_price = get_valid_price(validated_result, formatted_symbol, bot)
-                                    if (current_price >= SCALPING_CONFIG_APP["price_filter"]["min"] and 
-                                        current_price <= SCALPING_CONFIG_APP["price_filter"]["max"] and
-                                        validated_result.get('score', 0) >= SCALPING_CONFIG_APP["min_score"]):
-                                        
-                                        # Tambahkan bias info untuk scalping
+                                    
+                                    # Kriteria yang lebih realistis untuk scalping
+                                    is_scalping_suitable = (
+                                        abs(current_score) >= SCALPING_CONFIG_APP["min_score"] and
+                                        current_price >= 0.05 and
+                                        current_price <= 200 and
+                                        validated_result.get('action', 'NEUTRAL') != 'NEUTRAL'
+                                    )
+                                    
+                                    if is_scalping_suitable:
+                                        # Tambahkan info scalping
                                         validated_result['long_bias_applied'] = SCALPING_CONFIG_APP["long_bias"]
                                         validated_result['min_score_threshold'] = SCALPING_CONFIG_APP["min_score"]
+                                        validated_result['scalping_suitable'] = True
                                         scalping_results.append(validated_result)
                                 
                                 formatted_results.append(validated_result)
                         
+                        # 🔥 PERBAIKAN: Apply additional filtering for scalping
+                        if st.session_state.scalping_mode and scalping_results:
+                            scalping_results = filter_for_scalping(scalping_results, bot)
+                        
                         st.session_state.scanned_results = formatted_results
                         st.session_state.scalping_results = scalping_results  # 🔥 NEW
                         
+                        # 🔥 PERBAIKAN: Tampilkan informasi detail
+                        col_info1, col_info2, col_info3 = st.columns(3)
+                        with col_info1:
+                            st.metric("Total Assets Scanned", len(results))
+                        with col_info2:
+                            st.metric("Valid Signals", len(formatted_results))
+                        with col_info3:
+                            if st.session_state.scalping_mode:
+                                st.metric("Scalping Signals", len(scalping_results))
+                        
                         if st.session_state.scalping_mode:
-                            st.success(f"✅ Found {len(scalping_results)} assets suitable for scalping")
+                            if scalping_results:
+                                st.success(f"✅ Found {len(scalping_results)} assets suitable for scalping")
+                            else:
+                                st.warning(f"⚠️ No assets meet scalping criteria (min score: {SCALPING_CONFIG_APP['min_score']})")
+                                st.info(f"""
+                                **Possible reasons:**
+                                1. Score too low (need ≥ {SCALPING_CONFIG_APP['min_score']})
+                                2. Price outside range ($0.05 - $200)
+                                3. NEUTRAL action (need LONG/SHORT)
+                                4. Low volume or data quality
+                                """)
                         else:
                             st.success(f"✅ Found {len(formatted_results)} potential assets")
                         
@@ -989,6 +1075,33 @@ def main_app():
                         
                 except Exception as e:
                     st.error(f"Scan error: {str(e)[:200]}")
+        
+        # 🔥 PERBAIKAN: DEBUG INFO untuk scalping
+        if st.session_state.scalping_mode:
+            with st.expander("🔧 Debug Information"):
+                st.write("**Current Scalping Configuration:**")
+                st.json(SCALPING_CONFIG_APP)
+                
+                if st.session_state.scanned_results:
+                    st.write(f"**Total Scanned Results:** {len(st.session_state.scanned_results)}")
+                    st.write("**Top 10 Results (with scores):**")
+                    debug_data = []
+                    for i, res in enumerate(st.session_state.scanned_results[:10]):
+                        symbol = res.get('symbol', 'N/A')
+                        score = res.get('score', 0)
+                        action = res.get('action', 'NEUTRAL')
+                        price = get_valid_price(res, symbol, bot)
+                        debug_data.append({
+                            "Symbol": symbol,
+                            "Score": f"{score:.1f}",
+                            "Action": action,
+                            "Price": f"${price:.4f}",
+                            "Scalping?": "✅" if res.get('scalping_suitable', False) else "❌"
+                        })
+                    
+                    if debug_data:
+                        df_debug = pd.DataFrame(debug_data)
+                        st.dataframe(df_debug, use_container_width=True)
         
         # 🔥 NEW: Jika dalam scalping mode, tampilkan hasil khusus scalping
         if st.session_state.scalping_mode and st.session_state.scalping_results:
@@ -1056,7 +1169,7 @@ def main_app():
                     
                     st.divider()
 
-    # Tab 2: Scalping Mode (NEW)
+    # Tab 2: Scalping Mode (NEW) - PERBAIKAN
     with tab2:
         st.subheader("⚡ Scalping Mode - 3-5 Minute Trading")
         
@@ -1065,7 +1178,7 @@ def main_app():
             st.info("""
             **Enable Scalping Mode from the sidebar to access:**
             - Tighter entry ranges (0.8%)
-            - Higher score threshold (4.0)
+            - Higher score threshold (3.0)
             - Long bias (+0.3) to counter short bias
             - Optimized for quick 3-5 minute trades
             """)
@@ -1076,24 +1189,24 @@ def main_app():
         else:
             st.success("⚡ SCALPING MODE ACTIVE")
             
-            # Scalping Configuration
-            with st.expander("⚙️ Scalping Configuration"):
+            # 🔥 PERBAIKAN: Dynamic Scalping Configuration
+            with st.expander("⚙️ Dynamic Scalping Configuration"):
                 col_sc1, col_sc2, col_sc3 = st.columns(3)
                 
                 with col_sc1:
-                    min_score = st.slider("Min Score Threshold", 3.0, 6.0, 
+                    min_score = st.slider("Min Score Threshold", 2.0, 5.0, 
                                          value=SCALPING_CONFIG_APP["min_score"], step=0.5,
-                                         key="tab2_min_score")  # ✅ UNIK KEY
+                                         key="tab2_min_score")
                 
                 with col_sc2:
                     long_bias = st.slider("Long Bias", -1.0, 1.0, 
                                          value=SCALPING_CONFIG_APP["long_bias"], step=0.1,
-                                         key="tab2_long_bias")  # ✅ UNIK KEY
+                                         key="tab2_long_bias")
                 
                 with col_sc3:
                     entry_range = st.slider("Entry Range %", 0.005, 0.02,
                                           value=SCALPING_CONFIG_APP["entry_range_pct"], step=0.001,
-                                          key="tab2_entry_range")  # ✅ UNIK KEY
+                                          key="tab2_entry_range")
                     st.caption(f"Current: {entry_range*100:.1f}%")
                 
                 if st.button("🔄 Update Scalping Config", key="update_scalping_config"):
@@ -1102,27 +1215,31 @@ def main_app():
                     SCALPING_CONFIG_APP["entry_range_pct"] = entry_range
                     st.session_state.scalping_config = SCALPING_CONFIG_APP
                     st.success("✅ Scalping configuration updated!")
+                    st.rerun()
             
-            # Quick Scalping Actions
+            # 🔥 PERBAIKAN: Quick Actions dengan feedback yang lebih baik
             col_qs1, col_qs2, col_qs3 = st.columns(3)
             
             with col_qs1:
-                if st.button("🎯 Quick Scan (Top 10)", key="quick_scalping_scan", type="primary"):
+                if st.button("🎯 Quick Scan (Top 15)", key="quick_scalping_scan", type="primary"):
                     with st.spinner("Quick scanning for scalping..."):
                         try:
                             # Quick scan untuk scalping
-                            results = bot.scan_potential_assets(10)
+                            results = bot.scan_potential_assets(15)
                             if results:
                                 scalping_signals = []
                                 for res in results:
                                     if isinstance(res, dict) and 'symbol' in res:
                                         symbol = res['symbol']
                                         score = res.get('score', 0)
-                                        if score >= min_score:
+                                        if abs(score) >= min_score:
                                             # Apply scalping bias
                                             res['long_bias_applied'] = long_bias
                                             res['min_score_threshold'] = min_score
                                             scalping_signals.append(res)
+                                
+                                # Apply filter
+                                scalping_signals = filter_for_scalping(scalping_signals, bot)
                                 
                                 st.session_state.scalping_results = scalping_signals
                                 st.success(f"✅ Found {len(scalping_signals)} scalping signals")
@@ -1140,13 +1257,15 @@ def main_app():
                             if analysis:
                                 analysis['long_bias_applied'] = long_bias
                                 analysis['scalping_mode'] = True
+                                analysis['scalping_suitable'] = True  # Mark as suitable
                                 st.session_state.selected_analysis = analysis
                                 st.success("✅ BTC analysis complete!")
                         except Exception as e:
                             st.error(f"Analysis error: {e}")
             
             with col_qs3:
-                if st.button("🔄 Refresh Data", key="refresh_scalping_data"):
+                if st.button("🔄 Clear & Refresh", key="refresh_scalping_data"):
+                    st.session_state.scalping_results = []
                     st.rerun()
             
             # Display Scalping Results
