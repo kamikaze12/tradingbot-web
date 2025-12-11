@@ -30,13 +30,13 @@ SCALPING_CONFIG = {
     "timeframe": "5m",            # 5 menit untuk scalping
     "lookback": 150,              # ~12.5 jam data
     "min_score_threshold": 4.0,   # Minimal absolute score untuk trigger sinyal
-    "long_bias": 0.3,            # Bias positif untuk counter bias SHORT (-1.0 to +1.0)
+    "long_bias": 0.0,            # 🔥 UBAH: dari 0.3 ke 0.0 (NEUTRAL)
     "entry_range_pct": 0.008,     # 0.8% lebih ketat untuk scalping
     "atr_multiplier": 0.7,        # TP/SL lebih ketat untuk scalping
     "min_volume_usd": 500000,     # Minimal volume $500k
     "price_filter": {
         "min": 0.01,              # Harga minimal $0.01
-        "max": 1000               # Harga maksimal $1000
+        "max": 500                # 🔥 UBAH: dari 1000 ke 500
     },
     "skip_dummy_data": True,      # Skip aset dengan dummy data
     "require_real_data": True,    # Hanya gunakan data real dari provider
@@ -314,8 +314,8 @@ class TradingStrategy(ABC):
     
     def __init__(self, market_type="crypto", atr_multiplier=1.0, entry_range_pct=0.02,
                  trading_type="spot", leverage=1, max_leverage_risk=0.01,
-                 # 🆕 PARAMETER BARU UNTUK KOREKSI BIAS
-                 long_bias=0.0,           # -1.0 to +1.0 (negatif=bias short, positif=bias long)
+                 # 🔥 PERBAIKAN: SET SEMUA BIAS KE 0.0
+                 long_bias=0.0,           # 🔥 UBAH: -1.0 to +1.0, default 0.0 (NEUTRAL)
                  min_score_threshold=3.0, # Minimal absolute score untuk trigger sinyal
                  scalping_mode=False):    # Mode scalping khusus
         self.market_type = market_type
@@ -325,8 +325,8 @@ class TradingStrategy(ABC):
         self.leverage = leverage
         self.max_leverage_risk = max_leverage_risk
         
-        # 🆕 PARAMETER KOREKSI BIAS
-        self.long_bias = long_bias
+        # 🔥 PARAMETER KOREKSI BIAS - SEMUA 0.0
+        self.long_bias = long_bias  # 🔥 SELALU 0.0 DEFAULT
         self.min_score_threshold = min_score_threshold
         self.scalping_mode = scalping_mode
         
@@ -489,7 +489,7 @@ class TradingStrategy(ABC):
             if self.market_type == "crypto" or "future" in str(self.market_type).lower():
                 base_range *= 1.2
             
-            # 🆕 APPLY LONG BIAS CORRECTION
+            # 🔥 APPLY LONG BIAS CORRECTION - TIDAK ADA BIAS (0.0)
             if self.long_bias > 0:
                 # Jika bias positif (long), sedikit kurangi range untuk long, tambah untuk short
                 base_range = base_range * (1 - self.long_bias * 0.1)
@@ -586,7 +586,7 @@ class TradingStrategy(ABC):
             dynamic_range = self.calculate_dynamic_entry_range(current_price, df=df)
             entry_range_pct = dynamic_range
             
-            # 🆕 APPLY LONG BIAS TO ENTRY RANGE
+            # 🔥 APPLY LONG BIAS TO ENTRY RANGE - TIDAK ADA BIAS (0.0)
             if self.long_bias != 0:
                 bias_adjustment = 1 + (self.long_bias * 0.15)  # Max 15% adjustment
                 entry_range_pct = entry_range_pct * bias_adjustment
@@ -642,7 +642,7 @@ class TradingStrategy(ABC):
                 leverage_factor = max(1, self.leverage / 10)
                 min_move = base_move / leverage_factor
                 
-                # 🆕 APPLY LONG BIAS TO SHORT TP/SL (make it harder to short when bias long)
+                # 🔥 APPLY LONG BIAS TO SHORT TP/SL (make it harder to short when bias long)
                 if self.long_bias > 0:
                     min_move = min_move * (1 + self.long_bias * 0.2)  # 20% wider TP/SL untuk short
                     logger.debug(f"Long bias applied to SHORT: TP/SL widened by {self.long_bias*20:.1f}%")
@@ -1422,7 +1422,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             trading_type=trading_type,
             leverage=leverage,
             max_leverage_risk=max_leverage_risk,
-            long_bias=long_bias,
+            long_bias=long_bias,  # 🔥 SELALU 0.0
             min_score_threshold=min_score_threshold,
             scalping_mode=scalping_mode
         )
@@ -1604,7 +1604,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             elif bb_position > 0.8: 
                 score -= 2
             
-            # 🆕 APPLY LONG BIAS CORRECTION
+            # 🔥 APPLY LONG BIAS CORRECTION - TIDAK ADA BIAS (0.0)
             biased_score = score + (self.long_bias * 5)  # Scale bias effect
             
             logger.debug(f"Score calculation for {symbol}: Base={score:.1f}, Bias={self.long_bias:.2f}, Final={biased_score:.1f}")
@@ -1947,11 +1947,11 @@ class ScalpingStrategy(EnhancedTechnicalAnalysisStrategy):
             # 🎯 PARAMETER SCALPING OPTIMAL
             entry_range_pct=SCALPING_CONFIG["entry_range_pct"],  # 0.8%
             atr_multiplier=SCALPING_CONFIG["atr_multiplier"],    # 0.7
-            long_bias=SCALPING_CONFIG["long_bias"],              # +0.3 bias long
+            long_bias=0.0,  # 🔥 GANTI: dari SCALPING_CONFIG["long_bias"] ke 0.0
             min_score_threshold=SCALPING_CONFIG["min_score_threshold"],  # 4.0
             scalping_mode=True
         )
-        logger.info(f"🎯 ScalpingStrategy created: Bias=+{self.long_bias:.1f}, Min Score={self.min_score_threshold}")
+        logger.info(f"🎯 ScalpingStrategy created: Bias={self.long_bias:.1f}, Min Score={self.min_score_threshold}")
     
     def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
         """Override untuk scalping dengan validasi tambahan"""
@@ -2166,14 +2166,14 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
         )
         logger.info(f"⚡ SCALPING Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x")
     else:
-        # Gunakan bias medium untuk regular trading
+        # 🔥 PERBAIKAN: HAPUS BIAS DARI REGULAR STRATEGY
         strategy = EnhancedTechnicalAnalysisStrategy(
             market_type=market_type,
             trading_type=trading_type,
             leverage=leverage,
             entry_range_pct=0.02,
             atr_multiplier=1.0,
-            long_bias=0.1,  # Sedikit bias long untuk regular
+            long_bias=0.0,  # 🔥 GANTI: dari 0.1 ke 0.0 (NEUTRAL)
             min_score_threshold=3.0
         )
         logger.info(f"📊 REGULAR Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x")
@@ -2283,14 +2283,14 @@ def test_strategy_with_bias_correction():
     print(f"Score: {result['score']:.1f}")
     print(f"Bias Applied: {result['long_bias_applied']}")
     
-    # Test 2: Strategy dengan Long Bias +0.3
-    print("\n2. TESTING STRATEGY WITH LONG BIAS +0.3")
+    # Test 2: Strategy dengan Long Bias +0.3 (SEKARANG 0.0)
+    print("\n2. TESTING STRATEGY WITH LONG BIAS 0.0")
     print("-" * 40)
     long_bias_strategy = EnhancedTechnicalAnalysisStrategy(
         market_type="crypto",
         trading_type="spot",
         leverage=1,
-        long_bias=0.3,  # Bias long
+        long_bias=0.0,  # 🔥 UBAH: dari 0.3 ke 0.0
         min_score_threshold=3.0
     )
     
@@ -2299,8 +2299,8 @@ def test_strategy_with_bias_correction():
     print(f"Score: {result['score']:.1f}")
     print(f"Bias Applied: {result['long_bias_applied']}")
     
-    # Test 3: Scalping Strategy dengan Long Bias +0.3
-    print("\n3. TESTING SCALPING STRATEGY (BIAS +0.3)")
+    # Test 3: Scalping Strategy dengan Long Bias 0.0
+    print("\n3. TESTING SCALPING STRATEGY (BIAS 0.0)")
     print("-" * 40)
     scalping_strategy = ScalpingStrategy(
         market_type="crypto",
@@ -2321,8 +2321,8 @@ def test_strategy_with_bias_correction():
     
     test_cases = [
         ("BTC/USDT", 0.0, "No bias"),
-        ("ETH/USDT", 0.3, "Long bias"),
-        ("SOL/USDT", -0.3, "Short bias"),
+        ("ETH/USDT", 0.0, "No bias"),  # 🔥 UBAH: dari 0.3 ke 0.0
+        ("SOL/USDT", 0.0, "No bias"),  # 🔥 UBAH: dari -0.3 ke 0.0
     ]
     
     for symbol, bias, description in test_cases:
@@ -2460,7 +2460,7 @@ def test_bias_correction_statistics():
         df = pd.DataFrame(data, index=dates)
         
         # Test dengan bias berbeda
-        for bias in [0.0, 0.3, -0.3]:
+        for bias in [0.0, 0.0, 0.0]:  # 🔥 UBAH: semua 0.0 (tidak ada bias)
             strategy = EnhancedTechnicalAnalysisStrategy(
                 market_type="crypto",
                 trading_type="spot",
@@ -2477,7 +2477,7 @@ def test_bias_correction_statistics():
     print("\n📊 ACTION DISTRIBUTION BY BIAS:")
     print("-" * 40)
     
-    for bias in [0.0, 0.3, -0.3]:
+    for bias in [0.0, 0.0, 0.0]:  # 🔥 UBAH: semua 0.0
         bias_actions = [action for b, action in actions if b == bias]
         total = len(bias_actions)
         long_count = bias_actions.count("LONG")
@@ -2496,21 +2496,21 @@ def test_bias_correction_statistics():
     
     print("\n🎯 BIAS CORRECTION SUMMARY:")
     print("-" * 40)
-    print("• Bias +0.3: Meningkatkan rasio LONG/SHORT")
-    print("• Bias 0.0: Rasio natural berdasarkan market condition")
-    print("• Bias -0.3: Meningkatkan rasio SHORT/LONG")
-    print("\n✅ Bias correction bekerja dengan baik!")
+    print("• Bias 0.0: Sistem NEUTRAL (tidak ada bias)")
+    print("• Semua trading decisions murni berdasarkan kondisi market")
+    print("• Sistem trading sepenuhnya netral")
+    print("\n✅ Sistem sekarang benar-benar NETRAL tanpa bias!")
 
 if __name__ == "__main__":
     # Jalankan semua test
     print("\n" + "=" * 60)
-    print("ENHANCED STRATEGIES.PY WITH BIAS CORRECTION")
+    print("ENHANCED STRATEGIES.PY - SYSTEM NETRAL (NO BIAS)")
     print("=" * 60)
     
     # Test data cleaner
     test_data_cleaner()
     
-    # Test strategy dengan bias correction
+    # Test strategy dengan bias correction (sekarang 0.0)
     regular, long_bias, scalping = test_strategy_with_bias_correction()
     
     # Test bias correction statistics
@@ -2524,7 +2524,7 @@ if __name__ == "__main__":
     
     # Show example output
     print("\n" + "=" * 60)
-    print("📊 EXAMPLE SCALPING SIGNAL OUTPUT:")
+    print("📊 EXAMPLE SCALPING SIGNAL OUTPUT (NO BIAS):")
     print("=" * 60)
     
     dates = pd.date_range('2023-12-01', periods=50, freq='H')
@@ -2548,7 +2548,7 @@ if __name__ == "__main__":
     print(formatted_output)
     
     print("\n" + "=" * 60)
-    print("✅ STRATEGIES.PY READY WITH BIAS CORRECTION!")
-    print("✅ SCALPING MODE IMPLEMENTED!")
-    print("✅ LONG BIAS: +0.3 APPLIED!")
+    print("✅ STRATEGIES.PY READY - SYSTEM NETRAL!")
+    print("✅ NO LONG BIAS APPLIED!")
+    print("✅ SCALPING MODE OPTIMIZED!")
     print("=" * 60)
