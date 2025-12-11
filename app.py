@@ -1082,15 +1082,18 @@ def main_app():
                 
                 with col_sc1:
                     min_score = st.slider("Min Score Threshold", 3.0, 6.0, 
-                                         value=SCALPING_CONFIG_APP["min_score"], step=0.5)
+                                         value=SCALPING_CONFIG_APP["min_score"], step=0.5,
+                                         key="tab2_min_score")  # ✅ UNIK KEY
                 
                 with col_sc2:
                     long_bias = st.slider("Long Bias", -1.0, 1.0, 
-                                         value=SCALPING_CONFIG_APP["long_bias"], step=0.1)
+                                         value=SCALPING_CONFIG_APP["long_bias"], step=0.1,
+                                         key="tab2_long_bias")  # ✅ UNIK KEY
                 
                 with col_sc3:
                     entry_range = st.slider("Entry Range %", 0.005, 0.02,
-                                          value=SCALPING_CONFIG_APP["entry_range_pct"], step=0.001)
+                                          value=SCALPING_CONFIG_APP["entry_range_pct"], step=0.001,
+                                          key="tab2_entry_range")  # ✅ UNIK KEY
                     st.caption(f"Current: {entry_range*100:.1f}%")
                 
                 if st.button("🔄 Update Scalping Config", key="update_scalping_config"):
@@ -1244,11 +1247,11 @@ def main_app():
                 with col_sa1:
                     analysis_config['long_bias'] = st.slider("Analysis Bias", -1.0, 1.0, 
                                                            value=SCALPING_CONFIG_APP["long_bias"], 
-                                                           step=0.1, key="analysis_bias")
+                                                           step=0.1, key="tab3_analysis_bias")  # ✅ UNIK KEY
                 with col_sa2:
                     analysis_config['min_score'] = st.slider("Min Score", 3.0, 6.0,
                                                            value=SCALPING_CONFIG_APP["min_score"],
-                                                           step=0.5, key="analysis_min_score")
+                                                           step=0.5, key="tab3_min_score")  # ✅ UNIK KEY
         
         if st.button("Analyze", key="analyze_btn", type="primary"):
             if symbol_input:
@@ -1385,13 +1388,13 @@ def main_app():
                 with col_ss1:
                     scalping_settings['entry_range_pct'] = st.slider("Entry Range %", 0.005, 0.02,
                                                                    value=SCALPING_CONFIG_APP["entry_range_pct"], 
-                                                                   step=0.001)
+                                                                   step=0.001, key="tab4_entry_range")  # ✅ UNIK KEY
                     st.caption(f"Default: 0.8% | Current: {scalping_settings['entry_range_pct']*100:.1f}%")
                 
                 with col_ss2:
                     scalping_settings['atr_multiplier'] = st.slider("ATR Multiplier", 0.5, 2.0,
                                                                   value=SCALPING_CONFIG_APP["atr_multiplier"],
-                                                                  step=0.1)
+                                                                  step=0.1, key="tab4_atr_multiplier")  # ✅ UNIK KEY
                     st.caption(f"Tighter TP/SL = lower multiplier")
         
         if st.button("🧮 Hitung TP/SL", key="calculate_custom", type="primary"):
@@ -1857,11 +1860,11 @@ def main_app():
                 with col_bs1:
                     backtest_settings['min_score'] = st.slider("Min Score Threshold", 3.0, 6.0,
                                                              value=SCALPING_CONFIG_APP["min_score"],
-                                                             step=0.5, key="backtest_min_score")
+                                                             step=0.5, key="tab8_min_score")  # ✅ UNIK KEY
                 with col_bs2:
                     backtest_settings['long_bias'] = st.slider("Long Bias", -1.0, 1.0,
                                                              value=SCALPING_CONFIG_APP["long_bias"],
-                                                             step=0.1, key="backtest_long_bias")
+                                                             step=0.1, key="tab8_long_bias")  # ✅ UNIK KEY
         
         if st.button("🚀 Run Backtest", key="run_backtest", type="primary"):
             if backtest_symbol:
@@ -1930,16 +1933,16 @@ def main_app():
         
         col1, col2 = st.columns([2, 1])
         with col1:
-            portfolio_capital = st.number_input("Total Capital:", value=10000, step=1000)
+            portfolio_capital = st.number_input("Total Capital:", value=10000, step=1000, key="portfolio_capital_input")
         
         # Scalping portfolio settings
         if st.session_state.scalping_mode:
             with st.expander("⚡ Scalping Portfolio Settings"):
                 col_sp1, col_sp2 = st.columns(2)
                 with col_sp1:
-                    max_scalping_positions = st.slider("Max Scalping Positions", 1, 10, value=5, step=1)
+                    max_scalping_positions = st.slider("Max Scalping Positions", 1, 10, value=5, step=1, key="max_scalping_positions")
                 with col_sp2:
-                    scalping_position_size = st.slider("Position Size %", 1, 10, value=2, step=1)
+                    scalping_position_size = st.slider("Position Size %", 1, 10, value=2, step=1, key="scalping_position_size")
                     st.caption(f"Each position: {scalping_position_size}% of capital")
         
         with col2:
