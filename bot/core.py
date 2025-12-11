@@ -33,7 +33,6 @@ SCALPING_CONFIG = {
     "timeframe": "5m",           # 5 menit untuk scalping
     "lookback": 150,             # ~12.5 jam data
     "min_score": 4.0,            # Minimal score untuk eksekusi
-    "long_bias": 0.3,            # Sedikit bias long
     "max_signals": 10,           # Maksimal sinyal per scan
     "min_volume_usd": 500000,    # Minimal volume $500k
     "price_filter": {
@@ -87,12 +86,14 @@ class ScalpingStrategy:
             # Support/Resistance detection
             support, resistance = self._find_support_resistance(df)
             
-            # Score calculation
+            # Score calculation - TANPA BIAS
             score = 0
             
             # Trend alignment (EMA 5 > EMA 10 = bullish)
             if ema_5 > ema_10:
                 score += 1.5
+            else:
+                score -= 1.5
             
             # RSI conditions
             if rsi < 30:
@@ -107,6 +108,8 @@ class ScalpingStrategy:
             # Momentum positive
             if momentum_5 > 0.5:
                 score += 0.5
+            elif momentum_5 < -0.5:
+                score -= 0.5
             
             # Current price near support
             current_price = close[-1]
@@ -119,7 +122,7 @@ class ScalpingStrategy:
             
             # Volatility filter (skip too volatile)
             if volatility > 0.05:  # 5% volatility in 5m
-                score *= 0.5
+                score *= 0.8  # Reduce score but don't eliminate
             
             # Determine action
             if score >= 2:
@@ -566,9 +569,6 @@ class BacktestEngine:
                         }
                         trades.append(entry_trade)
                         current_trade = entry_trade
-                        
-                        # Apply commission
-                        balance -= entry_trade['commission_paid']
                     
                     # Check if we should exit a trade
                     elif position != 0 and len(trades) > 0:
@@ -1072,7 +1072,7 @@ class EnhancedPositionManager:
         self.positions: Dict[str, EnhancedPosition] = {}
         self.max_positions = 10
         self.max_portfolio_risk = 0.02
-        
+    
     def calculate_position_size(self, symbol: str, entry_price: float, stop_loss: float, 
                               account_balance: float, risk_per_trade: float = 0.01) -> float:
         """Calculate position size based on risk management"""
@@ -2722,17 +2722,8 @@ class EnhancedTradingBot:
                         logger.info(f"    ⚠️ No analysis for {symbol}")
                         continue
                     
-                    # **PERUBAHAN PENTING: HAPUS blokir SHORT untuk crypto spot**
-                    # Biarkan SHORT muncul untuk semua crypto (spot & futures)
-                    # Hanya blokir untuk market lain
-                    analysis = self._apply_market_constraints(analysis, detected_type)
-                    
-                    # Tambahkan long bias untuk scalping
-                    if self.scalping_mode and analysis:
-                        long_bias = self.scalping_config.get("long_bias", 0.0)
-                        if long_bias != 0 and analysis.get('action') == 'LONG':
-                            analysis['score'] += long_bias
-                            logger.info(f"    📈 Applied long bias: +{long_bias}")
+                    # **PERUBAHAN PENTING: TANPA BIAS - Terima sinyal SHORT untuk crypto**
+                    # Tidak ada bias yang diterapkan
                     
                     score = analysis.get('score', 0)
                     action = analysis.get('action', 'NEUTRAL')
@@ -2810,14 +2801,9 @@ class EnhancedTradingBot:
             
         action = analysis.get('action', 'NEUTRAL')
         
-        # **PERUBAHAN PENTING: HAPUS blokir SHORT untuk crypto spot**
-        # Hanya blokir SHORT untuk market lain (forex, saham_id, us_stocks)
-        if action == 'SHORT' and self.mode in ['forex', 'saham_id', 'us_stocks']:
-            logger.debug(f"🚫 SHORT blocked for {self.mode}")
-            analysis['action'] = 'NEUTRAL'
-            analysis['score'] = 0
-        
-        # **CATATAN: SHORT untuk crypto (spot & futures) TIDAK DIBLOKIR**
+        # **PERUBAHAN: Tidak ada bias untuk crypto, semua sinyal diterima**
+        # SHORT diizinkan untuk semua crypto (spot & futures)
+        # Tidak ada bias yang diterapkan
         
         return analysis
 
@@ -2857,7 +2843,7 @@ class EnhancedTradingBot:
             if not analysis:
                 return {'error': 'Analysis failed'}
             
-            # Apply market constraints
+            # Apply market constraints (tanpa bias)
             analysis = self._apply_market_constraints(analysis, detected_type)
             
             return analysis
@@ -3019,7 +3005,7 @@ class EnhancedTradingBot:
     # =============================================
 
     def analyze_asset(self, symbol):
-        """Backward compatibility method"""
+        """Backward compatibility method - TANPA BIAS"""
         return self.analyze_with_enhanced_ml(symbol)
     
     def get_active_positions(self):
@@ -3441,7 +3427,7 @@ class TradingCore:
                     if df is None or df.empty:
                         continue
                     
-                    # Analisis dengan strategy
+                    # Analisis dengan strategy (TANPA BIAS)
                     signal = self.strategy.analyze(df, symbol)
                     
                     if signal and signal.get('action') != 'hold':
@@ -3561,8 +3547,8 @@ def test_universal_provider():
     print("   Auto-detect spot/futures dari simbol")
     print("   Leverage auto-detection (1x spot, 5x futures)")
     print("   Menggunakan get_trading_data untuk membersihkan data")
+    print("   TANPA BIAS untuk semua sinyal")
     print("   SHORT diizinkan untuk crypto (spot & futures)")
-    print("   SHORT diblokir untuk forex, saham_id, us_stocks")
     print("   SCALPING mode dengan filter ketat dan timeframe 5m")
 
 def test_data_cleaner_integration():
@@ -3646,7 +3632,6 @@ def test_scalping_filters():
     print(f"   Min Score: {bot.scalping_config['min_score']}")
     print(f"   Min Volume USD: ${bot.scalping_config['min_volume_usd']:,}")
     print(f"   Price Range: ${bot.scalping_config['price_filter']['min']} - ${bot.scalping_config['price_filter']['max']}")
-    print(f"   Long Bias: {bot.scalping_config['long_bias']}")
     print(f"   Max Signals: {bot.scalping_config['max_signals']}")
     print(f"   Skip Dummy Data: {bot.scalping_config['skip_dummy_data']}")
     
@@ -3695,13 +3680,12 @@ if __name__ == "__main__":
     print("🎯 Provider universal (CCXT untuk crypto, YFinance untuk stocks/forex)")
     print("🎯 SmartChainDataProvider sebagai prioritas utama")
     print("🎯 Filter aset berdasarkan market mode (crypto, saham_id, forex, us_stocks)")
-    print("🎯 SHORT DIIZINKAN untuk crypto (spot & futures)")
-    print("🎯 SHORT DIBLOKIR untuk forex, saham_id, us_stocks")
+    print("🎯 TANPA BIAS - Semua sinyal (LONG/SHORT) diterima berdasarkan analisis murni")
+    print("🎯 SHORT DIIZINKAN untuk crypto (spot & futures) - TANPA DIBLOKIR")
     print("🎯 SCALPING MODE dengan konfigurasi khusus:")
     print("   - Timeframe 5m untuk trading cepat")
     print("   - Filter harga ($0.01 - $1000)")
     print("   - Minimal volume $500k")
     print("   - Skip dummy data")
-    print("   - Long bias 0.3")
     print("   - Minimal score 4.0")
     print("="*60)
