@@ -1540,9 +1540,15 @@ def main_app():
             with col_range3:
                 st.metric("Ideal Entry", f"{analysis.get('best_entry', 0):.5f}")
 
-    # Tab 4: Custom Entry (Diperbaiki untuk scalping)
+    # Tab 4: Custom Entry & Open Position - PERBAIKAN
     with tab4:
-        st.subheader("🎯 Custom Entry Calculator")
+        st.subheader("🎯 Custom Entry & Open Position")
+        
+        # 🔥 PERBAIKAN: Workflow yang benar:
+        # 1. Pilih aset dari scan (Tab 1) → auto-fill di sini
+        # 2. Masukkan entry price manual
+        # 3. Hitung TP/SL
+        # 4. Open position ke database
         
         # Mode info
         mode_info = []
@@ -1556,156 +1562,187 @@ def main_app():
         if mode_info:
             st.info(" | ".join(mode_info))
         
-        # 🔥 PERBAIKAN: Tampilkan selected asset jika ada
-        if st.session_state.selected_for_entry:
-            st.subheader("📌 Selected Asset from Scan")
-            
-            for symbol, data in st.session_state.selected_for_entry.items():
-                col_sel1, col_sel2 = st.columns([3, 1])
-                with col_sel1:
-                    display_symbol = convert_symbol_for_display(
-                        symbol,
-                        bot.mode,
-                        getattr(bot, 'trading_mode', 'spot')
-                    )
-                    
-                    st.success(f"✅ **{display_symbol}** - {data.get('action', 'N/A')} (Score: {data.get('score', 0)})")
-                    st.write(f"💰 Current Price: `{data.get('current_price', 0):.5f}`")
-                    st.write(f"🎯 Entry Range: `{data.get('entry_range_low', 0):.5f} - {data.get('entry_range_high', 0):.5f}`")
-                
-                with col_sel2:
-                    if st.button(f"❌ Remove", key=f"remove_custom_{symbol}"):
-                        del st.session_state.selected_for_entry[symbol]
-                        st.rerun()
-            
-            st.divider()
+        # ============================================
+        # STEP 1: Pilih Aset dari Scan Results
+        # ============================================
+        st.subheader("📌 Step 1: Select Asset from Scan")
         
-        col_symbol, col_action = st.columns([2, 1])
+        # Tampilkan assets dari scan results
+        if st.session_state.scanned_results or st.session_state.scalping_results:
+            # Pilih results berdasarkan mode
+            if st.session_state.scalping_mode and st.session_state.scalping_results:
+                available_assets = st.session_state.scalping_results
+            else:
+                available_assets = st.session_state.scanned_results
+            
+            # Buat dropdown untuk memilih asset
+            asset_options = {}
+            for asset in available_assets[:20]:  # Limit 20 assets
+                if isinstance(asset, dict) and 'symbol' in asset:
+                    symbol = asset['symbol']
+                    action = asset.get('action', 'NEUTRAL')
+                    score = asset.get('score', 0)
+                    price = get_valid_price(asset, symbol, bot)
+                    
+                    display_text = f"{symbol} - {action} (Score: {score:.1f}) - Price: ${price:.4f}"
+                    asset_options[display_text] = asset
+            
+            if asset_options:
+                selected_asset_display = st.selectbox(
+                    "Choose an asset from scan results:",
+                    options=list(asset_options.keys()),
+                    key="select_asset_dropdown"
+                )
+                
+                if selected_asset_display:
+                    selected_asset = asset_options[selected_asset_display]
+                    symbol_selected = selected_asset['symbol']
+                    action_selected = selected_asset.get('action', 'LONG')
+                    
+                    # Tampilkan info asset yang dipilih
+                    col_sel1, col_sel2 = st.columns([3, 1])
+                    with col_sel1:
+                        st.success(f"✅ Selected: **{symbol_selected}**")
+                        st.write(f"Action: `{action_selected}` | Score: `{selected_asset.get('score', 0):.1f}`")
+                        st.write(f"Current Price: `{get_valid_price(selected_asset, symbol_selected, bot):.5f}`")
+                    
+                    with col_sel2:
+                        if st.button("📌 Use This Asset", key="use_selected_asset"):
+                            st.session_state.selected_for_entry = {symbol_selected: selected_asset}
+                            st.session_state.custom_symbol = symbol_selected
+                            st.session_state.custom_action = action_selected
+                            st.rerun()
+            else:
+                st.warning("No assets available from scan. Please scan assets first in Tab 1.")
+        else:
+            st.warning("No scan results available. Please scan assets first in Tab 1.")
+        
+        st.divider()
+        
+        # ============================================
+        # STEP 2: Input Entry Price Manual
+        # ============================================
+        st.subheader("💰 Step 2: Enter Entry Details")
+        
+        col_symbol, col_action, col_entry = st.columns([2, 1, 2])
+        
         with col_symbol:
-            # Pre-fill dengan symbol yang dipilih
+            # Auto-fill symbol jika ada selected asset
             default_symbol = ""
             if st.session_state.selected_for_entry:
                 first_symbol = list(st.session_state.selected_for_entry.keys())[0]
                 default_symbol = first_symbol
+            elif hasattr(st.session_state, 'custom_symbol'):
+                default_symbol = st.session_state.custom_symbol
             
-            symbol_custom = st.text_input("Masukkan simbol aset:", 
+            symbol_custom = st.text_input("Symbol:", 
                                          value=default_symbol,
-                                         key="custom_symbol", 
-                                         placeholder="BTC untuk auto-format")
+                                         key="custom_symbol_input", 
+                                         placeholder="BTC/USDT or BTC/USDT:USDT")
+        
         with col_action:
-            # Pre-fill action jika ada data
+            # Auto-fill action jika ada selected asset
             default_action = "LONG"
             if st.session_state.selected_for_entry and default_symbol:
                 data = st.session_state.selected_for_entry.get(default_symbol, {})
                 default_action = data.get('action', 'LONG')
+            elif hasattr(st.session_state, 'custom_action'):
+                default_action = st.session_state.custom_action
             
             action_custom = st.selectbox("Action:", ["LONG", "SHORT"], 
                                         index=0 if default_action == "LONG" else 1,
-                                        key="custom_action")
+                                        key="custom_action_select")
         
-        # Format simbol
-        formatted_custom_symbol = None
-        if symbol_custom:
-            formatted_custom_symbol = format_symbol_for_mode(
-                symbol_custom.upper(),
-                bot.mode,
-                getattr(bot, 'trading_mode', 'spot')
+        with col_entry:
+            # Input entry price manual
+            default_price = 0.0
+            if st.session_state.selected_for_entry and default_symbol:
+                data = st.session_state.selected_for_entry.get(default_symbol, {})
+                default_price = data.get('current_price', data.get('entry_price', 0))
+            
+            entry_price_custom = st.number_input(
+                "Entry Price (Manual):", 
+                value=float(default_price), 
+                min_value=0.00001,
+                step=0.0001, 
+                format="%.5f",
+                key="custom_entry_price"
             )
             
-            if formatted_custom_symbol != symbol_custom.upper():
-                st.info(f"Simbol akan diformat menjadi: **{formatted_custom_symbol}**")
+            # Quick price buttons
+            col_price1, col_price2, col_price3 = st.columns(3)
+            with col_price1:
+                if st.button("-1%", key="price_minus_1"):
+                    if entry_price_custom > 0:
+                        st.session_state.custom_entry_price = entry_price_custom * 0.99
+                        st.rerun()
+            with col_price2:
+                if st.button("+1%", key="price_plus_1"):
+                    if entry_price_custom > 0:
+                        st.session_state.custom_entry_price = entry_price_custom * 1.01
+                        st.rerun()
+            with col_price3:
+                if st.button("Reset", key="price_reset"):
+                    if default_price > 0:
+                        st.session_state.custom_entry_price = default_price
+                        st.rerun()
         
-        # Entry price input
-        # Pre-fill dengan harga dari selected asset jika ada
-        default_price = 0.0
-        if st.session_state.selected_for_entry and default_symbol:
-            data = st.session_state.selected_for_entry.get(default_symbol, {})
-            default_price = data.get('current_price', data.get('entry_price', 0))
+        st.divider()
         
-        entry_price_custom = st.number_input("Harga Entry:", value=float(default_price), step=0.0001, key="custom_entry")
+        # ============================================
+        # STEP 3: Calculate TP/SL
+        # ============================================
+        st.subheader("🧮 Step 3: Calculate TP/SL")
         
-        # Scalping settings untuk custom entry
-        scalping_settings = {}
-        if st.session_state.scalping_mode:
-            with st.expander("⚡ Scalping Settings"):
-                col_ss1, col_ss2 = st.columns(2)
-                with col_ss1:
-                    scalping_settings['entry_range_pct'] = st.slider("Entry Range %", 0.005, 0.02,
-                                                                   value=SCALPING_CONFIG_APP["entry_range_pct"], 
-                                                                   step=0.001, key="tab4_entry_range")
-                    st.caption(f"Default: 0.8% | Current: {scalping_settings['entry_range_pct']*100:.1f}%")
-                
-                with col_ss2:
-                    scalping_settings['atr_multiplier'] = st.slider("ATR Multiplier", 0.5, 2.0,
-                                                                  value=SCALPING_CONFIG_APP["atr_multiplier"],
-                                                                  step=0.1, key="tab4_atr_multiplier")
-                    st.caption(f"Tighter TP/SL = lower multiplier")
+        # Risk management settings
+        col_risk1, col_risk2, col_risk3 = st.columns(3)
+        with col_risk1:
+            risk_reward_ratio = st.slider("Risk/Reward Ratio", 1.0, 5.0, 2.0, 0.5, key="rr_ratio")
+        with col_risk2:
+            risk_percent = st.slider("Risk % per Trade", 0.5, 5.0, 1.0, 0.5, key="risk_percent")
+        with col_risk3:
+            position_size_usdt = st.number_input("Position Size (USDT)", 10.0, 10000.0, 100.0, 10.0, key="position_size")
         
-        if st.button("🧮 Hitung TP/SL", key="calculate_custom", type="primary"):
+        if st.button("🧮 Calculate TP/SL", key="calculate_custom", type="primary"):
             if symbol_custom and entry_price_custom > 0:
-                with st.spinner("Menghitung..."):
+                with st.spinner("Calculating..."):
                     try:
-                        symbol_to_use = formatted_custom_symbol if formatted_custom_symbol else symbol_custom.upper()
+                        # Format symbol
+                        formatted_symbol = format_symbol_for_mode(
+                            symbol_custom.upper(),
+                            bot.mode,
+                            getattr(bot, 'trading_mode', 'spot')
+                        )
                         
-                        # Gunakan calculate_custom_entry dari bot
+                        # Panggil fungsi calculate_custom_entry dengan parameter yang benar
                         if hasattr(bot, 'calculate_custom_entry'):
-                            # Prepare parameters
-                            params = {
-                                'symbol': symbol_to_use,
-                                'current_price': entry_price_custom,
-                                'action': action_custom
-                            }
-                            
-                            # Apply scalping settings jika ada
-                            if scalping_settings:
-                                params['entry_range_pct'] = scalping_settings.get('entry_range_pct', 0.02)
-                                params['atr_multiplier'] = scalping_settings.get('atr_multiplier', 1.0)
-                            
-                            result = bot.calculate_custom_entry(**params)
+                            result = bot.calculate_custom_entry(formatted_symbol, entry_price_custom, action_custom)
                         else:
                             # Fallback calculation
-                            entry_range = scalping_settings.get('entry_range_pct', 0.02) if scalping_settings else 0.02
-                            atr_multiplier = scalping_settings.get('atr_multiplier', 1.0) if scalping_settings else 1.0
-                            
-                            # Simple calculation
                             if action_custom == "LONG":
-                                tp1 = entry_price_custom * (1 + (0.02 * atr_multiplier))
-                                tp2 = entry_price_custom * (1 + (0.04 * atr_multiplier))
-                                tp3 = entry_price_custom * (1 + (0.06 * atr_multiplier))
-                                sl = entry_price_custom * (1 - (0.02 * atr_multiplier))
-                                entry_low = entry_price_custom * (1 - (entry_range * 1.5))
-                                entry_high = entry_price_custom * (1 - (entry_range * 0.5))
+                                tp1 = entry_price_custom * (1 + (0.02 * risk_reward_ratio))
+                                tp2 = entry_price_custom * (1 + (0.04 * risk_reward_ratio))
+                                tp3 = entry_price_custom * (1 + (0.06 * risk_reward_ratio))
+                                sl = entry_price_custom * (1 - 0.02)
                             else:
-                                tp1 = entry_price_custom * (1 - (0.02 * atr_multiplier))
-                                tp2 = entry_price_custom * (1 - (0.04 * atr_multiplier))
-                                tp3 = entry_price_custom * (1 - (0.06 * atr_multiplier))
-                                sl = entry_price_custom * (1 + (0.02 * atr_multiplier))
-                                entry_low = entry_price_custom * (1 + (entry_range * 0.5))
-                                entry_high = entry_price_custom * (1 + (entry_range * 1.5))
+                                tp1 = entry_price_custom * (1 - (0.02 * risk_reward_ratio))
+                                tp2 = entry_price_custom * (1 - (0.04 * risk_reward_ratio))
+                                tp3 = entry_price_custom * (1 - (0.06 * risk_reward_ratio))
+                                sl = entry_price_custom * (1 + 0.02)
                             
                             result = {
-                                'symbol': symbol_to_use,
+                                'symbol': formatted_symbol,
                                 'detected_type': 'spot',
                                 'entry_price': entry_price_custom,
-                                'entry_range_low': entry_low,
-                                'entry_range_high': entry_high,
-                                'best_entry': (entry_low + entry_high) / 2,
                                 'tp1': tp1,
                                 'tp2': tp2,
                                 'tp3': tp3,
-                                'sl': sl,
-                                'entry_range_pct': entry_range * 100
+                                'sl': sl
                             }
                         
                         if result:
-                            result = validate_and_fix_price_levels(result, symbol_to_use, bot)
-                            result['trading_mode'] = getattr(bot, 'trading_mode', 'spot')
-                            result['leverage'] = 1
-                            
-                            # Apply scalping settings info
-                            if scalping_settings:
-                                result['scalping_settings'] = scalping_settings
-                                result['scalping_mode'] = True
+                            # Validasi dan perbaiki price levels
+                            result = validate_and_fix_price_levels(result, formatted_symbol, bot)
                             
                             # Urutkan TP levels
                             if action_custom == "LONG":
@@ -1715,81 +1752,182 @@ def main_app():
                             
                             result['tp1'], result['tp2'], result['tp3'] = tp1, tp2, tp3
                             
+                            # Hitung probabilitas
                             result['tp_probabilities'] = calculate_tp_probability(
                                 entry_price_custom,
                                 result['tp1'], result['tp2'], result['tp3'],
                                 result['sl'], action_custom
                             )
                             
+                            # Simpan ke session state
                             st.session_state.custom_result = result
-                            st.success("Perhitungan selesai!")
+                            st.session_state.custom_action = action_custom
+                            st.session_state.custom_entry_price = entry_price_custom
+                            
+                            st.success("✅ Calculation complete!")
                         else:
-                            st.error("Tidak dapat menghitung TP/SL.")
+                            st.error("❌ Cannot calculate TP/SL")
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"❌ Error: {str(e)[:200]}")
             else:
-                st.warning("Masukkan simbol dan harga entry yang valid.")
+                st.warning("⚠️ Please enter symbol and valid entry price")
         
-        # Tampilkan hasil custom entry
+        st.divider()
+        
+        # ============================================
+        # STEP 4: Display Results & Open Position
+        # ============================================
         if st.session_state.custom_result:
             result = st.session_state.custom_result
-            symbol_display = convert_symbol_for_display(
-                result['symbol'],
-                bot.mode,
-                result.get('trading_mode', 'spot')
-            )
             
-            st.subheader(f"📊 Hasil untuk {symbol_display}")
+            st.subheader("📊 Calculation Results")
             
-            # Scalping info jika ada
-            if result.get('scalping_mode'):
-                st.success("⚡ Scalping Settings Applied")
-                scalping_info = result.get('scalping_settings', {})
-                if scalping_info:
-                    col_si1, col_si2 = st.columns(2)
-                    with col_si1:
-                        st.caption(f"Entry Range: {scalping_info.get('entry_range_pct', 0)*100:.1f}%")
-                    with col_si2:
-                        st.caption(f"ATR Multiplier: {scalping_info.get('atr_multiplier', 1.0):.1f}")
+            col_res1, col_res2 = st.columns(2)
+            with col_res1:
+                st.metric("Entry Price", f"{result['entry_price']:.5f}")
+                st.metric("TP1", f"{result['tp1']:.5f}")
+                st.metric("TP2", f"{result['tp2']:.5f}")
+                st.metric("TP3", f"{result['tp3']:.5f}")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("💰 Entry Price", f"{result['entry_price']:.5f}")
-                st.metric("🎯 TP1", f"{result['tp1']:.5f}")
-                st.metric("🎯 TP2", f"{result['tp2']:.5f}")
-            
-            with col2:
-                st.metric("🎯 TP3", f"{result['tp3']:.5f}")
-                st.metric("🛡️ SL", f"{result['sl']:.5f}")
+            with col_res2:
+                st.metric("Stop Loss", f"{result['sl']:.5f}")
                 
+                # Hitung risk/reward
                 if action_custom == "LONG":
-                    risk_reward = (result['tp1'] - result['entry_price']) / (result['entry_price'] - result['sl'])
+                    risk = result['entry_price'] - result['sl']
+                    reward_tp1 = result['tp1'] - result['entry_price']
+                    rr_ratio_actual = reward_tp1 / risk if risk > 0 else 0
                 else:
-                    risk_reward = (result['entry_price'] - result['tp1']) / (result['sl'] - result['entry_price'])
-                st.metric("📊 Risk/Reward", f"{risk_reward:.2f}")
-            
-            # Entry Range Info
-            col_er1, col_er2, col_er3 = st.columns(3)
-            with col_er1:
-                st.metric("Entry Range Low", f"{result.get('entry_range_low', 0):.5f}")
-            with col_er2:
-                st.metric("Entry Range High", f"{result.get('entry_range_high', 0):.5f}")
-            with col_er3:
-                st.metric("Best Entry", f"{result.get('best_entry', 0):.5f}")
+                    risk = result['sl'] - result['entry_price']
+                    reward_tp1 = result['entry_price'] - result['tp1']
+                    rr_ratio_actual = reward_tp1 / risk if risk > 0 else 0
+                
+                st.metric("Risk/Reward", f"{rr_ratio_actual:.2f}")
+                
+                # Position size calculation
+                risk_amount = position_size_usdt * (risk_percent / 100)
+                position_qty = risk_amount / risk if risk > 0 else 0
+                
+                st.metric("Position Qty", f"{position_qty:.4f}")
+                st.metric("Risk Amount", f"${risk_amount:.2f}")
             
             # Probabilities
             if 'tp_probabilities' in result:
                 probs = result['tp_probabilities']
-                st.subheader("📊 Take Profit Probabilities")
-                col_p1, col_p2, col_p3 = st.columns(3)
-                with col_p1:
+                st.subheader("🎯 Take Profit Probabilities")
+                col_prob1, col_prob2, col_prob3 = st.columns(3)
+                with col_prob1:
                     st.metric("TP1 Probability", f"{probs.get('tp1', 0)*100:.1f}%")
-                with col_p2:
+                with col_prob2:
                     st.metric("TP2 Probability", f"{probs.get('tp2', 0)*100:.1f}%")
-                with col_p3:
+                with col_prob3:
                     st.metric("TP3 Probability", f"{probs.get('tp3', 0)*100:.1f}%")
+            
+            st.divider()
+            
+            # ============================================
+            # STEP 5: Open Position to Database
+            # ============================================
+            st.subheader("🚀 Step 4: Open Position")
+            
+            st.info(f"""
+            **Ready to open position:**
+            - Symbol: {result['symbol']}
+            - Action: {action_custom}
+            - Entry Price: {result['entry_price']:.5f}
+            - Position Size: ${position_size_usdt:.2f}
+            - Risk: {risk_percent}% (${risk_amount:.2f})
+            """)
+            
+            col_open1, col_open2 = st.columns(2)
+            
+            with col_open1:
+                # Input additional info untuk position
+                position_note = st.text_input("Position Note (Optional):", 
+                                             placeholder="e.g., Weekly breakout")
+            
+            with col_open2:
+                # Confirmation
+                confirm_open = st.checkbox("✅ I confirm this position", key="confirm_position")
+                
+                if st.button("📈 OPEN POSITION", key="open_position_btn", type="primary", disabled=not confirm_open):
+                    try:
+                        # Simpan ke database menggunakan DatabaseHandler
+                        if hasattr(bot, 'db') and bot.db:
+                            # Format data untuk database
+                            position_data = {
+                                'symbol': result['symbol'],
+                                'market_type': bot.mode,
+                                'action': action_custom,
+                                'entry_price': result['entry_price'],
+                                'current_price': result['entry_price'],  # Sama dengan entry untuk posisi baru
+                                'tp1': result['tp1'],
+                                'tp2': result['tp2'],
+                                'tp3': result['tp3'],
+                                'sl': result['sl'],
+                                'position_size': position_qty,
+                                'position_value': position_size_usdt,
+                                'risk_percent': risk_percent,
+                                'note': position_note
+                            }
+                            
+                            # Simpan ke database
+                            position_id = bot.db.save_position(
+                                symbol=result['symbol'],
+                                market_type=bot.mode,
+                                action=action_custom,
+                                entry_price=result['entry_price'],
+                                tp1=result['tp1'],
+                                tp2=result['tp2'],
+                                tp3=result['tp3'],
+                                sl=result['sl']
+                            )
+                            
+                            if position_id:
+                                st.success(f"✅ Position opened successfully! ID: {position_id}")
+                                st.info("You can view this position in the 'Positions' tab.")
+                                
+                                # Clear session state
+                                st.session_state.custom_result = None
+                                st.session_state.custom_entry_price = 0.0
+                                
+                                # Refresh positions data
+                                st.session_state.positions_data = bot.get_active_positions()
+                                
+                                st.rerun()
+                            else:
+                                st.error("❌ Failed to save position to database")
+                        else:
+                            st.error("❌ Database not available")
+                            
+                    except Exception as e:
+                        st.error(f"❌ Error opening position: {str(e)[:200]}")
+            
+            # Tombol untuk testing tanpa database
+            with st.expander("🔧 Test Mode (Without Database)"):
+                if st.button("🔄 Test - Add to Session State Only"):
+                    # Simpan ke session state untuk testing
+                    if 'test_positions' not in st.session_state:
+                        st.session_state.test_positions = []
+                    
+                    test_position = {
+                        'id': len(st.session_state.test_positions) + 1,
+                        'symbol': result['symbol'],
+                        'action': action_custom,
+                        'entry_price': result['entry_price'],
+                        'tp1': result['tp1'],
+                        'tp2': result['tp2'],
+                        'tp3': result['tp3'],
+                        'sl': result['sl'],
+                        'position_size': position_qty,
+                        'position_value': position_size_usdt,
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    
+                    st.session_state.test_positions.append(test_position)
+                    st.success(f"✅ Test position added! Total test positions: {len(st.session_state.test_positions)}")
 
-    # Tab 5: Positions
+    # Tab 5: Positions - PERBAIKAN dengan tambahan test positions
     with tab5:
         st.subheader("💼 Active Positions")
         
@@ -1814,6 +1952,7 @@ def main_app():
             except Exception as e:
                 st.error(f"❌ Refresh error: {e}")
         
+        # Display regular positions
         if not st.session_state.positions_data:
             st.info("📭 No active positions")
         else:
@@ -1913,6 +2052,54 @@ def main_app():
                     
                 except Exception as e:
                     st.error(f"❌ Position error: {e}")
+        
+        # 🔥 PERBAIKAN: Tampilkan test positions jika ada
+        if hasattr(st.session_state, 'test_positions') and st.session_state.test_positions:
+            st.subheader("🧪 Test Positions (Session Only)")
+            
+            for pos in st.session_state.test_positions:
+                col1, col2, col3 = st.columns([3, 2, 1])
+                
+                with col1:
+                    display_symbol = convert_symbol_for_display(
+                        pos['symbol'],
+                        bot.mode,
+                        getattr(bot, 'trading_mode', 'spot')
+                    )
+                    
+                    # Hitung P/L berdasarkan current price (gunakan entry sebagai current untuk testing)
+                    current_price = pos['entry_price']  # Untuk testing, gunakan entry price sebagai current
+                    
+                    if pos['action'] == "LONG":
+                        pl_pct = ((current_price - pos['entry_price']) / pos['entry_price']) * 100
+                    else:
+                        pl_pct = ((pos['entry_price'] - current_price) / pos['entry_price']) * 100
+                    
+                    pl_color = "green" if pl_pct >= 0 else "red"
+                    pl_emoji = "📈" if pl_pct >= 0 else "📉"
+                    
+                    st.write(f"**{display_symbol}** - {pos['action']} {pl_emoji}")
+                    st.write(f"🏁 Entry: `{pos['entry_price']:.5f}`")
+                    st.write(f"📊 Current: `{current_price:.5f}`")
+                    st.write(f"💰 P/L: <span style='color:{pl_color}; font-weight:bold'>{pl_pct:+.2f}%</span>", unsafe_allow_html=True)
+                    st.write(f"📏 Size: `{pos['position_size']:.4f}` (${pos['position_value']:.2f})")
+                
+                with col2:
+                    st.write(f"🎯 **TP1:** `{pos['tp1']:.5f}`")
+                    st.write(f"🎯 **TP2:** `{pos['tp2']:.5f}`")
+                    st.write(f"🎯 **TP3:** `{pos['tp3']:.5f}`")
+                    st.write(f"🛑 **SL:** `{pos['sl']:.5f}`")
+                
+                with col3:
+                    st.write(f"⏰ {pos['timestamp']}")
+                    close_key = f"close_test_{pos['id']}"
+                    if st.button("❌ Close", key=close_key, type="secondary"):
+                        # Remove dari session state
+                        st.session_state.test_positions = [p for p in st.session_state.test_positions if p['id'] != pos['id']]
+                        st.success(f"Test position {display_symbol} closed!")
+                        st.rerun()
+                
+                st.divider()
 
     # Tab 6: History
     with tab6:
