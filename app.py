@@ -1660,7 +1660,7 @@ def main_app():
                 data = st.session_state.selected_for_entry.get(default_symbol, {})
                 default_price = data.get('current_price', data.get('entry_price', 0))
             
-             entry_price_custom = st.number_input(
+            entry_price_custom = st.number_input(
                 "Entry Price (Manual):", 
                 value=max(float(default_price), 0.00001),  # Fix: Ensures value >= min_value
                 min_value=0.00001,
