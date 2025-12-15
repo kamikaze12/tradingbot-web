@@ -522,6 +522,24 @@ def run_scheduler(bot):
         time.sleep(1)
 
 # ====================================
+# Session State Management Functions
+# ====================================
+
+def select_asset_callback(symbol, data):
+    """Callback untuk memilih aset"""
+    st.session_state.selected_for_entry[symbol] = data
+    st.session_state.selected_symbol_display = symbol
+    st.session_state.last_selected = symbol
+    return True
+
+def clear_selection_callback():
+    """Callback untuk clear selection"""
+    st.session_state.selected_for_entry = {}
+    st.session_state.selected_symbol_display = None
+    st.session_state.last_selected = None
+    return True
+
+# ====================================
 # SCALPING SPECIFIC FUNCTIONS - PERBAIKAN
 # ====================================
 
@@ -666,7 +684,9 @@ def display_scalping_signal(signal, index):
     # 🔥 PERBAIKAN: Tombol yang lebih jelas
     button_key = f"select_scalping_{symbol}_{index}"
     if st.button(f"📌 Select {symbol}", key=button_key):
-        return True
+        if select_asset_callback(symbol, signal):
+            st.success(f"✅ Selected {symbol}!")
+            st.experimental_rerun()
     return False
 
 # ====================================
@@ -729,6 +749,8 @@ def main_app():
         st.session_state.latest_results = []
         st.session_state.scalping_mode = False  # 🔥 NEW: Scalping mode flag
         st.session_state.scalping_config = SCALPING_CONFIG_APP  # 🔥 NEW: Store config
+        st.session_state.selected_symbol_display = None
+        st.session_state.last_selected = None
         
         # 🔥 PERBAIKAN: Tambahkan session state untuk debug
         st.session_state.last_scan_time = None
@@ -746,7 +768,7 @@ def main_app():
         if scalping_mode != st.session_state.scalping_mode:
             st.session_state.scalping_mode = scalping_mode
             st.session_state.scanned_results = []  # Clear old results
-            st.rerun()
+            st.experimental_rerun()
         
         if scalping_mode:
             st.success("⚡ SCALPING MODE ACTIVE")
@@ -767,7 +789,7 @@ def main_app():
                     # HAPUS: SCALPING_CONFIG_APP["long_bias"] = long_bias_value
                     st.session_state.scalping_config = SCALPING_CONFIG_APP
                     st.success("✅ Settings applied!")
-                    st.rerun()
+                    st.experimental_rerun()
             
             st.info(f"""
             **Scalping Parameters:**
@@ -780,6 +802,27 @@ def main_app():
             """)
         
         st.divider()
+        
+        # 🔥 PERBAIKAN: Tampilkan selected asset di sidebar
+        if st.session_state.selected_for_entry:
+            st.subheader("📌 Selected Asset")
+            for symbol, data in st.session_state.selected_for_entry.items():
+                display_symbol = convert_symbol_for_display(
+                    symbol,
+                    bot.mode,
+                    getattr(bot, 'trading_mode', 'spot')
+                )
+                st.success(f"✅ {display_symbol}")
+                st.write(f"Action: {data.get('action', 'N/A')}")
+                st.write(f"Score: {data.get('score', 0)}")
+                st.write(f"Price: ${data.get('current_price', 0):.4f}")
+            
+            if st.button("🗑️ Clear Selection", key="clear_selection"):
+                clear_selection_callback()
+                st.success("Selection cleared!")
+                st.experimental_rerun()
+            
+            st.divider()
         
         # Market Selection
         market_choice = st.selectbox(
@@ -844,9 +887,10 @@ def main_app():
                         st.session_state.scanned_results = []
                         st.session_state.scalping_results = []  # Clear scalping results
                         st.session_state.selected_for_entry = {}
+                        st.session_state.selected_symbol_display = None
                         
                         st.success(f"✅ Market set to: {market_choice} ({trading_mode})")
-                        st.rerun()
+                        st.experimental_rerun()
                     else:
                         st.error("❌ Failed to set market mode")
                         
@@ -975,6 +1019,25 @@ def main_app():
         
         if mode_info:
             st.info(" | ".join(mode_info))
+        
+        # 🔥 PERBAIKAN: Tampilkan selected asset jika ada
+        if st.session_state.selected_for_entry:
+            st.subheader("📌 Selected Assets")
+            for symbol, data in st.session_state.selected_for_entry.items():
+                col_sel1, col_sel2 = st.columns([3, 1])
+                with col_sel1:
+                    display_symbol = convert_symbol_for_display(
+                        symbol,
+                        bot.mode,
+                        getattr(bot, 'trading_mode', 'spot')
+                    )
+                    st.success(f"✅ **{display_symbol}** - {data.get('action', 'N/A')} (Score: {data.get('score', 0)})")
+                    st.write(f"💰 Price: `{data.get('current_price', 0):.5f}` | Entry Range: `{data.get('entry_range_low', 0):.5f} - {data.get('entry_range_high', 0):.5f}`")
+                with col_sel2:
+                    if st.button(f"❌ Remove", key=f"remove_{symbol}"):
+                        del st.session_state.selected_for_entry[symbol]
+                        st.experimental_rerun()
+            st.divider()
         
         # Scan button dengan opsi berbeda untuk scalping mode
         col_scan1, col_scan2 = st.columns([1, 3])
@@ -1116,9 +1179,7 @@ def main_app():
                 if isinstance(res, dict) and 'symbol' in res:
                     selected = display_scalping_signal(res, i)
                     if selected:
-                        st.session_state.selected_for_entry[res['symbol']] = res
-                        st.success(f"Selected {res['symbol']} for scalping!")
-                        st.rerun()
+                        st.experimental_rerun()
                     
                     st.divider()
         
@@ -1167,10 +1228,12 @@ def main_app():
                         st.write(f"📊 **Probabilities:** TP1: {probs.get('tp1', 0)*100:.1f}% | TP2: {probs.get('tp2', 0)*100:.1f}% | TP3: {probs.get('tp3', 0)*100:.1f}%")
                     
                     with col2:
-                        if st.button(f"Select", key=f"select_{i}"):
-                            st.session_state.selected_for_entry[symbol] = res
-                            st.success(f"Selected {display_symbol}!")
-                            st.rerun()
+                        # 🔥 PERBAIKAN: Gunakan callback untuk tombol select
+                        button_key = f"select_regular_{symbol}_{i}"
+                        if st.button(f"📌 Select", key=button_key):
+                            if select_asset_callback(symbol, res):
+                                st.success(f"✅ Selected {display_symbol}!")
+                                st.experimental_rerun()
                     
                     st.divider()
 
@@ -1191,7 +1254,7 @@ def main_app():
             
             if st.button("⚡ Enable Scalping Mode", key="enable_scalping_tab"):
                 st.session_state.scalping_mode = True
-                st.rerun()
+                st.experimental_rerun()
         else:
             st.success("⚡ SCALPING MODE ACTIVE")
             
@@ -1221,7 +1284,7 @@ def main_app():
                     SCALPING_CONFIG_APP["entry_range_pct"] = entry_range
                     st.session_state.scalping_config = SCALPING_CONFIG_APP
                     st.success("✅ Scalping configuration updated!")
-                    st.rerun()
+                    st.experimental_rerun()
             
             # 🔥 PERBAIKAN: Quick Actions dengan feedback yang lebih baik
             col_qs1, col_qs2, col_qs3 = st.columns(3)
@@ -1268,7 +1331,7 @@ def main_app():
             with col_qs3:
                 if st.button("🔄 Clear & Refresh", key="refresh_scalping_data"):
                     st.session_state.scalping_results = []
-                    st.rerun()
+                    st.experimental_rerun()
             
             # Display Scalping Results
             if st.session_state.scalping_results:
@@ -1322,10 +1385,11 @@ def main_app():
                             st.write(f"📊 R/R: `{rr_ratio:.2f}`")
                             st.write(f"🎯 TP1: `{tp1:.5f}`")
                             
-                            if st.button(f"Select {i}", key=f"select_scalping_signal_{i}"):
-                                st.session_state.selected_for_entry[symbol] = signal
-                                st.success(f"Selected {symbol} for scalping!")
-                                st.rerun()
+                            button_key = f"select_scalping_signal_{i}_{symbol}"
+                            if st.button(f"📌 Select", key=button_key):
+                                if select_asset_callback(symbol, signal):
+                                    st.success(f"✅ Selected {symbol} for scalping!")
+                                    st.experimental_rerun()
                         
                         st.divider()
             
@@ -1492,12 +1556,52 @@ def main_app():
         if mode_info:
             st.info(" | ".join(mode_info))
         
+        # 🔥 PERBAIKAN: Tampilkan selected asset jika ada
+        if st.session_state.selected_for_entry:
+            st.subheader("📌 Selected Asset from Scan")
+            
+            for symbol, data in st.session_state.selected_for_entry.items():
+                col_sel1, col_sel2 = st.columns([3, 1])
+                with col_sel1:
+                    display_symbol = convert_symbol_for_display(
+                        symbol,
+                        bot.mode,
+                        getattr(bot, 'trading_mode', 'spot')
+                    )
+                    
+                    st.success(f"✅ **{display_symbol}** - {data.get('action', 'N/A')} (Score: {data.get('score', 0)})")
+                    st.write(f"💰 Current Price: `{data.get('current_price', 0):.5f}`")
+                    st.write(f"🎯 Entry Range: `{data.get('entry_range_low', 0):.5f} - {data.get('entry_range_high', 0):.5f}`")
+                
+                with col_sel2:
+                    if st.button(f"❌ Remove", key=f"remove_custom_{symbol}"):
+                        del st.session_state.selected_for_entry[symbol]
+                        st.experimental_rerun()
+            
+            st.divider()
+        
         col_symbol, col_action = st.columns([2, 1])
         with col_symbol:
-            symbol_custom = st.text_input("Masukkan simbol aset:", key="custom_symbol", 
+            # Pre-fill dengan symbol yang dipilih
+            default_symbol = ""
+            if st.session_state.selected_for_entry:
+                first_symbol = list(st.session_state.selected_for_entry.keys())[0]
+                default_symbol = first_symbol
+            
+            symbol_custom = st.text_input("Masukkan simbol aset:", 
+                                         value=default_symbol,
+                                         key="custom_symbol", 
                                          placeholder="BTC untuk auto-format")
         with col_action:
-            action_custom = st.selectbox("Action:", ["LONG", "SHORT"], key="custom_action")
+            # Pre-fill action jika ada data
+            default_action = "LONG"
+            if st.session_state.selected_for_entry and default_symbol:
+                data = st.session_state.selected_for_entry.get(default_symbol, {})
+                default_action = data.get('action', 'LONG')
+            
+            action_custom = st.selectbox("Action:", ["LONG", "SHORT"], 
+                                        index=0 if default_action == "LONG" else 1,
+                                        key="custom_action")
         
         # Format simbol
         formatted_custom_symbol = None
@@ -1512,7 +1616,13 @@ def main_app():
                 st.info(f"Simbol akan diformat menjadi: **{formatted_custom_symbol}**")
         
         # Entry price input
-        entry_price_custom = st.number_input("Harga Entry:", value=0.0, step=0.0001, key="custom_entry")
+        # Pre-fill dengan harga dari selected asset jika ada
+        default_price = 0.0
+        if st.session_state.selected_for_entry and default_symbol:
+            data = st.session_state.selected_for_entry.get(default_symbol, {})
+            default_price = data.get('current_price', data.get('entry_price', 0))
+        
+        entry_price_custom = st.number_input("Harga Entry:", value=float(default_price), step=0.0001, key="custom_entry")
         
         # Scalping settings untuk custom entry
         scalping_settings = {}
@@ -1700,7 +1810,7 @@ def main_app():
             try:
                 st.session_state.positions_data = bot.get_active_positions()
                 st.success("✅ Positions refreshed successfully!")
-                st.rerun()
+                st.experimental_rerun()
             except Exception as e:
                 st.error(f"❌ Refresh error: {e}")
         
@@ -1793,7 +1903,7 @@ def main_app():
                                         st.success(f"✅ {display_symbol} position closed!")
                                         time.sleep(1)
                                         st.session_state.positions_data = bot.get_active_positions()
-                                        st.rerun()
+                                        st.experimental_rerun()
                                     else:
                                         st.error(f"❌ Failed to close {display_symbol}")
                                 except Exception as close_error:
@@ -1812,7 +1922,7 @@ def main_app():
             try:
                 st.session_state.history_data = bot.get_trade_history()
                 st.success("✅ History refreshed successfully!")
-                st.rerun()
+                st.experimental_rerun()
             except Exception as e:
                 st.error(f"❌ Refresh error: {e}")
         
@@ -1879,7 +1989,7 @@ def main_app():
             if st.button("🚀 Mulai Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Hentikan Live Monitoring", 
                         key="toggle_live", type="primary"):
                 st.session_state.live_monitoring = not st.session_state.live_monitoring
-                st.rerun()
+                st.experimental_rerun()
         
         with col2:
             auto_refresh_live = st.checkbox("🔄 Auto Refresh setiap 10 detik", value=True, key="auto_refresh_live")
@@ -1888,7 +1998,7 @@ def main_app():
             st.info("📡 Live monitoring aktif. Harga real-time akan ditampilkan.")
             
             if st.button("🔄 Refresh Sekarang", key="manual_refresh_live"):
-                st.rerun()
+                st.experimental_rerun()
             
             if st.session_state.positions_data:
                 st.subheader("📊 Posisi Aktif - Live Prices")
@@ -1948,7 +2058,7 @@ def main_app():
                 # Auto-refresh
                 if auto_refresh_live:
                     time.sleep(10)
-                    st.rerun()
+                    st.experimental_rerun()
                     
             else:
                 st.info("📭 Tidak ada posisi aktif untuk di-monitor")
@@ -2026,7 +2136,7 @@ def main_app():
                         results['scalping_mode'] = True
                     
                     st.session_state.backtest_results = results
-                    st.rerun()
+                    st.experimental_rerun()
         
         if st.session_state.backtest_results and 'error' not in st.session_state.backtest_results:
             results = st.session_state.backtest_results
@@ -2113,7 +2223,7 @@ def main_app():
                         allocations = {}
                     
                     st.session_state.portfolio_allocations = allocations
-                    st.rerun()
+                    st.experimental_rerun()
         
         # Display Portfolio Allocations
         if st.session_state.portfolio_allocations:
@@ -2184,6 +2294,18 @@ def main():
     # Initialize scalping config
     if 'scalping_config' not in st.session_state:
         st.session_state.scalping_config = SCALPING_CONFIG_APP
+
+    # Initialize selected_for_entry
+    if 'selected_for_entry' not in st.session_state:
+        st.session_state.selected_for_entry = {}
+    
+    # Initialize selected_symbol_display
+    if 'selected_symbol_display' not in st.session_state:
+        st.session_state.selected_symbol_display = None
+    
+    # Initialize last_selected
+    if 'last_selected' not in st.session_state:
+        st.session_state.last_selected = None
 
     # Show login or main app
     if not st.session_state.logged_in:
