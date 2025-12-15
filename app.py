@@ -686,7 +686,7 @@ def display_scalping_signal(signal, index):
     if st.button(f"📌 Select {symbol}", key=button_key):
         if select_asset_callback(symbol, signal):
             st.success(f"✅ Selected {symbol}!")
-            st.experimental_rerun()
+            st.rerun()
     return False
 
 # ====================================
@@ -768,7 +768,7 @@ def main_app():
         if scalping_mode != st.session_state.scalping_mode:
             st.session_state.scalping_mode = scalping_mode
             st.session_state.scanned_results = []  # Clear old results
-            st.experimental_rerun()
+            st.rerun()
         
         if scalping_mode:
             st.success("⚡ SCALPING MODE ACTIVE")
@@ -789,7 +789,7 @@ def main_app():
                     # HAPUS: SCALPING_CONFIG_APP["long_bias"] = long_bias_value
                     st.session_state.scalping_config = SCALPING_CONFIG_APP
                     st.success("✅ Settings applied!")
-                    st.experimental_rerun()
+                    st.rerun()
             
             st.info(f"""
             **Scalping Parameters:**
@@ -820,7 +820,7 @@ def main_app():
             if st.button("🗑️ Clear Selection", key="clear_selection"):
                 clear_selection_callback()
                 st.success("Selection cleared!")
-                st.experimental_rerun()
+                st.rerun()
             
             st.divider()
         
@@ -890,7 +890,7 @@ def main_app():
                         st.session_state.selected_symbol_display = None
                         
                         st.success(f"✅ Market set to: {market_choice} ({trading_mode})")
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("❌ Failed to set market mode")
                         
@@ -1036,7 +1036,7 @@ def main_app():
                 with col_sel2:
                     if st.button(f"❌ Remove", key=f"remove_{symbol}"):
                         del st.session_state.selected_for_entry[symbol]
-                        st.experimental_rerun()
+                        st.rerun()
             st.divider()
         
         # Scan button dengan opsi berbeda untuk scalping mode
@@ -1179,7 +1179,7 @@ def main_app():
                 if isinstance(res, dict) and 'symbol' in res:
                     selected = display_scalping_signal(res, i)
                     if selected:
-                        st.experimental_rerun()
+                        st.rerun()
                     
                     st.divider()
         
@@ -1233,7 +1233,7 @@ def main_app():
                         if st.button(f"📌 Select", key=button_key):
                             if select_asset_callback(symbol, res):
                                 st.success(f"✅ Selected {display_symbol}!")
-                                st.experimental_rerun()
+                                st.rerun()
                     
                     st.divider()
 
@@ -1254,7 +1254,7 @@ def main_app():
             
             if st.button("⚡ Enable Scalping Mode", key="enable_scalping_tab"):
                 st.session_state.scalping_mode = True
-                st.experimental_rerun()
+                st.rerun()
         else:
             st.success("⚡ SCALPING MODE ACTIVE")
             
@@ -1284,7 +1284,7 @@ def main_app():
                     SCALPING_CONFIG_APP["entry_range_pct"] = entry_range
                     st.session_state.scalping_config = SCALPING_CONFIG_APP
                     st.success("✅ Scalping configuration updated!")
-                    st.experimental_rerun()
+                    st.rerun()
             
             # 🔥 PERBAIKAN: Quick Actions dengan feedback yang lebih baik
             col_qs1, col_qs2, col_qs3 = st.columns(3)
@@ -1331,7 +1331,7 @@ def main_app():
             with col_qs3:
                 if st.button("🔄 Clear & Refresh", key="refresh_scalping_data"):
                     st.session_state.scalping_results = []
-                    st.experimental_rerun()
+                    st.rerun()
             
             # Display Scalping Results
             if st.session_state.scalping_results:
@@ -1389,7 +1389,7 @@ def main_app():
                             if st.button(f"📌 Select", key=button_key):
                                 if select_asset_callback(symbol, signal):
                                     st.success(f"✅ Selected {symbol} for scalping!")
-                                    st.experimental_rerun()
+                                    st.rerun()
                         
                         st.divider()
             
@@ -1576,7 +1576,7 @@ def main_app():
                 with col_sel2:
                     if st.button(f"❌ Remove", key=f"remove_custom_{symbol}"):
                         del st.session_state.selected_for_entry[symbol]
-                        st.experimental_rerun()
+                        st.rerun()
             
             st.divider()
         
@@ -1810,7 +1810,7 @@ def main_app():
             try:
                 st.session_state.positions_data = bot.get_active_positions()
                 st.success("✅ Positions refreshed successfully!")
-                st.experimental_rerun()
+                st.rerun()
             except Exception as e:
                 st.error(f"❌ Refresh error: {e}")
         
@@ -1903,7 +1903,7 @@ def main_app():
                                         st.success(f"✅ {display_symbol} position closed!")
                                         time.sleep(1)
                                         st.session_state.positions_data = bot.get_active_positions()
-                                        st.experimental_rerun()
+                                        st.rerun()
                                     else:
                                         st.error(f"❌ Failed to close {display_symbol}")
                                 except Exception as close_error:
@@ -1922,7 +1922,7 @@ def main_app():
             try:
                 st.session_state.history_data = bot.get_trade_history()
                 st.success("✅ History refreshed successfully!")
-                st.experimental_rerun()
+                st.rerun()
             except Exception as e:
                 st.error(f"❌ Refresh error: {e}")
         
@@ -1989,7 +1989,7 @@ def main_app():
             if st.button("🚀 Mulai Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Hentikan Live Monitoring", 
                         key="toggle_live", type="primary"):
                 st.session_state.live_monitoring = not st.session_state.live_monitoring
-                st.experimental_rerun()
+                st.rerun()
         
         with col2:
             auto_refresh_live = st.checkbox("🔄 Auto Refresh setiap 10 detik", value=True, key="auto_refresh_live")
@@ -1998,7 +1998,7 @@ def main_app():
             st.info("📡 Live monitoring aktif. Harga real-time akan ditampilkan.")
             
             if st.button("🔄 Refresh Sekarang", key="manual_refresh_live"):
-                st.experimental_rerun()
+                st.rerun()
             
             if st.session_state.positions_data:
                 st.subheader("📊 Posisi Aktif - Live Prices")
@@ -2058,7 +2058,7 @@ def main_app():
                 # Auto-refresh
                 if auto_refresh_live:
                     time.sleep(10)
-                    st.experimental_rerun()
+                    st.rerun()
                     
             else:
                 st.info("📭 Tidak ada posisi aktif untuk di-monitor")
@@ -2136,7 +2136,7 @@ def main_app():
                         results['scalping_mode'] = True
                     
                     st.session_state.backtest_results = results
-                    st.experimental_rerun()
+                    st.rerun()
         
         if st.session_state.backtest_results and 'error' not in st.session_state.backtest_results:
             results = st.session_state.backtest_results
@@ -2223,7 +2223,7 @@ def main_app():
                         allocations = {}
                     
                     st.session_state.portfolio_allocations = allocations
-                    st.experimental_rerun()
+                    st.rerun()
         
         # Display Portfolio Allocations
         if st.session_state.portfolio_allocations:
