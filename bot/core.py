@@ -3021,29 +3021,45 @@ class EnhancedTradingBot:
         return self.db.close_position(position_id, close_price, "manual")
 
     def calculate_custom_entry(self, symbol, entry_price, action="LONG"):
-        """Calculate custom entry dengan TP/SL"""
+        """Calculate custom entry dengan TP/SL - DIPERBAIKI"""
         try:
             detected_type, formatted_symbol = auto_detect_trading_type(symbol)
             
             # Get data menggunakan get_trading_data jika tersedia
             if get_trading_data is not None:
+                logger.info(f"🔍 Menggunakan get_trading_data untuk {formatted_symbol}")
                 df = get_trading_data(formatted_symbol, self.data_provider)
             else:
+                logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk {formatted_symbol}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 50)
             
             if df is None or len(df) < 20:
-                # Fallback calculation
+                # Fallback calculation dengan ATR default
+                atr_value = entry_price * 0.02  # 2% ATR default
+                
+                if action == "LONG":
+                    tp1 = entry_price + (atr_value * 1.0)
+                    tp2 = entry_price + (atr_value * 2.0)
+                    tp3 = entry_price + (atr_value * 3.0)
+                    sl = entry_price - (atr_value * 1.5)
+                else:  # SHORT
+                    tp1 = entry_price - (atr_value * 1.0)
+                    tp2 = entry_price - (atr_value * 2.0)
+                    tp3 = entry_price - (atr_value * 3.0)
+                    sl = entry_price + (atr_value * 1.5)
+                
                 return {
                     'symbol': formatted_symbol,
                     'detected_type': detected_type,
                     'entry_price': entry_price,
-                    'tp1': entry_price * 1.03,
-                    'tp2': entry_price * 1.06,
-                    'tp3': entry_price * 1.09,
-                    'sl': entry_price * 0.97
+                    'tp1': tp1,
+                    'tp2': tp2,
+                    'tp3': tp3,
+                    'sl': sl,
+                    'method': 'fallback_calculation'
                 }
             
-            # Pilih strategi
+            # Pilih strategi berdasarkan tipe
             if detected_type == "futures":
                 strategy = self._create_futures_strategy()
             else:
@@ -3051,40 +3067,108 @@ class EnhancedTradingBot:
             
             # Calculate menggunakan strategy
             analysis = strategy.analyze(df)
+            
             if analysis and 'tp1' in analysis and 'sl' in analysis:
+                # Dapatkan current_price dari data terbaru
+                current_price = df['close'].iloc[-1]
+                
+                if current_price > 0:
+                    # Hitung rasio untuk menyesuaikan TP/SL dengan entry_price yang diberikan
+                    price_ratio = entry_price / current_price
+                    
+                    # Sesuaikan TP/SL berdasarkan rasio
+                    tp1 = analysis['tp1'] * price_ratio
+                    tp2 = analysis['tp2'] * price_ratio
+                    tp3 = analysis['tp3'] * price_ratio
+                    sl = analysis['sl'] * price_ratio
+                    
+                    # Untuk SHORT, pastikan TP lebih rendah dari entry dan SL lebih tinggi
+                    if action == "SHORT":
+                        if tp1 > entry_price:
+                            tp1 = entry_price * 0.97
+                        if tp2 > entry_price:
+                            tp2 = entry_price * 0.94
+                        if tp3 > entry_price:
+                            tp3 = entry_price * 0.91
+                        if sl < entry_price:
+                            sl = entry_price * 1.03
+                else:
+                    # Fallback jika current_price tidak valid
+                    atr_value = entry_price * 0.02
+                    if action == "LONG":
+                        tp1 = entry_price * 1.03
+                        tp2 = entry_price * 1.06
+                        tp3 = entry_price * 1.09
+                        sl = entry_price * 0.97
+                    else:
+                        tp1 = entry_price * 0.97
+                        tp2 = entry_price * 0.94
+                        tp3 = entry_price * 0.91
+                        sl = entry_price * 1.03
+                
                 return {
                     'symbol': formatted_symbol,
                     'detected_type': detected_type,
                     'entry_price': entry_price,
-                    'tp1': analysis['tp1'],
-                    'tp2': analysis['tp2'],
-                    'tp3': analysis['tp3'],
-                    'sl': analysis['sl']
+                    'tp1': tp1,
+                    'tp2': tp2,
+                    'tp3': tp3,
+                    'sl': sl,
+                    'method': 'strategy_adjusted',
+                    'current_price_in_data': current_price if current_price > 0 else 0
                 }
             
-            # Fallback
+            # Fallback jika analisis gagal
+            atr_value = entry_price * 0.02
+            
+            if action == "LONG":
+                tp1 = entry_price * 1.03
+                tp2 = entry_price * 1.06
+                tp3 = entry_price * 1.09
+                sl = entry_price * 0.97
+            else:
+                tp1 = entry_price * 0.97
+                tp2 = entry_price * 0.94
+                tp3 = entry_price * 0.91
+                sl = entry_price * 1.03
+            
             return {
                 'symbol': formatted_symbol,
                 'detected_type': detected_type,
                 'entry_price': entry_price,
-                'tp1': entry_price * 1.03,
-                'tp2': entry_price * 1.06,
-                'tp3': entry_price * 1.09,
-                'sl': entry_price * 0.97
+                'tp1': tp1,
+                'tp2': tp2,
+                'tp3': tp3,
+                'sl': sl,
+                'method': 'fallback_percentage'
             }
                 
         except Exception as e:
-            logger.error(f"Error in custom entry calculation: {e}")
+            logger.error(f"Error in custom entry calculation for {symbol}: {e}")
+            
+            # Ultimate fallback
+            if action == "LONG":
+                tp1 = entry_price * 1.03
+                tp2 = entry_price * 1.06
+                tp3 = entry_price * 1.09
+                sl = entry_price * 0.97
+            else:
+                tp1 = entry_price * 0.97
+                tp2 = entry_price * 0.94
+                tp3 = entry_price * 0.91
+                sl = entry_price * 1.03
+            
             return {
                 'symbol': symbol,
                 'detected_type': 'spot',
                 'entry_price': entry_price,
-                'tp1': entry_price * 1.03,
-                'tp2': entry_price * 1.06,
-                'tp3': entry_price * 1.09,
-                'sl': entry_price * 0.97
+                'tp1': tp1,
+                'tp2': tp2,
+                'tp3': tp3,
+                'sl': sl,
+                'method': 'error_fallback'
             }
-
+    
     def get_provider_health(self):
         """Get provider health information"""
         if not hasattr(self, 'data_provider'):
