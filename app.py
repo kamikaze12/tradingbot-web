@@ -323,25 +323,56 @@ def safe_get(data, key, default=0):
     return default
 
 def get_valid_price(data, symbol=None, bot=None):
-    """Get valid price from analysis data"""
+    """Get valid price from analysis data - FIXED untuk harga real"""
     if not isinstance(data, dict):
+        # Coba ambil harga real dari provider jika bot ada
+        if symbol and bot and hasattr(bot, 'data_provider'):
+            try:
+                print(f"🔄 Mencari harga real untuk {symbol} dari provider")
+                ticker = bot.data_provider.get_ticker(symbol)
+                if ticker and isinstance(ticker, dict):
+                    # Coba berbagai key yang mungkin
+                    for price_key in ['last', 'close', 'current', 'price', 'bid', 'ask']:
+                        if price_key in ticker and ticker[price_key]:
+                            price = float(ticker[price_key])
+                            if price > 0:
+                                print(f"✅ Harga ditemukan: {price_key} = {price}")
+                                return price
+                return 1.0  # Fallback
+            except Exception as e:
+                print(f"❌ Error mengambil ticker: {e}")
+                return 1.0
         return 1.0
     
-    price_sources = ['current_price', 'entry_price', 'ideal_entry', 'close', 'last']
+    # Cek dulu di data analysis
+    price_sources = ['current_price', 'entry_price', 'ideal_entry', 'close', 'last', 'price']
     
     for source in price_sources:
         price = data.get(source)
         if price and isinstance(price, (int, float)) and price > 0:
+            print(f"✅ Harga dari {source}: {price}")
             return float(price)
     
+    # Jika tidak ada di data, coba dari provider
     if symbol and bot and hasattr(bot, 'data_provider'):
         try:
+            print(f"🔄 Mencari harga real untuk {symbol} dari provider")
             ticker = bot.data_provider.get_ticker(symbol)
-            if ticker and 'last' in ticker and ticker['last'] > 0:
-                return float(ticker['last'])
-        except:
-            pass
+            if ticker and isinstance(ticker, dict):
+                # Coba berbagai key yang mungkin
+                for price_key in ['last', 'close', 'current', 'price', 'bid', 'ask']:
+                    if price_key in ticker and ticker[price_key]:
+                        price = float(ticker[price_key])
+                        if price > 0:
+                            print(f"✅ Harga real ditemukan: {price_key} = {price}")
+                            # Update data dengan harga real
+                            data['current_price'] = price
+                            data['last'] = price
+                            return price
+        except Exception as e:
+            print(f"❌ Error mengambil harga real: {e}")
     
+    print("⚠️ Harga tidak ditemukan, menggunakan fallback 1.0")
     return 1.0
 
 def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
@@ -720,26 +751,32 @@ def display_scalping_signal(signal, index):
     return False
 
 # ====================================
-# PERBAIKAN 2: Fungsi Open Position
+# PERBAIKAN 2: Fungsi Open Position - ENHANCED
 # ====================================
-def open_position(symbol, action, entry_price, position_size=100, risk_percent=1):
-    """Open a new position dan save ke database"""
+def open_position(symbol, action, entry_price, tp1=None, tp2=None, tp3=None, sl=None, 
+                  position_size=100, risk_percent=1):
+    """Open a new position dan save ke database - ENHANCED dengan TP/SL manual"""
     try:
         bot = st.session_state.bot_instance
         
-        # Hitung TP/SL berdasarkan action
+        # Hitung TP/SL jika tidak diberikan
         current_price = entry_price
         
-        if action == "LONG":
-            tp1 = current_price * 1.02  # TP1: +2%
-            tp2 = current_price * 1.04  # TP2: +4%
-            tp3 = current_price * 1.06  # TP3: +6%
-            sl = current_price * 0.98   # SL: -2%
-        else:  # SHORT
-            tp1 = current_price * 0.98  # TP1: -2%
-            tp2 = current_price * 0.96  # TP2: -4%
-            tp3 = current_price * 0.94  # TP3: -6%
-            sl = current_price * 1.02   # SL: +2%
+        if tp1 is None or sl is None:
+            if action == "LONG":
+                tp1 = tp1 or current_price * 1.02  # TP1: +2%
+                tp2 = tp2 or current_price * 1.04  # TP2: +4%
+                tp3 = tp3 or current_price * 1.06  # TP3: +6%
+                sl = sl or current_price * 0.98   # SL: -2%
+            else:  # SHORT
+                tp1 = tp1 or current_price * 0.98  # TP1: -2%
+                tp2 = tp2 or current_price * 0.96  # TP2: -4%
+                tp3 = tp3 or current_price * 0.94  # TP3: -6%
+                sl = sl or current_price * 1.02   # SL: +2%
+        else:
+            # Use provided TP/SL values
+            tp2 = tp2 or tp1 * 1.02 if action == "LONG" else tp1 * 0.98
+            tp3 = tp3 or tp1 * 1.04 if action == "LONG" else tp1 * 0.96
         
         # Generate unique ID untuk session
         session_id = f"pos_{int(time.time())}_{symbol.replace('/', '_')}"
@@ -1591,7 +1628,7 @@ def main_app():
                 - Clear support/resistance levels
                 """)
 
-    # Tab 3: Analyze Asset
+    # Tab 3: Analyze Asset - FIXED VERSION
     with tab3:
         st.subheader("🔍 Analyze Specific Asset")
         
@@ -1599,19 +1636,19 @@ def main_app():
         mode_status = []
         if hasattr(bot, 'trading_mode'):
             mode_display = "🔄 Spot" if bot.trading_mode == "spot" else "⚡ Futures"
-            mode_status.append(f"Mode: {mode_display}")
+            mode_status.append(f"**Mode:** {mode_display}")
         
         if st.session_state.scalping_mode:
-            mode_status.append("⚡ Scalping: ON")
+            mode_status.append("⚡ **SCALPING:** ON")
         
         if mode_status:
-            st.caption(" | ".join(mode_status))
+            st.info(" | ".join(mode_status))
         
         col_analyze1, col_analyze2 = st.columns([2, 1])
         with col_analyze1:
             symbol_input = st.text_input("Enter symbol:", key="analyze_symbol", 
                                         placeholder="BTC or BTC/USDT or BTC/USDT:USDT")
-        
+    
         # Apply scalping parameters jika scalping mode aktif
         analysis_config = {}
         if st.session_state.scalping_mode:
@@ -1625,48 +1662,87 @@ def main_app():
                                                            value=SCALPING_CONFIG_APP["min_score"],
                                                            step=0.5, key="tab3_min_score")
         
-        if st.button("Analyze", key="analyze_btn", type="primary"):
-            if symbol_input:
-                with st.spinner("Analyzing..."):
-                    try:
-                        symbol = symbol_input.upper()
-                        
-                        # Format simbol
-                        formatted_symbol = format_symbol_for_mode(
-                            symbol, 
-                            bot.mode,
-                            getattr(bot, 'trading_mode', 'spot')
-                        )
-                        
-                        st.info(f"Analyzing: {formatted_symbol}")
-                        
-                        analysis = bot.analyze_asset(formatted_symbol)
-                        if analysis:
-                            # Apply scalping config jika ada
-                            if analysis_config:
-                                analysis['min_score_threshold'] = analysis_config.get('min_score', 2.5)
-                                analysis['scalping_mode'] = True
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("🚀 Analyze", key="analyze_btn", type="primary"):
+                if symbol_input:
+                    with st.spinner("Analyzing..."):
+                        try:
+                            symbol = symbol_input.upper().strip()
                             
-                            analysis = validate_and_fix_price_levels(analysis, formatted_symbol, bot)
-                            
-                            analysis['formatted_symbol'] = formatted_symbol
-                            analysis['original_input'] = symbol
-                            
-                            # Hitung probabilitas TP
-                            tp1, tp2, tp3 = safe_get(analysis, 'tp1', 0), safe_get(analysis, 'tp2', 0), safe_get(analysis, 'tp3', 0)
-                            action = safe_get(analysis, 'action', 'LONG')
-                            current_price = get_valid_price(analysis, formatted_symbol, bot)
-                            
-                            analysis['tp_probabilities'] = calculate_tp_probability(
-                                current_price, tp1, tp2, tp3, safe_get(analysis, 'sl', 0), action
+                            # Format simbol
+                            formatted_symbol = format_symbol_for_mode(
+                                symbol, 
+                                bot.mode,
+                                getattr(bot, 'trading_mode', 'spot')
                             )
                             
-                            st.session_state.selected_analysis = analysis
-                            st.success("Analysis complete!")
+                            st.info(f"🔍 Analyzing: {formatted_symbol}")
+                            
+                            # Coba ambil harga real dulu sebelum analisis
+                            current_price = 0
+                            if hasattr(bot, 'data_provider') and bot.data_provider:
+                                try:
+                                    ticker = bot.data_provider.get_ticker(formatted_symbol)
+                                    if ticker and isinstance(ticker, dict):
+                                        for price_key in ['last', 'close', 'current']:
+                                            if price_key in ticker and ticker[price_key]:
+                                                current_price = float(ticker[price_key])
+                                                st.success(f"💰 Current Price: ${current_price:,.2f}")
+                                                break
+                                except Exception as e:
+                                    st.warning(f"⚠️ Cannot get real-time price: {e}")
+                            
+                            analysis = bot.analyze_asset(formatted_symbol)
+                            if analysis:
+                                # Apply scalping config jika ada
+                                if analysis_config:
+                                    analysis['min_score_threshold'] = analysis_config.get('min_score', 2.5)
+                                    analysis['scalping_mode'] = True
+                                
+                                # Update dengan harga real jika ada
+                                if current_price > 0:
+                                    analysis['current_price'] = current_price
+                                    analysis['last'] = current_price
+                                
+                                analysis = validate_and_fix_price_levels(analysis, formatted_symbol, bot)
+                                
+                                analysis['formatted_symbol'] = formatted_symbol
+                                analysis['original_input'] = symbol_input
+                                
+                                # Hitung probabilitas TP
+                                tp1, tp2, tp3 = safe_get(analysis, 'tp1', 0), safe_get(analysis, 'tp2', 0), safe_get(analysis, 'tp3', 0)
+                                action = safe_get(analysis, 'action', 'LONG')
+                                current_price = get_valid_price(analysis, formatted_symbol, bot)
+                                
+                                analysis['tp_probabilities'] = calculate_tp_probability(
+                                    current_price, tp1, tp2, tp3, safe_get(analysis, 'sl', 0), action
+                                )
+                                
+                                st.session_state.selected_analysis = analysis
+                                st.success("✅ Analysis complete!")
+                            else:
+                                st.error("❌ Analysis failed - No data returned")
+                        except Exception as e:
+                            st.error(f"❌ Analysis error: {str(e)}")
+                            import traceback
+                            st.code(traceback.format_exc())
+        
+        with col_btn2:
+            # Tombol untuk test provider
+            if st.button("🧪 Test Provider", key="test_provider_btn"):
+                if hasattr(bot, 'data_provider'):
+                    try:
+                        test_symbol = "BTC/USDT" if bot.trading_mode == "spot" else "BTC/USDT:USDT"
+                        ticker = bot.data_provider.get_ticker(test_symbol)
+                        if ticker:
+                            st.success(f"✅ Provider active! BTC Price: ${ticker.get('last', 'N/A')}")
                         else:
-                            st.error("Analysis failed")
+                            st.error("❌ Provider returned no data")
                     except Exception as e:
-                        st.error(f"Analysis error: {e}")
+                        st.error(f"❌ Provider error: {e}")
+                else:
+                    st.error("❌ No data provider available")
         
         if st.session_state.selected_analysis:
             analysis = st.session_state.selected_analysis
@@ -1682,11 +1758,51 @@ def main_app():
             if analysis.get('scalping_mode'):
                 st.success("⚡ Scalping Analysis Applied")
             
+            # Tombol Save untuk digunakan di Custom Entry
+            col_save1, col_save2, col_save3 = st.columns([2, 2, 1])
+            with col_save1:
+                if st.button("💾 Save for Custom Entry", key="save_analysis_btn", type="primary"):
+                    symbol = analysis.get('formatted_symbol', analysis.get('symbol'))
+                    if symbol:
+                        st.session_state.selected_for_entry = {symbol: analysis}
+                        st.session_state.custom_symbol = symbol
+                        st.session_state.custom_action = analysis.get('action', 'LONG')
+                        st.session_state.custom_entry_price = analysis.get('current_price', 0)
+                        st.success(f"✅ {symbol} saved for Custom Entry!")
+                        st.info("Go to Tab 4 (Custom Entry) to use this analysis")
+            
+            with col_save2:
+                if st.button("📊 Show Raw Data", key="show_raw_data"):
+                    with st.expander("📋 Raw Analysis Data"):
+                        st.json(analysis)
+            
+            with col_save3:
+                if st.button("🔄 Refresh Price", key="refresh_price_btn"):
+                    # Refresh harga real
+                    symbol = analysis.get('formatted_symbol', analysis.get('symbol'))
+                    if symbol and hasattr(bot, 'data_provider'):
+                        try:
+                            ticker = bot.data_provider.get_ticker(symbol)
+                            if ticker and 'last' in ticker:
+                                new_price = float(ticker['last'])
+                                analysis['current_price'] = new_price
+                                analysis['last'] = new_price
+                                st.session_state.selected_analysis = analysis
+                                st.success(f"✅ Price updated: ${new_price:,.2f}")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Price update failed: {e}")
+            
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Action", safe_get(analysis, 'action', 'NEUTRAL'))
+                action = safe_get(analysis, 'action', 'NEUTRAL')
+                action_color = "🟢" if action == "LONG" else "🔴" if action == "SHORT" else "⚪"
+                st.metric("Action", f"{action_color} {action}")
                 st.metric("Score", safe_get(analysis, 'score', 0))
-                st.metric("Current Price", f"{get_valid_price(analysis, safe_get(analysis, 'symbol'), bot):.5f}")
+                
+                current_price = get_valid_price(analysis, analysis.get('symbol'), bot)
+                st.metric("Current Price", f"${current_price:,.5f}")
+                
                 st.metric("Trend", safe_get(analysis, 'trend', 'NEUTRAL'))
                 
             with col2:
@@ -1699,16 +1815,50 @@ def main_app():
                     st.metric("TP1 Probability", f"{probs.get('tp1', 0)*100:.1f}%")
             
             # Entry Range Details
-            st.subheader("🎯 Entry Range Details")
-            col_range1, col_range2, col_range3 = st.columns(3)
+            st.subheader("🎯 Entry Range & TP/SL Levels")
+            col_range1, col_range2, col_range3, col_range4 = st.columns(4)
             with col_range1:
-                st.metric("Entry Range Low", f"{analysis.get('entry_range_low', 0):.5f}")
+                entry_low = analysis.get('entry_range_low', 0)
+                st.metric("Entry Range Low", f"${entry_low:,.5f}")
             with col_range2:
-                st.metric("Entry Range High", f"{analysis.get('entry_range_high', 0):.5f}")
+                entry_high = analysis.get('entry_range_high', 0)
+                st.metric("Entry Range High", f"${entry_high:,.5f}")
             with col_range3:
-                st.metric("Ideal Entry", f"{analysis.get('best_entry', 0):.5f}")
+                best_entry = analysis.get('best_entry', 0)
+                st.metric("Ideal Entry", f"${best_entry:,.5f}")
+            with col_range4:
+                range_size = analysis.get('range_size', 0)
+                st.metric("Range Size", f"{range_size:.2f}%")
+            
+            # TP/SL Levels
+            st.subheader("🎯 Take Profit & Stop Loss")
+            tp_col1, tp_col2, tp_col3, sl_col = st.columns(4)
+            with tp_col1:
+                tp1 = analysis.get('tp1', 0)
+                st.metric("TP1", f"${tp1:,.5f}")
+            with tp_col2:
+                tp2 = analysis.get('tp2', 0)
+                st.metric("TP2", f"${tp2:,.5f}")
+            with tp_col3:
+                tp3 = analysis.get('tp3', 0)
+                st.metric("TP3", f"${tp3:,.5f}")
+            with sl_col:
+                sl = analysis.get('sl', 0)
+                st.metric("Stop Loss", f"${sl:,.5f}")
+            
+            # TP Probabilities
+            if 'tp_probabilities' in analysis:
+                st.subheader("📊 TP Probabilities")
+                probs = analysis['tp_probabilities']
+                prob_col1, prob_col2, prob_col3 = st.columns(3)
+                with prob_col1:
+                    st.progress(probs.get('tp1', 0), text=f"TP1: {probs.get('tp1', 0)*100:.1f}%")
+                with prob_col2:
+                    st.progress(probs.get('tp2', 0), text=f"TP2: {probs.get('tp2', 0)*100:.1f}%")
+                with prob_col3:
+                    st.progress(probs.get('tp3', 0), text=f"TP3: {probs.get('tp3', 0)*100:.1f}%")
 
-    # Tab 4: Custom Entry & Open Position (PERBAIKAN 3)
+    # Tab 4: Custom Entry & Open Position - ENHANCED VERSION
     with tab4:
         st.subheader("🎯 Custom Entry & Open Position")
         
@@ -1725,76 +1875,55 @@ def main_app():
             st.info(" | ".join(mode_info))
         
         # ============================================
-        # STEP 1: Pilih Aset dari Scan Results
+        # STEP 1: Pilih Aset atau Input Manual
         # ============================================
-        st.subheader("📌 Step 1: Select Asset")
+        st.subheader("📌 Step 1: Select or Enter Asset")
         
-        # Tampilkan assets dari scan results
-        if st.session_state.scanned_results or st.session_state.scalping_results:
-            # Pilih results berdasarkan mode
-            if st.session_state.scalping_mode and st.session_state.scalping_results:
-                available_assets = st.session_state.scalping_results
-            else:
-                available_assets = st.session_state.scanned_results
+        use_existing = st.checkbox("Use existing analysis from Tab 3", value=True, 
+                                  help="Use previously analyzed asset, or enter manually")
+        
+        if use_existing and st.session_state.selected_analysis:
+            analysis = st.session_state.selected_analysis
+            symbol_selected = analysis.get('formatted_symbol', analysis.get('symbol'))
+            action_selected = analysis.get('action', 'LONG')
+            entry_price = analysis.get('current_price', 0)
             
-            # Buat dropdown untuk memilih asset
-            asset_options = {}
-            for asset in available_assets[:20]:
-                if isinstance(asset, dict) and 'symbol' in asset:
-                    symbol = asset['symbol']
-                    action = asset.get('action', 'NEUTRAL')
-                    score = asset.get('score', 0)
-                    price = get_valid_price(asset, symbol, bot)
-                    
-                    display_text = f"{symbol} - {action} (Score: {score:.1f}) - Price: ${price:.4f}"
-                    asset_options[display_text] = asset
+            col_info1, col_info2 = st.columns([3, 1])
+            with col_info1:
+                st.success(f"✅ Using: **{symbol_selected}**")
+                st.write(f"Action: `{action_selected}` | Score: `{analysis.get('score', 0):.1f}`")
+                st.write(f"Current Price: `${entry_price:,.5f}`")
+                st.write(f"Entry Range: `${analysis.get('entry_range_low', 0):,.5f}` - `${analysis.get('entry_range_high', 0):,.5f}`")
             
-            if asset_options:
-                selected_asset_display = st.selectbox(
-                    "Choose an asset from scan results:",
-                    options=list(asset_options.keys()),
-                    key="select_asset_dropdown_tab4"
-                )
-                
-                if selected_asset_display:
-                    selected_asset = asset_options[selected_asset_display]
-                    symbol_selected = selected_asset['symbol']
-                    action_selected = selected_asset.get('action', 'LONG')
-                    entry_price = get_valid_price(selected_asset, symbol_selected, bot)
-                    
-                    # Tampilkan info asset yang dipilih
-                    col_sel1, col_sel2 = st.columns([3, 1])
-                    with col_sel1:
-                        st.success(f"✅ Selected: **{symbol_selected}**")
-                        st.write(f"Action: `{action_selected}` | Score: `{selected_asset.get('score', 0):.1f}`")
-                        st.write(f"Current Price: `{entry_price:.5f}`")
-                    
-                    with col_sel2:
-                        # Tombol untuk auto-fill
-                        if st.button("📌 Use This Asset", key="use_selected_asset_tab4"):
-                            st.session_state.custom_symbol = symbol_selected
-                            st.session_state.custom_action = action_selected
-                            st.session_state.custom_entry_price = entry_price
-                            st.rerun()
+            with col_info2:
+                if st.button("📌 Use This", key="use_analysis_btn"):
+                    st.session_state.custom_symbol = symbol_selected
+                    st.session_state.custom_action = action_selected
+                    st.session_state.custom_entry_price = entry_price
+                    st.session_state.custom_tp1 = analysis.get('tp1', 0)
+                    st.session_state.custom_tp2 = analysis.get('tp2', 0)
+                    st.session_state.custom_tp3 = analysis.get('tp3', 0)
+                    st.session_state.custom_sl = analysis.get('sl', 0)
+                    st.success("✅ Data loaded!")
+                    st.rerun()
         else:
-            st.warning("No assets available from scan. Please scan assets first in Tab 1.")
+            st.info("Enter asset details manually")
         
         st.divider()
         
         # ============================================
-        # STEP 2: Input Entry Details
+        # STEP 2: Input Entry Details Manual Lengkap
         # ============================================
-        st.subheader("💰 Step 2: Entry Details")
+        st.subheader("💰 Step 2: Entry Details (Manual Input)")
         
-        col_symbol, col_action, col_entry, col_size = st.columns([2, 1, 2, 1])
-        
+        col_symbol, col_action = st.columns([2, 1])
         with col_symbol:
             # Auto-fill symbol
             default_symbol = st.session_state.get('custom_symbol', '')
             symbol_custom = st.text_input("Symbol:", 
                                          value=default_symbol,
                                          key="custom_symbol_input_tab4", 
-                                         placeholder="BTC/USDT")
+                                         placeholder="BTC/USDT or BTC/USDT:USDT")
         
         with col_action:
             # Auto-fill action
@@ -1803,20 +1932,44 @@ def main_app():
                                         index=0 if default_action == "LONG" else 1,
                                         key="custom_action_select_tab4")
         
-        with col_entry:
+        # Get current price button
+        col_price1, col_price2 = st.columns([3, 1])
+        with col_price1:
             # Input entry price
             default_price = st.session_state.get('custom_entry_price', 0.0)
             safe_default_price = max(float(default_price), 0.00001)
             
             entry_price_custom = st.number_input(
-                "Entry Price:", 
+                "Entry Price ($):", 
                 value=safe_default_price,
                 min_value=0.00001,
-                step=0.0001, 
+                step=0.01, 
                 format="%.5f",
                 key="custom_entry_price_tab4"
             )
         
+        with col_price2:
+            st.write("")  # Spacer
+            st.write("")  # Spacer
+            if st.button("📊 Get Current Price", key="get_current_price_btn"):
+                if symbol_custom and hasattr(bot, 'data_provider'):
+                    with st.spinner("Getting current price..."):
+                        try:
+                            ticker = bot.data_provider.get_ticker(symbol_custom)
+                            if ticker and 'last' in ticker:
+                                current_price = float(ticker['last'])
+                                st.session_state.custom_entry_price = current_price
+                                st.success(f"✅ Current price: ${current_price:,.5f}")
+                                st.rerun()
+                            else:
+                                st.error("❌ Cannot get current price")
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
+                else:
+                    st.warning("⚠️ Enter symbol first or check provider")
+        
+        # Position Size dan Risk
+        col_size, col_risk = st.columns(2)
         with col_size:
             position_size = st.number_input(
                 "Position Size ($):",
@@ -1825,62 +1978,192 @@ def main_app():
                 step=10.0,
                 key="position_size_input_tab4"
             )
+        
+        with col_risk:
             risk_percent = st.slider("Risk %:", 0.5, 5.0, 1.0, 0.5, key="risk_percent_tab4")
-        
-        # Hitung TP/SL
-        if action_custom == "LONG":
-            tp1 = entry_price_custom * 1.02
-            tp2 = entry_price_custom * 1.04
-            tp3 = entry_price_custom * 1.06
-            sl = entry_price_custom * 0.98
-        else:
-            tp1 = entry_price_custom * 0.98
-            tp2 = entry_price_custom * 0.96
-            tp3 = entry_price_custom * 0.94
-            sl = entry_price_custom * 1.02
-        
-        # Tampilkan perhitungan
-        col_calc1, col_calc2 = st.columns(2)
-        with col_calc1:
-            st.info(f"**TP1:** `{tp1:.5f}`")
-            st.info(f"**TP2:** `{tp2:.5f}`")
-            st.info(f"**TP3:** `{tp3:.5f}`")
-        with col_calc2:
-            st.warning(f"**Stop Loss:** `{sl:.5f}`")
-            
-            # Hitung risk
             risk_amount = position_size * (risk_percent / 100)
-            st.warning(f"**Risk Amount:** `${risk_amount:.2f}`")
+            st.metric("Risk Amount", f"${risk_amount:,.2f}")
         
         st.divider()
         
         # ============================================
-        # STEP 3: Open Position
+        # STEP 3: TP/SL Settings - AUTO or MANUAL
         # ============================================
-        st.subheader("🚀 Step 3: Open Position")
+        st.subheader("🎯 Step 3: TP/SL Settings")
         
-        if st.button("📈 OPEN POSITION", key="open_position_btn_tab4", type="primary"):
+        tp_sl_mode = st.radio("TP/SL Mode:", ["Auto Calculate", "Manual Input"], 
+                             key="tp_sl_mode", horizontal=True)
+        
+        if tp_sl_mode == "Auto Calculate":
+            col_auto1, col_auto2 = st.columns(2)
+            with col_auto1:
+                tp_percent = st.slider("TP % per level:", 1.0, 10.0, 2.0, 0.5, 
+                                     key="tp_percent_auto")
+                st.caption(f"TP1: +{tp_percent}%, TP2: +{tp_percent*2}%, TP3: +{tp_percent*3}%")
+            
+            with col_auto2:
+                sl_percent = st.slider("SL %:", 1.0, 10.0, 2.0, 0.5, key="sl_percent_auto")
+                st.caption(f"Stop Loss: {sl_percent}%")
+            
+            # Calculate TP/SL automatically
+            if action_custom == "LONG":
+                tp1_auto = entry_price_custom * (1 + tp_percent/100)
+                tp2_auto = entry_price_custom * (1 + (tp_percent*2)/100)
+                tp3_auto = entry_price_custom * (1 + (tp_percent*3)/100)
+                sl_auto = entry_price_custom * (1 - sl_percent/100)
+            else:  # SHORT
+                tp1_auto = entry_price_custom * (1 - tp_percent/100)
+                tp2_auto = entry_price_custom * (1 - (tp_percent*2)/100)
+                tp3_auto = entry_price_custom * (1 - (tp_percent*3)/100)
+                sl_auto = entry_price_custom * (1 + sl_percent/100)
+            
+            # Assign auto values
+            tp1_custom, tp2_custom, tp3_custom, sl_custom = tp1_auto, tp2_auto, tp3_auto, sl_auto
+            
+            # Show auto values
+            col_show1, col_show2 = st.columns(2)
+            with col_show1:
+                st.info(f"**TP1:** `${tp1_auto:,.5f}`")
+                st.info(f"**TP2:** `${tp2_auto:,.5f}`")
+                st.info(f"**TP3:** `${tp3_auto:,.5f}`")
+            with col_show2:
+                st.warning(f"**Stop Loss:** `${sl_auto:,.5f}`")
+                
+        else:  # Manual Input
+            st.info("Enter TP/SL values manually:")
+            
+            col_manual1, col_manual2 = st.columns(2)
+            with col_manual1:
+                # Load from session state if exists
+                default_tp1 = st.session_state.get('custom_tp1', 0)
+                default_tp2 = st.session_state.get('custom_tp2', 0)
+                default_tp3 = st.session_state.get('custom_tp3', 0)
+                
+                tp1_custom = st.number_input(
+                    "TP1 ($):",
+                    value=max(default_tp1, entry_price_custom * 1.02),
+                    min_value=0.00001,
+                    step=0.01,
+                    format="%.5f",
+                    key="manual_tp1"
+                )
+                
+                tp2_custom = st.number_input(
+                    "TP2 ($):",
+                    value=max(default_tp2, entry_price_custom * 1.04),
+                    min_value=0.00001,
+                    step=0.01,
+                    format="%.5f",
+                    key="manual_tp2"
+                )
+                
+                tp3_custom = st.number_input(
+                    "TP3 ($):",
+                    value=max(default_tp3, entry_price_custom * 1.06),
+                    min_value=0.00001,
+                    step=0.01,
+                    format="%.5f",
+                    key="manual_tp3"
+                )
+            
+            with col_manual2:
+                # Load from session state if exists
+                default_sl = st.session_state.get('custom_sl', 0)
+                
+                sl_custom = st.number_input(
+                    "Stop Loss ($):",
+                    value=max(default_sl, entry_price_custom * 0.98),
+                    min_value=0.00001,
+                    step=0.01,
+                    format="%.5f",
+                    key="manual_sl"
+                )
+                
+                # Quick buttons for SL
+                st.caption("Quick SL:")
+                col_sl1, col_sl2, col_sl3 = st.columns(3)
+                with col_sl1:
+                    if st.button("-2%", key="sl_minus_2"):
+                        st.session_state.manual_sl = entry_price_custom * 0.98
+                        st.rerun()
+                with col_sl2:
+                    if st.button("-5%", key="sl_minus_5"):
+                        st.session_state.manual_sl = entry_price_custom * 0.95
+                        st.rerun()
+                with col_sl3:
+                    if st.button("-10%", key="sl_minus_10"):
+                        st.session_state.manual_sl = entry_price_custom * 0.90
+                        st.rerun()
+        
+        # Calculate Risk/Reward
+        st.divider()
+        st.subheader("📊 Risk/Reward Analysis")
+        
+        if entry_price_custom > 0:
+            if action_custom == "LONG":
+                risk = entry_price_custom - sl_custom
+                reward_tp1 = tp1_custom - entry_price_custom
+                reward_tp2 = tp2_custom - entry_price_custom
+                reward_tp3 = tp3_custom - entry_price_custom
+            else:  # SHORT
+                risk = sl_custom - entry_price_custom
+                reward_tp1 = entry_price_custom - tp1_custom
+                reward_tp2 = entry_price_custom - tp2_custom
+                reward_tp3 = entry_price_custom - tp3_custom
+            
+            if risk > 0:
+                rr1 = reward_tp1 / risk
+                rr2 = reward_tp2 / risk
+                rr3 = reward_tp3 / risk
+                
+                col_rr1, col_rr2, col_rr3 = st.columns(3)
+                with col_rr1:
+                    st.metric("TP1 R/R", f"{rr1:.2f}:1")
+                    st.caption(f"Reward: ${reward_tp1:,.2f}")
+                with col_rr2:
+                    st.metric("TP2 R/R", f"{rr2:.2f}:1")
+                    st.caption(f"Reward: ${reward_tp2:,.2f}")
+                with col_rr3:
+                    st.metric("TP3 R/R", f"{rr3:.2f}:1")
+                    st.caption(f"Reward: ${reward_tp3:,.2f}")
+                
+                st.metric("Risk Amount", f"${risk:,.2f}", f"{risk/entry_price_custom*100:.1f}%")
+        
+        st.divider()
+        
+        # ============================================
+        # STEP 4: Open Position
+        # ============================================
+        st.subheader("🚀 Step 4: Open Position")
+        
+        if st.button("📈 OPEN POSITION", key="open_position_btn_tab4", type="primary", use_container_width=True):
             if symbol_custom and entry_price_custom > 0:
                 with st.spinner("Opening position..."):
-                    success = open_position(
-                        symbol=symbol_custom,
-                        action=action_custom,
-                        entry_price=entry_price_custom,
-                        position_size=position_size,
-                        risk_percent=risk_percent
-                    )
+                    # Create position data
+                    position_data = {
+                        'symbol': symbol_custom,
+                        'action': action_custom,
+                        'entry_price': entry_price_custom,
+                        'tp1': tp1_custom,
+                        'tp2': tp2_custom,
+                        'tp3': tp3_custom,
+                        'sl': sl_custom,
+                        'position_size': position_size,
+                        'risk_percent': risk_percent
+                    }
+                    
+                    success = open_position(**position_data)
                     
                     if success:
                         st.success("✅ Position opened successfully!")
                         st.balloons()
                         
                         # Clear session state
-                        if 'custom_symbol' in st.session_state:
-                            del st.session_state.custom_symbol
-                        if 'custom_action' in st.session_state:
-                            del st.session_state.custom_action
-                        if 'custom_entry_price' in st.session_state:
-                            del st.session_state.custom_entry_price
+                        keys_to_clear = ['custom_symbol', 'custom_action', 'custom_entry_price',
+                                       'custom_tp1', 'custom_tp2', 'custom_tp3', 'custom_sl']
+                        for key in keys_to_clear:
+                            if key in st.session_state:
+                                del st.session_state[key]
                         
                         # Refresh positions
                         if hasattr(bot, 'get_active_positions'):
@@ -1909,8 +2192,9 @@ def main_app():
                         getattr(bot, 'trading_mode', 'spot')
                     )
                     st.write(f"**{display_symbol}** - {pos['action']}")
-                    st.write(f"Entry: `{pos['entry_price']:.5f}` | Size: `${pos['position_size']:.2f}`")
-                    st.write(f"TP1: `{pos['tp1']:.5f}` | SL: `{pos['sl']:.5f}`")
+                    st.write(f"Entry: `${pos['entry_price']:,.5f}` | Size: `${pos['position_size']:,.2f}`")
+                    st.write(f"TP1: `${pos['tp1']:,.5f}` | SL: `${pos['sl']:,.5f}`")
+                    st.write(f"Risk: {pos['risk_percent']}% (${pos['position_size'] * pos['risk_percent']/100:,.2f})")
                 with col_pos2:
                     st.write(f"⏰ {pos['timestamp']}")
                     if pos.get('saved_to_db'):
@@ -2144,7 +2428,7 @@ def main_app():
                 except Exception as e:
                     st.error(f"History error: {e}")
 
-    # Tab 8: Live Scanner & Position Monitor (PERBAIKAN 5)
+    # Tab 8: Live Scanner & Position Monitor - FIXED WITH REAL PRICES
     with tab8:
         st.subheader("📡 Live Scanner & Position Monitor")
         
@@ -2161,25 +2445,35 @@ def main_app():
             st.info(" | ".join(mode_info))
         
         # Status monitoring
-        col1, col2, col3 = st.columns([1, 2, 1])
+        col1, col2, col3, col4 = st.columns([1, 2, 1, 1])
         with col1:
             if st.button("🚀 Start Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Stop Monitoring", 
                         key="toggle_live_tab8", type="primary"):
                 st.session_state.live_monitoring = not st.session_state.live_monitoring
                 st.rerun()
-        
+    
         with col2:
             auto_refresh_live = st.checkbox("🔄 Auto Refresh (10s)", value=True, key="auto_refresh_live_tab8")
         
         with col3:
-            if st.button("🔄 Refresh Now", key="manual_refresh_live_tab8"):
-                # Refresh positions data
-                if hasattr(bot, 'get_active_positions'):
-                    try:
-                        st.session_state.positions_data = bot.get_active_positions()
-                        st.success("✅ Positions refreshed from database")
-                    except:
-                        pass
+            if st.button("🔄 Refresh Prices", key="refresh_prices_btn"):
+                # Refresh semua harga posisi
+                if hasattr(st.session_state, 'test_positions') and st.session_state.test_positions:
+                    for pos in st.session_state.test_positions:
+                        if pos['status'] == 'open' and hasattr(bot, 'data_provider'):
+                            try:
+                                ticker = bot.data_provider.get_ticker(pos['symbol'])
+                                if ticker and 'last' in ticker:
+                                    pos['current_price'] = float(ticker['last'])
+                            except:
+                                pass
+                    st.success("✅ Prices refreshed!")
+                    st.rerun()
+        
+        with col4:
+            if st.button("📊 Show All", key="show_all_positions"):
+                # Toggle untuk menunjukkan semua posisi
+                st.session_state.show_all_positions = not st.session_state.get('show_all_positions', False)
                 st.rerun()
         
         if st.session_state.live_monitoring:
@@ -2198,6 +2492,10 @@ def main_app():
             # Add session positions
             if hasattr(st.session_state, 'test_positions'):
                 session_positions = st.session_state.test_positions
+                # Filter hanya yang open jika tidak show all
+                if not st.session_state.get('show_all_positions', False):
+                    session_positions = [p for p in session_positions if p.get('status') == 'open']
+                
                 db_symbols = [p.get('symbol') for p in positions_data if isinstance(p, dict)]
                 for pos in session_positions:
                     if pos.get('symbol') not in db_symbols:
@@ -2216,16 +2514,41 @@ def main_app():
                             current_price = float(pos.get('current_price', entry_price))
                             position_id = pos.get('id', '')
                             position_size = float(pos.get('position_size', 100))
+                            status = pos.get('status', 'open')
                         else:
                             continue
                         
                         if not symbol:
                             continue
                         
-                        # Simulate price movement (for demo)
-                        import random
-                        price_change = random.uniform(-0.02, 0.02)
-                        live_price = current_price * (1 + price_change)
+                        # Skip closed positions unless show_all
+                        if status != 'open' and not st.session_state.get('show_all_positions', False):
+                            continue
+                        
+                        # Get real-time price from provider
+                        live_price = current_price
+                        price_source = "Cached"
+                        
+                        if hasattr(bot, 'data_provider') and bot.data_provider:
+                            try:
+                                ticker = bot.data_provider.get_ticker(symbol)
+                                if ticker and isinstance(ticker, dict) and 'last' in ticker:
+                                    live_price = float(ticker['last'])
+                                    price_source = "Live"
+                                    # Update cache
+                                    pos['current_price'] = live_price
+                                else:
+                                    # Simulate small change for demo
+                                    import random
+                                    price_change = random.uniform(-0.005, 0.005)
+                                    live_price = current_price * (1 + price_change)
+                                    price_source = "Simulated"
+                            except Exception as e:
+                                # Fallback to simulation
+                                import random
+                                price_change = random.uniform(-0.005, 0.005)
+                                live_price = current_price * (1 + price_change)
+                                price_source = "Simulated"
                         
                         # Format display
                         display_symbol = convert_symbol_for_display(
@@ -2247,30 +2570,35 @@ def main_app():
                             col_live1, col_live2, col_live3, col_live4 = st.columns([2, 2, 2, 1])
                             
                             with col_live1:
-                                st.write(f"**{display_symbol}**")
-                                st.write(f"Action: `{action}`")
-                                st.write(f"Entry: `{entry_price:.5f}`")
+                                status_emoji = "🟢" if status == 'open' else "🔴" if status == 'closed' else "⚪"
+                                st.write(f"{status_emoji} **{display_symbol}**")
+                                st.write(f"Action: `{action}` | Status: `{status}`")
+                                st.write(f"🏁 Entry: `${entry_price:,.5f}`")
+                                st.write(f"Size: `${position_size:,.2f}`")
                             
                             with col_live2:
-                                st.write(f"💰 Live Price: `{live_price:.5f}`")
-                                st.write(f"📊 Change: `{price_change*100:+.2f}%`")
-                                st.write(f"Size: `{position_size:.2f}`")
+                                price_color = "🟢" if live_price > current_price else "🔴" if live_price < current_price else "⚪"
+                                st.write(f"{price_color} {price_source} Price: `${live_price:,.5f}`")
+                                if price_source != "Live":
+                                    change_pct = ((live_price - current_price) / current_price) * 100
+                                    st.write(f"📊 Change: `{change_pct:+.2f}%`")
                             
                             with col_live3:
                                 color = "green" if pl_pct >= 0 else "red"
                                 emoji = "📈" if pl_pct >= 0 else "📉"
                                 st.write(f"{emoji} P/L: <span style='color:{color}; font-weight:bold'>{pl_pct:+.2f}%</span>", unsafe_allow_html=True)
-                                st.write(f"💰 Value: <span style='color:{color}'>${pl_value:+.2f}</span>", unsafe_allow_html=True)
+                                st.write(f"💰 Value: <span style='color:{color}'>${pl_value:+,.2f}</span>", unsafe_allow_html=True)
                             
                             with col_live4:
                                 # Update current price in position
-                                if st.button("🔄 Update", key=f"update_price_{position_id}"):
+                                update_key = f"update_price_{position_id}"
+                                if st.button("🔄 Update", key=update_key):
                                     # Update in session state
                                     if hasattr(st.session_state, 'test_positions'):
                                         for i, p in enumerate(st.session_state.test_positions):
                                             if p.get('id') == position_id:
                                                 st.session_state.test_positions[i]['current_price'] = live_price
-                                                st.success(f"✅ {display_symbol} updated to {live_price:.5f}")
+                                                st.success(f"✅ {display_symbol} updated to ${live_price:,.5f}")
                                                 st.rerun()
                     
                         st.divider()
@@ -2278,13 +2606,19 @@ def main_app():
                     except Exception as e:
                         st.error(f"❌ Error updating {symbol}: {e}")
                         continue
+                
+                # Summary
+                total_positions = len([p for p in positions_data if isinstance(p, dict) and p.get('status') == 'open'])
+                if total_positions > 0:
+                    st.info(f"📊 **Monitoring {total_positions} open positions**")
             
             else:
                 st.info("📭 No active positions to monitor")
                 st.info("👉 Open a position in Tab 4 first!")
             
             # Auto-refresh
-            if auto_refresh_live:
+            if auto_refresh_live and st.session_state.live_monitoring:
+                import time
                 time.sleep(10)
                 st.rerun()
         else:
