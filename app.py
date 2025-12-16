@@ -15,7 +15,8 @@ from datetime import datetime, timedelta
 
 # ✅ FIX: Add the project root to Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
+# Tambahkan folder bot ke path Python
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "bot"))
 # Try to import plotly
 try:
     import plotly.graph_objects as go
