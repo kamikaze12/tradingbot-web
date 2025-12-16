@@ -1706,21 +1706,22 @@ def main_app():
             else:
                 st.warning("⚠️ Please enter symbol and valid entry price")
         
-        # Tampilkan saved entry jika ada
-        if 'saved_custom_entry' in st.session_state:
+        # Tampilkan saved entry jika ada - PERBAIKAN UTAMA DI SINI
+        saved_entry = st.session_state.get('saved_custom_entry')
+        if saved_entry is not None and isinstance(saved_entry, dict):
             st.divider()
             st.subheader("💾 Saved Entry Details")
-            saved = st.session_state.saved_custom_entry
             col1, col2 = st.columns(2)
             with col1:
-                st.write(f"**Symbol:** {saved['symbol']}")
-                st.write(f"**Action:** {saved['action']}")
+                # ✅ PERBAIKAN: Gunakan safe_get untuk menghindari error
+                st.write(f"**Symbol:** {safe_get(saved_entry, 'symbol', 'N/A')}")
+                st.write(f"**Action:** {safe_get(saved_entry, 'action', 'N/A')}")
             with col2:
-                st.write(f"**Entry Price:** {saved['entry_price']:.5f}")
-                st.write(f"**Saved at:** {saved['timestamp']}")
+                st.write(f"**Entry Price:** {safe_get(saved_entry, 'entry_price', 0):.5f}")
+                st.write(f"**Saved at:** {safe_get(saved_entry, 'timestamp', 'N/A')}")
             
             if st.button("🗑️ Clear Saved Entry", key="clear_saved_entry"):
-                del st.session_state.saved_custom_entry
+                st.session_state.saved_custom_entry = None
                 st.rerun()
 
     # Tab 5: Open Position (TAB BARU)
@@ -1739,8 +1740,10 @@ def main_app():
         if mode_info:
             st.info(" | ".join(mode_info))
         
-        # Cek apakah ada saved entry dari Tab 4
-        if 'saved_custom_entry' not in st.session_state:
+        # ✅ PERBAIKAN: Gunakan .get() dengan pengecekan None
+        saved_entry = st.session_state.get('saved_custom_entry')
+        
+        if saved_entry is None:
             st.warning("⚠️ No saved entry found. Please save entry details in **🎯 Custom Entry** tab first.")
             st.info("""
             **Workflow:**
@@ -1750,16 +1753,14 @@ def main_app():
             4. Come back here to calculate TP/SL and open position
             """)
         else:
-            saved_entry = st.session_state.saved_custom_entry
-            
             st.subheader("📋 Entry Details")
             col_info1, col_info2 = st.columns(2)
             with col_info1:
-                st.write(f"**Symbol:** `{saved_entry['symbol']}`")
-                st.write(f"**Action:** `{saved_entry['action']}`")
+                st.write(f"**Symbol:** `{safe_get(saved_entry, 'symbol', 'N/A')}`")
+                st.write(f"**Action:** `{safe_get(saved_entry, 'action', 'N/A')}`")
             with col_info2:
-                st.write(f"**Entry Price:** `{saved_entry['entry_price']:.5f}`")
-                st.write(f"**Saved:** {saved_entry['timestamp']}")
+                st.write(f"**Entry Price:** `{safe_get(saved_entry, 'entry_price', 0):.5f}`")
+                st.write(f"**Saved:** {safe_get(saved_entry, 'timestamp', 'N/A')}")
             
             st.divider()
             
@@ -1782,7 +1783,7 @@ def main_app():
                     try:
                         # Format symbol
                         formatted_symbol = format_symbol_for_mode(
-                            saved_entry['symbol'].upper(),
+                            safe_get(saved_entry, 'symbol', '').upper(),
                             bot.mode,
                             getattr(bot, 'trading_mode', 'spot')
                         )
@@ -1791,13 +1792,13 @@ def main_app():
                         if hasattr(bot, 'calculate_custom_entry'):
                             result = bot.calculate_custom_entry(
                                 formatted_symbol, 
-                                saved_entry['entry_price'], 
-                                saved_entry['action']
+                                safe_get(saved_entry, 'entry_price', 0), 
+                                safe_get(saved_entry, 'action', 'LONG')
                             )
                         else:
                             # Fallback calculation
-                            entry_price = saved_entry['entry_price']
-                            action = saved_entry['action']
+                            entry_price = safe_get(saved_entry, 'entry_price', 0)
+                            action = safe_get(saved_entry, 'action', 'LONG')
                             
                             if action == "LONG":
                                 tp1 = entry_price * (1 + (0.02 * risk_reward_ratio))
@@ -1825,7 +1826,7 @@ def main_app():
                             result = validate_and_fix_price_levels(result, formatted_symbol, bot)
                             
                             # Urutkan TP levels
-                            if saved_entry['action'] == "LONG":
+                            if safe_get(saved_entry, 'action', 'LONG') == "LONG":
                                 tp1, tp2, tp3 = sorted([result['tp1'], result['tp2'], result['tp3']])
                             else:
                                 tp1, tp2, tp3 = sorted([result['tp1'], result['tp2'], result['tp3']], reverse=True)
@@ -1834,9 +1835,9 @@ def main_app():
                             
                             # Hitung probabilitas
                             result['tp_probabilities'] = calculate_tp_probability(
-                                saved_entry['entry_price'],
+                                safe_get(saved_entry, 'entry_price', 0),
                                 result['tp1'], result['tp2'], result['tp3'],
-                                result['sl'], saved_entry['action']
+                                result['sl'], safe_get(saved_entry, 'action', 'LONG')
                             )
                             
                             # Simpan ke session state
@@ -1862,7 +1863,7 @@ def main_app():
                 st.subheader("📊 Calculation Results")
                 
                 # Hitung risk/reward dan position qty
-                if saved_entry['action'] == "LONG":
+                if safe_get(saved_entry, 'action', 'LONG') == "LONG":
                     risk = result['entry_price'] - result['sl']
                     reward_tp1 = result['tp1'] - result['entry_price']
                     rr_ratio_actual = reward_tp1 / risk if risk > 0 else 0
@@ -1930,7 +1931,7 @@ def main_app():
                                 position_id = bot.db.save_position(
                                     symbol=result['symbol'],
                                     market_type=bot.mode,
-                                    action=saved_entry['action'],
+                                    action=safe_get(saved_entry, 'action', 'LONG'),
                                     entry_price=entry_price_clean,
                                     tp1=tp1_clean,
                                     tp2=tp2_clean,
@@ -1942,12 +1943,9 @@ def main_app():
                                     st.success(f"✅ Position opened successfully! ID: {position_id}")
                                     
                                     # Clear session states
-                                    if 'saved_custom_entry' in st.session_state:
-                                        del st.session_state.saved_custom_entry
-                                    if 'open_position_result' in st.session_state:
-                                        del st.session_state.open_position_result
-                                    if 'open_position_risk' in st.session_state:
-                                        del st.session_state.open_position_risk
+                                    st.session_state.saved_custom_entry = None
+                                    st.session_state.open_position_result = None
+                                    st.session_state.open_position_risk = None
                                     
                                     # Refresh positions data
                                     st.session_state.positions_data = bot.get_active_positions()
@@ -1970,7 +1968,7 @@ def main_app():
                         test_position = {
                             'id': len(st.session_state.test_positions) + 1,
                             'symbol': result['symbol'],
-                            'action': saved_entry['action'],
+                            'action': safe_get(saved_entry, 'action', 'LONG'),
                             'entry_price': result['entry_price'],
                             'tp1': result['tp1'],
                             'tp2': result['tp2'],
@@ -2552,7 +2550,7 @@ def main():
     if 'last_selected' not in st.session_state:
         st.session_state.last_selected = None
     
-    # Initialize saved_custom_entry
+    # ✅ PERBAIKAN: Inisialisasi dengan None secara eksplisit
     if 'saved_custom_entry' not in st.session_state:
         st.session_state.saved_custom_entry = None
     
