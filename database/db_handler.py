@@ -13,6 +13,7 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 import time
 from contextlib import contextmanager
+from decimal import Decimal
 
 load_dotenv()
 
@@ -617,30 +618,30 @@ class DatabaseHandler:
                     converted_data.get("symbol"),
                     converted_data.get("market_type", "unknown"),
                     converted_data.get("action"),
-                    converted_data.get("entry_low"),
-                    converted_data.get("entry_high"),
-                    converted_data.get("tp1"),
-                    converted_data.get("tp2"),
-                    converted_data.get("tp3"),
-                    converted_data.get("sl"),
-                    converted_data.get("current_price"),
-                    converted_data.get("rsi"),
+                    float(converted_data.get("entry_low")) if converted_data.get("entry_low") is not None else None,
+                    float(converted_data.get("entry_high")) if converted_data.get("entry_high") is not None else None,
+                    float(converted_data.get("tp1")) if converted_data.get("tp1") is not None else None,
+                    float(converted_data.get("tp2")) if converted_data.get("tp2") is not None else None,
+                    float(converted_data.get("tp3")) if converted_data.get("tp3") is not None else None,
+                    float(converted_data.get("sl")) if converted_data.get("sl") is not None else None,
+                    float(converted_data.get("current_price")) if converted_data.get("current_price") is not None else None,
+                    float(converted_data.get("rsi")) if converted_data.get("rsi") is not None else None,
                     converted_data.get("trend"),
-                    converted_data.get("volume_ratio"),
-                    converted_data.get("atr"),
-                    converted_data.get("score"),
+                    float(converted_data.get("volume_ratio")) if converted_data.get("volume_ratio") is not None else None,
+                    float(converted_data.get("atr")) if converted_data.get("atr") is not None else None,
+                    int(converted_data.get("score")) if converted_data.get("score") is not None else None,
                     bool(converted_data.get("hh", False)),
                     bool(converted_data.get("hl", False)),
                     bool(converted_data.get("lh", False)),
                     bool(converted_data.get("ll", False)),
                     converted_data.get("ema_trend", "NEUTRAL"),
-                    converted_data.get("ema_score", 0),
-                    converted_data.get("pattern_score", 0),
-                    converted_data.get("momentum_score", 0),
+                    int(converted_data.get("ema_score", 0)),
+                    int(converted_data.get("pattern_score", 0)),
+                    int(converted_data.get("momentum_score", 0)),
                     converted_data.get("market_regime", "unknown"),
-                    converted_data.get("volatility", 0.02),
+                    float(converted_data.get("volatility", 0.02)),
                     converted_data.get("risk_category", "MEDIUM"),
-                    converted_data.get("confidence", 0.5),
+                    float(converted_data.get("confidence", 0.5)),
                     pattern_details_json,
                     tp_probabilities_json
                 ))
@@ -722,14 +723,35 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
+                # Konversi semua nilai float ke Python native float (bukan np.float64)
+                entry_price = float(entry_price) if entry_price is not None else None
+                tp1 = float(tp1) if tp1 is not None else None
+                tp2 = float(tp2) if tp2 is not None else None
+                tp3 = float(tp3) if tp3 is not None else None
+                sl = float(sl) if sl is not None else None
+                
                 if current_price is None:
                     current_price = entry_price
+                else:
+                    current_price = float(current_price)
+                    
                 if entry_low is None:
                     entry_low = entry_price * 0.98
+                else:
+                    entry_low = float(entry_low)
+                    
                 if entry_high is None:
                     entry_high = entry_price * 1.02
+                else:
+                    entry_high = float(entry_high)
+                    
                 if position_size is None:
                     position_size = self._calculate_default_position_size(entry_price, sl)
+                else:
+                    position_size = float(position_size)
+                
+                trailing_distance = float(trailing_distance) if trailing_distance is not None else 0.0
+                position_score = int(position_score) if position_score is not None else 0
                 
                 trailing_stop = None
                 if trailing_distance > 0:
@@ -769,6 +791,10 @@ class DatabaseHandler:
     def _calculate_default_position_size(self, entry_price: float, stop_loss: float, 
                                        risk_per_trade: float = 0.01, account_balance: float = 10000) -> float:
         """Calculate default position size based on risk management"""
+        # Konversi ke Python native float
+        entry_price = float(entry_price) if entry_price is not None else 0.0
+        stop_loss = float(stop_loss) if stop_loss is not None else 0.0
+        
         if entry_price <= 0 or stop_loss <= 0:
             return 0.0
             
@@ -790,6 +816,13 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
+                # Konversi current_price ke float
+                current_price = float(current_price) if current_price is not None else None
+                
+                if current_price is None:
+                    logger.error(f"Invalid current_price for {symbol}")
+                    return False
+                
                 cursor.execute(
                     "SELECT id, entry_price, action, position_size FROM positions WHERE symbol = %s AND status = 'active'",
                     (symbol,)
@@ -802,12 +835,16 @@ class DatabaseHandler:
                 
                 position_id, entry_price, action, position_size = position
                 
+                # Konversi nilai dari database ke float
+                entry_price = float(entry_price) if entry_price is not None else 0.0
+                position_size = float(position_size) if position_size is not None else 0.0
+                
                 if action == "LONG":
                     pnl = (current_price - entry_price) * position_size
-                    pnl_percent = (current_price - entry_price) / entry_price * 100
+                    pnl_percent = (current_price - entry_price) / entry_price * 100 if entry_price != 0 else 0
                 else:
                     pnl = (entry_price - current_price) * position_size
-                    pnl_percent = (entry_price - current_price) / entry_price * 100
+                    pnl_percent = (entry_price - current_price) / entry_price * 100 if entry_price != 0 else 0
                 
                 cursor.execute("""
                     UPDATE positions 
@@ -833,6 +870,14 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
+                # Konversi close_price ke float
+                close_price = float(close_price) if close_price is not None else None
+                commission = float(commission) if commission is not None else 0.0
+                
+                if close_price is None:
+                    logger.error(f"Invalid close_price for position {position_id}")
+                    return False
+                
                 # Get position details
                 cursor.execute("""
                     SELECT symbol, market_type, action, entry_price, position_size, 
@@ -847,13 +892,19 @@ class DatabaseHandler:
                 
                 symbol, market_type, action, entry_price, position_size, sl, tp1, created_at = position
                 
+                # Konversi nilai dari database ke float
+                entry_price = float(entry_price) if entry_price is not None else 0.0
+                position_size = float(position_size) if position_size is not None else 0.0
+                sl = float(sl) if sl is not None else 0.0
+                tp1 = float(tp1) if tp1 is not None else 0.0
+                
                 # Calculate final PnL
                 if action == "LONG":
                     profit_loss = (close_price - entry_price) * position_size
-                    profit_loss_percent = ((close_price - entry_price) / entry_price) * 100
+                    profit_loss_percent = ((close_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
                 else:
                     profit_loss = (entry_price - close_price) * position_size
-                    profit_loss_percent = ((entry_price - close_price) / entry_price) * 100
+                    profit_loss_percent = ((entry_price - close_price) / entry_price) * 100 if entry_price != 0 else 0
                 
                 # Calculate duration
                 duration_minutes = 0
@@ -936,6 +987,11 @@ class DatabaseHandler:
                 for row in cursor.fetchall():
                     result_dict = dict(zip(columns, row))
                     
+                    # Konversi numeric values yang mungkin Decimal
+                    for key, value in result_dict.items():
+                        if isinstance(value, Decimal):
+                            result_dict[key] = float(value)
+                    
                     if result_dict.get('partial_tp_executed'):
                         try:
                             result_dict['partial_tp_executed'] = json.loads(result_dict['partial_tp_executed'])
@@ -959,6 +1015,14 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
+                # Konversi nilai ke float
+                tp_level = float(tp_level) if tp_level is not None else None
+                close_percentage = float(close_percentage) if close_percentage is not None else 0.5
+                
+                if tp_level is None:
+                    logger.error(f"Invalid tp_level for position {position_id}")
+                    return False
+                
                 cursor.execute(
                     "SELECT symbol, position_size, partial_tp_executed FROM positions WHERE id = %s",
                     (position_id,)
@@ -970,6 +1034,9 @@ class DatabaseHandler:
                     return False
                 
                 symbol, current_size, partial_tp_json = position
+                
+                # Konversi current_size ke float
+                current_size = float(current_size) if current_size is not None else 0.0
                 
                 partial_tp_executed = []
                 if partial_tp_json:
@@ -1035,8 +1102,19 @@ class DatabaseHandler:
                 
                 cursor.execute(query, params)
                 columns = [desc[0] for desc in cursor.description]
+                results = []
                 
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+                for row in cursor.fetchall():
+                    result_dict = dict(zip(columns, row))
+                    
+                    # Konversi Decimal ke float untuk hasil yang lebih bersih
+                    for key, value in result_dict.items():
+                        if isinstance(value, Decimal):
+                            result_dict[key] = float(value)
+                    
+                    results.append(result_dict)
+                
+                return results
                 
             except Exception as e:
                 logger.error(f"Error getting trade history: {e}")
@@ -1070,6 +1148,12 @@ class DatabaseHandler:
                 (total_trades, winning_trades, losing_trades, 
                  avg_win, avg_loss, total_pnl, avg_return_percent) = result
                 
+                # Konversi Decimal ke float
+                avg_win = float(avg_win) if avg_win is not None else 0.0
+                avg_loss = float(avg_loss) if avg_loss is not None else 0.0
+                total_pnl = float(total_pnl) if total_pnl is not None else 0.0
+                avg_return_percent = float(avg_return_percent) if avg_return_percent is not None else 0.0
+                
                 win_rate = winning_trades / total_trades if total_trades > 0 else 0
                 profit_factor = abs(avg_win * winning_trades) / abs(avg_loss * losing_trades) if losing_trades > 0 and avg_loss else float('inf')
                 
@@ -1094,24 +1178,36 @@ class DatabaseHandler:
                 cursor.close()
 
     # =========================================================
-    # UTILITY METHODS
+    # UTILITY METHODS - ENHANCED
     # =========================================================
     
     def _convert_numpy_types(self, data):
-        """Convert numpy types to native Python types"""
+        """Convert numpy types to native Python types - Enhanced version"""
         if isinstance(data, dict):
             return {k: self._convert_numpy_types(v) for k, v in data.items()}
-        if data is None:
+        elif isinstance(data, list):
+            return [self._convert_numpy_types(item) for item in data]
+        elif isinstance(data, tuple):
+            return tuple(self._convert_numpy_types(item) for item in data)
+        elif data is None:
             return None
-        if hasattr(data, "item"):
-            return data.item()
-        try:
+        elif isinstance(data, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+            return int(data)
+        elif isinstance(data, (np.floating, np.float64, np.float32, np.float16)):
             return float(data)
-        except (ValueError, TypeError):
+        elif isinstance(data, np.bool_):
+            return bool(data)
+        elif isinstance(data, np.ndarray):
+            return data.tolist()
+        elif isinstance(data, Decimal):
+            return float(data)
+        elif hasattr(data, "item"):
             try:
-                return str(data)
+                return data.item()
             except:
                 return data
+        else:
+            return data
 
     def _update_performance_metrics(self):
         """Update daily performance metrics"""
@@ -1135,6 +1231,11 @@ class DatabaseHandler:
                 
                 total_trades, winning_trades, total_pnl = result
                 
+                # Konversi ke Python native types
+                total_trades = int(total_trades) if total_trades is not None else 0
+                winning_trades = int(winning_trades) if winning_trades is not None else 0
+                total_pnl = float(total_pnl) if total_pnl is not None else 0.0
+                
                 win_rate = winning_trades / total_trades if total_trades > 0 else 0
                 
                 cursor.execute("""
@@ -1147,6 +1248,9 @@ class DatabaseHandler:
                 
                 avg_result = cursor.fetchone()
                 avg_profit, avg_loss = avg_result if avg_result else (0, 0)
+                
+                avg_profit = float(avg_profit) if avg_profit is not None else 0.0
+                avg_loss = float(avg_loss) if avg_loss is not None else 0.0
                 
                 profit_factor = abs(avg_profit * winning_trades) / abs(avg_loss * (total_trades - winning_trades)) if avg_loss and (total_trades - winning_trades) > 0 else 0
                 
@@ -1207,7 +1311,7 @@ class DatabaseHandler:
                     'basic_test': basic_test,
                     'tables_count': len(tables),
                     'tables': tables,
-                    'active_connections': active_connections,
+                    'active_connections': int(active_connections),
                     'total_queries': self.query_count,
                     'error_rate': self.error_count / max(1, self.query_count),
                     'last_cleanup': self.last_cleanup.isoformat() if self.last_cleanup else None
@@ -1221,7 +1325,7 @@ class DatabaseHandler:
                 'error': str(e)
             }
 
-# Test function
+# Test function dengan perbaikan
 def test_database_functionality():
     """Test comprehensive database functionality"""
     db = DatabaseHandler()
@@ -1231,38 +1335,83 @@ def test_database_functionality():
     # Test health check
     health = db.health_check()
     print(f"Health Check: {health['status']}")
+    print(f"Tables: {health['tables_count']}")
     
-    # Test save position
-    position_id = db.save_position(
-        symbol="BTC/USDT",
-        market_type="crypto", 
-        action="LONG",
-        entry_price=50000,
-        tp1=52000,
-        tp2=54000, 
-        tp3=56000,
-        sl=48000
-    )
-    
-    print(f"✅ Position saved with ID: {position_id}")
-    
-    # Test get active positions
-    positions = db.get_active_positions()
-    print(f"✅ Active positions: {len(positions)}")
-    
-    # Test close position
-    if position_id:
-        success = db.close_position(position_id, 53000, "test")
+    # Test save position dengan numpy values
+    print("\n🧪 Testing save_position with numpy values...")
+    try:
+        # Simulasikan numpy values yang mungkin datang dari pandas
+        import numpy as np
+        position_id = db.save_position(
+            symbol="BTC/USDT",
+            market_type="crypto", 
+            action="LONG",
+            entry_price=np.float64(50000.0),
+            tp1=np.float64(52000.0),
+            tp2=np.float64(54000.0), 
+            tp3=np.float64(56000.0),
+            sl=np.float64(48000.0)
+        )
+        
+        print(f"✅ Position saved with ID: {position_id}")
+        
+        # Test get active positions
+        positions = db.get_active_positions()
+        print(f"✅ Active positions: {len(positions)}")
+        
+        # Test update current price dengan numpy
+        print("\n🧪 Testing update_position_current_price...")
+        success = db.update_position_current_price("BTC/USDT", np.float64(51000.0))
         if success:
-            print("✅ Position closed successfully")
+            print("✅ Current price updated successfully")
         else:
-            print("❌ Position close failed")
+            print("❌ Current price update failed")
+        
+        # Test close position
+        if position_id:
+            print("\n🧪 Testing close_position...")
+            success = db.close_position(position_id, np.float64(53000.0), "test")
+            if success:
+                print("✅ Position closed successfully")
+            else:
+                print("❌ Position close failed")
+        
+        # Test performance stats
+        performance = db.get_performance_stats(days=7)
+        print(f"\n✅ Performance stats retrieved")
+        print(f"   Total trades: {performance.get('total_trades', 0)}")
+        print(f"   Total PnL: {performance.get('total_pnl', 0):.2f}")
+        
+        # Test save signal dengan numpy data
+        print("\n🧪 Testing save_signal with numpy data...")
+        signal_data = {
+            "symbol": "ETH/USDT",
+            "market_type": "crypto",
+            "action": "LONG",
+            "entry_low": np.float64(2500.0),
+            "entry_high": np.float64(2550.0),
+            "tp1": np.float64(2700.0),
+            "tp2": np.float64(2800.0),
+            "tp3": np.float64(2900.0),
+            "sl": np.float64(2400.0),
+            "current_price": np.float64(2520.0),
+            "rsi": np.float64(65.5),
+            "score": np.int64(85),
+            "confidence": np.float64(0.8)
+        }
+        
+        signal_id = db.save_signal(signal_data)
+        if signal_id:
+            print(f"✅ Signal saved with ID: {signal_id}")
+        else:
+            print("❌ Signal save failed")
+        
+    except Exception as e:
+        print(f"❌ Test failed with error: {e}")
+        import traceback
+        traceback.print_exc()
     
-    # Test performance stats
-    performance = db.get_performance_stats(days=7)
-    print(f"✅ Performance stats retrieved")
-    
-    print("🎉 Database testing completed!")
+    print("\n🎉 Database testing completed!")
 
 if __name__ == "__main__":
     test_database_functionality()
