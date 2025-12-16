@@ -992,10 +992,10 @@ def main_app():
         """)
         return
 
-    # Main Tabs - 🔥 UPDATED DENGAN TAB BARU
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+    # Main Tabs - 🔥 UPDATED DENGAN TAB BARU (MENGHAPUS TAB 5)
+    tab1, tab2, tab3, tab4, tab6, tab7, tab8, tab9, tab10 = st.tabs([
         "📊 Scan Assets", "⚡ Scalping Mode", "🔍 Analyze", "🎯 Custom Entry", 
-        "🚀 Open Position", "💼 Positions", "📈 History", "📡 Live Scanner", 
+        "💼 Positions", "📈 History", "📡 Live Scanner", 
         "🤖 ML Backtest", "⚖️ Portfolio"
     ])
 
@@ -1657,7 +1657,7 @@ def main_app():
                 default_price = data.get('current_price', data.get('entry_price', 0))
             
             # FIX: Ensure default_price >= min_value
-            safe_default_price = max(float(default_price), 0.00001)
+            safe_default_price = max(float(default_price), 0.00001) if default_price else 0.00001
             
             entry_price_custom = st.number_input(
                 "Entry Price (Manual):", 
@@ -1702,18 +1702,17 @@ def main_app():
                     'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
                 st.success("✅ Entry details saved!")
-                st.info("Go to **🚀 Open Position** tab to calculate TP/SL and open position.")
+                st.info("Entry details have been saved. You can now analyze this asset in other tabs.")
             else:
                 st.warning("⚠️ Please enter symbol and valid entry price")
         
-        # Tampilkan saved entry jika ada - PERBAIKAN UTAMA DI SINI
+        # Tampilkan saved entry jika ada
         saved_entry = st.session_state.get('saved_custom_entry')
         if saved_entry is not None and isinstance(saved_entry, dict):
             st.divider()
             st.subheader("💾 Saved Entry Details")
             col1, col2 = st.columns(2)
             with col1:
-                # ✅ PERBAIKAN: Gunakan safe_get untuk menghindari error
                 st.write(f"**Symbol:** {safe_get(saved_entry, 'symbol', 'N/A')}")
                 st.write(f"**Action:** {safe_get(saved_entry, 'action', 'N/A')}")
             with col2:
@@ -1724,266 +1723,7 @@ def main_app():
                 st.session_state.saved_custom_entry = None
                 st.rerun()
 
-    # Tab 5: Open Position (TAB BARU)
-    with tab5:
-        st.subheader("🚀 Open Position")
-        
-        # Mode info
-        mode_info = []
-        if hasattr(bot, 'trading_mode'):
-            mode_display = "🔄 Spot" if bot.trading_mode == "spot" else "⚡ Futures"
-            mode_info.append(f"**Trading Mode:** {mode_display}")
-        
-        if st.session_state.scalping_mode:
-            mode_info.append("⚡ **SCALPING:** ON")
-        
-        if mode_info:
-            st.info(" | ".join(mode_info))
-        
-        # ✅ PERBAIKAN: Gunakan .get() dengan pengecekan None
-        saved_entry = st.session_state.get('saved_custom_entry')
-        
-        if saved_entry is None:
-            st.warning("⚠️ No saved entry found. Please save entry details in **🎯 Custom Entry** tab first.")
-            st.info("""
-            **Workflow:**
-            1. Go to **🎯 Custom Entry** tab
-            2. Select asset and enter entry price
-            3. Click **💾 Save Entry Details**
-            4. Come back here to calculate TP/SL and open position
-            """)
-        else:
-            st.subheader("📋 Entry Details")
-            col_info1, col_info2 = st.columns(2)
-            with col_info1:
-                st.write(f"**Symbol:** `{safe_get(saved_entry, 'symbol', 'N/A')}`")
-                st.write(f"**Action:** `{safe_get(saved_entry, 'action', 'N/A')}`")
-            with col_info2:
-                st.write(f"**Entry Price:** `{safe_get(saved_entry, 'entry_price', 0):.5f}`")
-                st.write(f"**Saved:** {safe_get(saved_entry, 'timestamp', 'N/A')}")
-            
-            st.divider()
-            
-            # ============================================
-            # Calculate TP/SL (DIPINDAH KE SINI)
-            # ============================================
-            st.subheader("🧮 Calculate TP/SL")
-            
-            # Risk management settings
-            col_risk1, col_risk2, col_risk3 = st.columns(3)
-            with col_risk1:
-                risk_reward_ratio = st.slider("Risk/Reward Ratio", 1.0, 5.0, 2.0, 0.5, key="rr_ratio_tab5")
-            with col_risk2:
-                risk_percent = st.slider("Risk % per Trade", 0.5, 5.0, 1.0, 0.5, key="risk_percent_tab5")
-            with col_risk3:
-                position_size_usdt = st.number_input("Position Size (USDT)", 10.0, 10000.0, 100.0, 10.0, key="position_size_tab5")
-            
-            if st.button("🧮 Calculate TP/SL", key="calculate_tp_sl_tab5", type="primary"):
-                with st.spinner("Calculating..."):
-                    try:
-                        # Format symbol
-                        formatted_symbol = format_symbol_for_mode(
-                            safe_get(saved_entry, 'symbol', '').upper(),
-                            bot.mode,
-                            getattr(bot, 'trading_mode', 'spot')
-                        )
-                        
-                        # Panggil fungsi calculate_custom_entry
-                        if hasattr(bot, 'calculate_custom_entry'):
-                            result = bot.calculate_custom_entry(
-                                formatted_symbol, 
-                                safe_get(saved_entry, 'entry_price', 0), 
-                                safe_get(saved_entry, 'action', 'LONG')
-                            )
-                        else:
-                            # Fallback calculation
-                            entry_price = safe_get(saved_entry, 'entry_price', 0)
-                            action = safe_get(saved_entry, 'action', 'LONG')
-                            
-                            if action == "LONG":
-                                tp1 = entry_price * (1 + (0.02 * risk_reward_ratio))
-                                tp2 = entry_price * (1 + (0.04 * risk_reward_ratio))
-                                tp3 = entry_price * (1 + (0.06 * risk_reward_ratio))
-                                sl = entry_price * (1 - 0.02)
-                            else:
-                                tp1 = entry_price * (1 - (0.02 * risk_reward_ratio))
-                                tp2 = entry_price * (1 - (0.04 * risk_reward_ratio))
-                                tp3 = entry_price * (1 - (0.06 * risk_reward_ratio))
-                                sl = entry_price * (1 + 0.02)
-                            
-                            result = {
-                                'symbol': formatted_symbol,
-                                'detected_type': 'spot',
-                                'entry_price': entry_price,
-                                'tp1': tp1,
-                                'tp2': tp2,
-                                'tp3': tp3,
-                                'sl': sl
-                            }
-                        
-                        if result:
-                            # Validasi dan perbaiki price levels
-                            result = validate_and_fix_price_levels(result, formatted_symbol, bot)
-                            
-                            # Urutkan TP levels
-                            if safe_get(saved_entry, 'action', 'LONG') == "LONG":
-                                tp1, tp2, tp3 = sorted([result['tp1'], result['tp2'], result['tp3']])
-                            else:
-                                tp1, tp2, tp3 = sorted([result['tp1'], result['tp2'], result['tp3']], reverse=True)
-                            
-                            result['tp1'], result['tp2'], result['tp3'] = tp1, tp2, tp3
-                            
-                            # Hitung probabilitas
-                            result['tp_probabilities'] = calculate_tp_probability(
-                                safe_get(saved_entry, 'entry_price', 0),
-                                result['tp1'], result['tp2'], result['tp3'],
-                                result['sl'], safe_get(saved_entry, 'action', 'LONG')
-                            )
-                            
-                            # Simpan ke session state
-                            st.session_state.open_position_result = result
-                            st.session_state.open_position_risk = {
-                                'risk_reward_ratio': risk_reward_ratio,
-                                'risk_percent': risk_percent,
-                                'position_size_usdt': position_size_usdt
-                            }
-                            
-                            st.success("✅ Calculation complete!")
-                        else:
-                            st.error("❌ Cannot calculate TP/SL")
-                    except Exception as e:
-                        st.error(f"❌ Error: {str(e)[:200]}")
-            
-            # Tampilkan hasil kalkulasi jika ada
-            if 'open_position_result' in st.session_state:
-                result = st.session_state.open_position_result
-                risk_info = st.session_state.open_position_risk
-                
-                st.divider()
-                st.subheader("📊 Calculation Results")
-                
-                # Hitung risk/reward dan position qty
-                if safe_get(saved_entry, 'action', 'LONG') == "LONG":
-                    risk = result['entry_price'] - result['sl']
-                    reward_tp1 = result['tp1'] - result['entry_price']
-                    rr_ratio_actual = reward_tp1 / risk if risk > 0 else 0
-                else:
-                    risk = result['sl'] - result['entry_price']
-                    reward_tp1 = result['entry_price'] - result['tp1']
-                    rr_ratio_actual = reward_tp1 / risk if risk > 0 else 0
-                
-                risk_amount = risk_info['position_size_usdt'] * (risk_info['risk_percent'] / 100)
-                position_qty = risk_amount / risk if risk > 0 else 0
-                
-                col_res1, col_res2 = st.columns(2)
-                with col_res1:
-                    st.metric("Entry Price", f"{result['entry_price']:.5f}")
-                    st.metric("TP1", f"{result['tp1']:.5f}")
-                    st.metric("TP2", f"{result['tp2']:.5f}")
-                    st.metric("TP3", f"{result['tp3']:.5f}")
-                
-                with col_res2:
-                    st.metric("Stop Loss", f"{result['sl']:.5f}")
-                    st.metric("Risk/Reward", f"{rr_ratio_actual:.2f}")
-                    st.metric("Position Qty", f"{position_qty:.4f}")
-                    st.metric("Risk Amount", f"${risk_amount:.2f}")
-                
-                # Probabilities
-                if 'tp_probabilities' in result:
-                    probs = result['tp_probabilities']
-                    st.subheader("🎯 Take Profit Probabilities")
-                    col_prob1, col_prob2, col_prob3 = st.columns(3)
-                    with col_prob1:
-                        st.metric("TP1 Probability", f"{probs.get('tp1', 0)*100:.1f}%")
-                    with col_prob2:
-                        st.metric("TP2 Probability", f"{probs.get('tp2', 0)*100:.1f}%")
-                    with col_prob3:
-                        st.metric("TP3 Probability", f"{probs.get('tp3', 0)*100:.1f}%")
-                
-                st.divider()
-                
-                # ============================================
-                # Open Position Form
-                # ============================================
-                st.subheader("📈 Open Position")
-                
-                col_open1, col_open2 = st.columns(2)
-                with col_open1:
-                    position_note = st.text_input("Position Note (Optional):", 
-                                                 placeholder="e.g., Weekly breakout",
-                                                 key="position_note_tab5")
-                
-                with col_open2:
-                    confirm_open = st.checkbox("✅ I confirm this position", key="confirm_position_tab5")
-                    
-                    if st.button("🚀 OPEN POSITION", key="open_position_btn_tab5", 
-                               type="primary", disabled=not confirm_open):
-                        try:
-                            # Simpan ke database
-                            if hasattr(bot, 'db') and bot.db:
-                                # FIX: Hapus np.float64 jika ada
-                                entry_price_clean = float(result['entry_price'])
-                                tp1_clean = float(result['tp1'])
-                                tp2_clean = float(result['tp2'])
-                                tp3_clean = float(result['tp3'])
-                                sl_clean = float(result['sl'])
-                                
-                                position_id = bot.db.save_position(
-                                    symbol=result['symbol'],
-                                    market_type=bot.mode,
-                                    action=safe_get(saved_entry, 'action', 'LONG'),
-                                    entry_price=entry_price_clean,
-                                    tp1=tp1_clean,
-                                    tp2=tp2_clean,
-                                    tp3=tp3_clean,
-                                    sl=sl_clean
-                                )
-                                
-                                if position_id:
-                                    st.success(f"✅ Position opened successfully! ID: {position_id}")
-                                    
-                                    # Clear session states
-                                    st.session_state.saved_custom_entry = None
-                                    st.session_state.open_position_result = None
-                                    st.session_state.open_position_risk = None
-                                    
-                                    # Refresh positions data
-                                    st.session_state.positions_data = bot.get_active_positions()
-                                    
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Failed to save position to database")
-                            else:
-                                st.error("❌ Database not available")
-                                
-                        except Exception as e:
-                            st.error(f"❌ Error opening position: {str(e)[:200]}")
-                
-                # Tombol untuk testing tanpa database
-                with st.expander("🔧 Test Mode (Without Database)"):
-                    if st.button("🧪 Add Test Position", key="test_position_tab5"):
-                        if 'test_positions' not in st.session_state:
-                            st.session_state.test_positions = []
-                        
-                        test_position = {
-                            'id': len(st.session_state.test_positions) + 1,
-                            'symbol': result['symbol'],
-                            'action': safe_get(saved_entry, 'action', 'LONG'),
-                            'entry_price': result['entry_price'],
-                            'tp1': result['tp1'],
-                            'tp2': result['tp2'],
-                            'tp3': result['tp3'],
-                            'sl': result['sl'],
-                            'position_size': position_qty,
-                            'position_value': risk_info['position_size_usdt'],
-                            'note': position_note,
-                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        }
-                        
-                        st.session_state.test_positions.append(test_position)
-                        st.success(f"✅ Test position added! Total test positions: {len(st.session_state.test_positions)}")
-
-    # Tab 6: Positions - PERBAIKAN dengan tambahan test positions
+    # Tab 6: Positions - PERBAIKAN dengan tambahan test positions (sebelumnya Tab 7, sekarang jadi Tab 6)
     with tab6:
         st.subheader("💼 Active Positions")
         
@@ -2157,7 +1897,7 @@ def main_app():
                 
                 st.divider()
 
-    # Tab 7: History
+    # Tab 7: History (sebelumnya Tab 8, sekarang jadi Tab 7)
     with tab7:
         st.subheader("📈 Trade History")
         
@@ -2211,7 +1951,7 @@ def main_app():
                 except Exception as e:
                     st.error(f"History error: {e}")
 
-    # Tab 8: Live Scanner
+    # Tab 8: Live Scanner (sebelumnya Tab 9, sekarang jadi Tab 8)
     with tab8:
         st.subheader("📡 Live Scanner")
         
@@ -2308,7 +2048,7 @@ def main_app():
         else:
             st.info("👉 Klik 'Mulai Live Monitoring' untuk memantau harga real-time.")
 
-    # Tab 9: ML Backtest
+    # Tab 9: ML Backtest (sebelumnya Tab 10, sekarang jadi Tab 9)
     with tab9:
         st.subheader("🤖 ML Backtest & Analysis")
         
@@ -2402,7 +2142,7 @@ def main_app():
         elif st.session_state.backtest_results and 'error' in st.session_state.backtest_results:
             st.error(f"Backtest Error: {st.session_state.backtest_results['error']}")
 
-    # Tab 10: Portfolio Optimization
+    # Tab 10: Portfolio Optimization (sebelumnya Tab 11, sekarang jadi Tab 10)
     with tab10:
         st.subheader("⚖️ Portfolio Optimization")
         
