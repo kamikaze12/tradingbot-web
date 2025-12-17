@@ -328,15 +328,7 @@ def get_valid_price(data, symbol=None, bot=None):
     if not isinstance(data, dict):
         data = {}
     
-    # Priority 1: Cek jika ada harga di data
-    price_sources = ['current_price', 'entry_price', 'ideal_entry', 'close', 'last', 'price']
-    
-    for source in price_sources:
-        price = data.get(source)
-        if price and isinstance(price, (int, float)) and price > 0:
-            return float(price)
-    
-    # Priority 2: Dapatkan harga real-time dari provider
+    # Priority 1: Coba dapatkan harga dari bot.data_provider
     if symbol and bot:
         # Coba dari data_provider jika ada
         if hasattr(bot, 'data_provider') and bot.data_provider:
@@ -366,6 +358,14 @@ def get_valid_price(data, symbol=None, bot=None):
                     return price
             except:
                 pass
+    
+    # Priority 2: Cek jika ada harga di data
+    price_sources = ['current_price', 'entry_price', 'ideal_entry', 'close', 'last', 'price']
+    
+    for source in price_sources:
+        price = data.get(source)
+        if price and isinstance(price, (int, float)) and price > 0:
+            return float(price)
     
     # Priority 3: Fallback
     print(f"⚠️ No valid price found for {symbol}, using fallback 1.0")
@@ -917,6 +917,28 @@ def update_all_positions_prices(bot):
     
     return updated_positions
 
+def load_positions_from_database(bot):
+    """Load positions from database"""
+    try:
+        if hasattr(bot, 'get_active_positions'):
+            return bot.get_active_positions()
+    except Exception as e:
+        print(f"❌ Error loading positions from database: {e}")
+    return []
+
+def update_position_price(position, bot):
+    """Update price for a single position"""
+    try:
+        symbol = position.get('symbol')
+        if symbol:
+            new_price = get_valid_price({}, symbol, bot)
+            if new_price > 0:
+                position['current_price'] = new_price
+                return True
+    except Exception as e:
+        print(f"❌ Error updating price for {position.get('symbol')}: {e}")
+    return False
+
 # ====================================
 # Main App - SIMPLIFIED VERSION
 # ====================================
@@ -984,9 +1006,7 @@ def main_app():
         st.session_state.open_position_risk = None
         st.session_state.last_scan_time = None
         st.session_state.scan_attempts = 0
-        # 🔥 TAMBAHKAN INI: Session state untuk Tab 8
-        st.session_state.show_all_positions = False
-        st.session_state.positions_initialized = False
+        st.session_state.show_all_positions = False  # 🔥 NEW: Untuk Tab 8
 
     # Sidebar
     with st.sidebar:
@@ -2510,9 +2530,10 @@ def main_app():
         if mode_info:
             st.info(" | ".join(mode_info))
         
-        # Tambahkan tombol refresh real-time
-        col_rt1, col_rt2 = st.columns([1, 3])
-        with col_rt1:
+        # Tombol-tombol aksi
+        col_actions1, col_actions2, col_actions3 = st.columns(3)
+        
+        with col_actions1:
             if st.button("💰 Update ALL Prices", key="update_all_prices_tab6", type="primary"):
                 with st.spinner("Updating prices from real-time data..."):
                     # Update prices for all positions
@@ -2524,32 +2545,16 @@ def main_app():
                             if pos.get('status') == 'open':
                                 symbol = pos['symbol']
                                 new_price = get_valid_price({}, symbol, bot)
-                                if new_price > 0:
+                                if new_price > 0 and new_price != pos.get('current_price', 0):
                                     pos['current_price'] = new_price
                                     updated_count += 1
-                    
-                    # Update database positions (jika ada)
-                    if hasattr(bot, 'get_active_positions'):
-                        try:
-                            db_positions = bot.get_active_positions()
-                            # Update setiap position dengan harga real-time
-                            for pos in db_positions:
-                                if isinstance(pos, dict) and pos.get('status') == 'open':
-                                    symbol = pos.get('symbol')
-                                    if symbol:
-                                        new_price = get_valid_price({}, symbol, bot)
-                                        if new_price > 0:
-                                            pos['current_price'] = new_price
-                        except:
-                            pass
+                                    print(f"✅ Updated {symbol} to ${new_price}")
                     
                     st.success(f"✅ Updated {updated_count} positions!")
                     st.rerun()
         
-        # Refresh positions button
-        col_refresh1, col_refresh2 = st.columns([1, 3])
-        with col_refresh1:
-            if st.button("🔄 Refresh Positions", key="refresh_positions_tab6", type="primary"):
+        with col_actions2:
+            if st.button("🔄 Refresh Positions", key="refresh_positions_tab6", type="secondary"):
                 try:
                     # Coba ambil dari database
                     if hasattr(bot, 'get_active_positions'):
@@ -2558,12 +2563,7 @@ def main_app():
                             st.session_state.positions_data = db_positions
                             st.success(f"✅ Loaded {len(db_positions)} positions from database")
                         else:
-                            # Fallback ke session state
-                            if hasattr(st.session_state, 'test_positions'):
-                                st.session_state.positions_data = st.session_state.test_positions
-                                st.info(f"📋 Showing {len(st.session_state.test_positions)} positions from session")
-                            else:
-                                st.session_state.positions_data = []
+                            st.info("📋 No positions in database")
                     else:
                         st.error("❌ Bot doesn't have get_active_positions method")
                     
@@ -2571,21 +2571,40 @@ def main_app():
                 except Exception as e:
                     st.error(f"❌ Refresh error: {e}")
         
+        with col_actions3:
+            if st.button("🧹 Clear Closed", key="clear_closed_tab6"):
+                if hasattr(st.session_state, 'test_positions'):
+                    original_count = len(st.session_state.test_positions)
+                    st.session_state.test_positions = [
+                        p for p in st.session_state.test_positions 
+                        if p.get('status') == 'open'
+                    ]
+                    closed_count = original_count - len(st.session_state.test_positions)
+                    if closed_count > 0:
+                        st.success(f"✅ Removed {closed_count} closed positions")
+                        st.rerun()
+                    else:
+                        st.info("No closed positions to remove")
+        
         # Tampilkan positions
         positions_to_display = []
         
-        # Prioritize database positions
-        if st.session_state.positions_data:
-            positions_to_display = st.session_state.positions_data
+        # Tambahkan dari session state
+        if hasattr(st.session_state, 'test_positions'):
+            positions_to_display = st.session_state.test_positions
         
-        # Add session positions jika tidak ada di database
-        if hasattr(st.session_state, 'test_positions') and st.session_state.test_positions:
-            session_positions = st.session_state.test_positions
-            # Filter out positions that might already be in database
-            db_symbols = [p.get('symbol') for p in positions_to_display if isinstance(p, dict)]
-            for pos in session_positions:
-                if pos.get('symbol') not in db_symbols:
-                    positions_to_display.append(pos)
+        # Tambahkan dari database jika ada
+        if hasattr(bot, 'get_active_positions'):
+            try:
+                db_positions = bot.get_active_positions()
+                if db_positions:
+                    # Gabungkan, hindari duplikat
+                    session_symbols = [p.get('symbol') for p in positions_to_display]
+                    for db_pos in db_positions:
+                        if isinstance(db_pos, dict) and db_pos.get('symbol') not in session_symbols:
+                            positions_to_display.append(db_pos)
+            except Exception as e:
+                print(f"⚠️ Error loading database positions: {e}")
         
         if not positions_to_display:
             st.info("📭 No active positions")
@@ -2606,7 +2625,8 @@ def main_app():
                         tp3 = float(pos.get('tp3', 0))
                         sl = float(pos.get('sl', 0))
                         position_size = float(pos.get('position_size', 100))
-                        source = pos.get('source', 'unknown')
+                        source = pos.get('source', 'session')
+                        status = pos.get('status', 'open')
                     else:
                         # Handle tuple format (legacy)
                         continue
@@ -2633,15 +2653,15 @@ def main_app():
                     if pl_pct > 0:
                         color = "green"
                         emoji = "📈"
-                        status = "PROFIT"
+                        status_display = "PROFIT"
                     elif pl_pct < 0:
                         color = "red"
                         emoji = "📉"
-                        status = "LOSS"
+                        status_display = "LOSS"
                     else:
                         color = "gray"
                         emoji = "⚪"
-                        status = "BREAKEVEN"
+                        status_display = "BREAKEVEN"
                     
                     # Tampilkan position card
                     with st.container():
@@ -2649,18 +2669,18 @@ def main_app():
                         
                         with col_pos1:
                             st.write(f"{emoji} **{display_symbol}**")
-                            st.write(f"Action: `{action}`")
+                            st.write(f"Action: `{action}` | Status: `{status}`")
                             st.write(f"Entry: `{entry_price:.5f}`")
                             st.write(f"Size: `{position_size:.2f}`")
                         
                         with col_pos2:
                             st.write(f"💰 Current: `{current_price:.5f}`")
-                            st.write(f"📍 Status: `{status}`")
-                            st.write(f"Source: `{source if source else 'Database'}`")
+                            st.write(f"📍 P/L Status: `{status_display}`")
+                            st.write(f"Source: `{source}`")
                         
                         with col_pos3:
-                            st.write(f"📊 P/L: <span style='color:{color}; font-weight:bold'>{pl_pct:+.2f}%</span>", unsafe_allow_html=True)
-                            st.write(f"💰 Value: <span style='color:{color}'>${pl_value:+.2f}</span>", unsafe_allow_html=True)
+                            st.markdown(f"📊 P/L: <span style='color:{color}; font-weight:bold'>{pl_pct:+.2f}%</span>", unsafe_allow_html=True)
+                            st.markdown(f"💰 Value: <span style='color:{color}'>${pl_value:+.2f}</span>", unsafe_allow_html=True)
                             st.write(f"🎯 TP1: `{tp1:.5f}`")
                             st.write(f"🛑 SL: `{sl:.5f}`")
                         
@@ -2683,29 +2703,31 @@ def main_app():
                             if st.button("❌ Close", key=close_key, type="secondary"):
                                 with st.spinner("Closing position..."):
                                     try:
-                                        success = False
                                         close_price = current_price
                                         
-                                        # Try to close in database
-                                        if hasattr(bot, 'close_position'):
-                                            success = bot.close_position(position_id, close_price)
-                                        
-                                        # Also remove from session state if exists
+                                        # Update status di session state
                                         if hasattr(st.session_state, 'test_positions'):
-                                            st.session_state.test_positions = [
-                                                p for p in st.session_state.test_positions 
-                                                if p.get('id') != position_id
-                                            ]
+                                            for i, p in enumerate(st.session_state.test_positions):
+                                                if p.get('id') == position_id:
+                                                    st.session_state.test_positions[i]['status'] = 'closed'
+                                                    st.session_state.test_positions[i]['exit_price'] = close_price
+                                                    
+                                                    # Hitung final P/L
+                                                    if action == "LONG":
+                                                        final_pl = (close_price - entry_price) * position_size
+                                                    else:
+                                                        final_pl = (entry_price - close_price) * position_size
+                                                    
+                                                    st.session_state.test_positions[i]['final_pl'] = final_pl
+                                                    
+                                                    st.success(f"✅ {display_symbol} closed at ${close_price:,.5f} (P/L: ${final_pl:+,.2f})")
+                                                    break
                                         
-                                        if success:
-                                            st.success(f"✅ {display_symbol} closed!")
-                                            time.sleep(1)
-                                            # Refresh positions
-                                            if hasattr(bot, 'get_active_positions'):
-                                                st.session_state.positions_data = bot.get_active_positions()
-                                            st.rerun()
-                                        else:
-                                            st.error(f"❌ Failed to close {display_symbol}")
+                                        # Coba close di database juga
+                                        if hasattr(bot, 'close_position'):
+                                            bot.close_position(position_id, close_price)
+                                        
+                                        st.rerun()
                                     except Exception as close_error:
                                         st.error(f"❌ Close error: {close_error}")
                     
@@ -2769,7 +2791,7 @@ def main_app():
                 except Exception as e:
                     st.error(f"History error: {e}")
 
-    # Tab 8: Live Scanner & Position Monitor - FIXED WITH REAL PRICES
+    # Tab 8: Live Scanner & Position Monitor - FIXED VERSION
     with tab8:
         st.subheader("📡 Live Scanner & Position Monitor")
         
@@ -2804,16 +2826,24 @@ def main_app():
                                     if current_price > 0 and current_price != pos['current_price']:
                                         pos['current_price'] = current_price
                                         updated_count += 1
-                        
-                        st.success(f"✅ Updated {updated_count} positions with real-time prices!")
-                        st.rerun()
+                            
+                            st.success(f"✅ Updated {updated_count} positions with real-time prices!")
+                            st.rerun()
+        
+            with col_interval:
+                refresh_interval = st.slider("Auto-refresh interval (seconds):", 5, 60, 10, 5,
+                                            key="refresh_interval_tab8")
         
         # Status monitoring
         col1, col2, col3, col4 = st.columns([1, 2, 1, 1])
         with col1:
             # Tombol toggle monitoring
-            if st.button("🚀 Start Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Stop Monitoring", 
-                        key="toggle_live_tab8", type="primary"):
+            monitor_btn = st.button(
+                "🚀 Start Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Stop Monitoring", 
+                key="toggle_live_tab8", 
+                type="primary"
+            )
+            if monitor_btn:
                 st.session_state.live_monitoring = not st.session_state.live_monitoring
                 st.rerun()
 
@@ -2821,7 +2851,8 @@ def main_app():
             auto_refresh_live = st.checkbox("🔄 Auto Refresh (10s)", value=True, key="auto_refresh_live_tab8")
         
         with col3:
-            if st.button("🔄 Refresh Prices", key="refresh_prices_btn"):
+            refresh_prices_btn = st.button("🔄 Refresh Prices", key="refresh_prices_btn")
+            if refresh_prices_btn:
                 # Refresh semua harga posisi
                 if hasattr(st.session_state, 'test_positions') and st.session_state.test_positions:
                     for pos in st.session_state.test_positions:
@@ -2836,17 +2867,15 @@ def main_app():
                     st.rerun()
         
         with col4:
-            # Tombol Show All - FIXED: Gunakan callback
-            def toggle_show_all():
-                st.session_state.show_all_positions = not st.session_state.show_all_positions
-            
-            # Pastikan session state ada
-            if 'show_all_positions' not in st.session_state:
-                st.session_state.show_all_positions = False
-            
-            button_label = "📊 Show All" if not st.session_state.show_all_positions else "📊 Hide Closed"
-            st.button(button_label, key="show_all_positions", 
-                     on_click=toggle_show_all)
+            # Toggle untuk menunjukkan semua posisi - FIXED: Gunakan checkbox tanpa callback
+            show_all = st.checkbox(
+                "📊 Show All", 
+                value=st.session_state.get('show_all_positions', False),
+                key="show_all_checkbox"
+            )
+            if show_all != st.session_state.get('show_all_positions', False):
+                st.session_state.show_all_positions = show_all
+                st.rerun()
         
         if st.session_state.live_monitoring:
             st.success("📡 LIVE MONITORING ACTIVE")
@@ -2870,15 +2899,19 @@ def main_app():
                 
                 # Tambahkan posisi dari session
                 for pos in session_positions:
-                    positions_data.append(pos)
+                    # Skip jika sudah ada
+                    existing_symbols = [p.get('symbol') for p in positions_data if isinstance(p, dict)]
+                    if pos.get('symbol') not in existing_symbols:
+                        positions_data.append(pos)
             
             if positions_data:
                 open_count = len([p for p in positions_data if p.get('status') == 'open'])
                 total_count = len(positions_data)
                 
                 status_text = f"📊 Showing {open_count} open positions"
-                if st.session_state.show_all_positions:
-                    status_text = f"📊 Showing {total_count} positions ({open_count} open, {total_count - open_count} closed)"
+                if st.session_state.get('show_all_positions', False):
+                    closed_count = total_count - open_count
+                    status_text = f"📊 Showing {total_count} positions ({open_count} open, {closed_count} closed)"
                 
                 st.subheader(status_text)
                 
@@ -2900,7 +2933,7 @@ def main_app():
                             continue
                         
                         # Skip closed positions unless show_all
-                        if status != 'open' and not st.session_state.show_all_positions:
+                        if status != 'open' and not st.session_state.get('show_all_positions', False):
                             continue
                         
                         # Get real-time price from provider
@@ -2970,7 +3003,6 @@ def main_app():
                             with col_live4:
                                 # Tombol hanya untuk posisi open
                                 if status == 'open':
-                                    # Update current price in position
                                     update_key = f"update_price_{position_id}"
                                     if st.button("🔄 Update", key=update_key):
                                         # Update in session state
@@ -2986,11 +3018,21 @@ def main_app():
                     except Exception as e:
                         st.error(f"❌ Error updating {symbol}: {e}")
                         continue
+                
+                # Summary
+                total_positions = len([p for p in positions_data if isinstance(p, dict) and p.get('status') == 'open'])
+                if total_positions > 0:
+                    st.info(f"📊 **Monitoring {total_positions} open positions**")
             
             else:
                 st.info("📭 No active positions to monitor")
                 st.info("👉 Open a position in Tab 4 first!")
-        
+            
+            # Auto-refresh
+            if auto_refresh_live and st.session_state.live_monitoring:
+                import time
+                time.sleep(10)
+                st.rerun()
         else:
             st.info("👉 Click 'Start Live Monitoring' to begin tracking positions")
 
@@ -3247,13 +3289,13 @@ def main():
     if 'open_position_risk' not in st.session_state:
         st.session_state.open_position_risk = None
     
-    # Initialize show_all_positions untuk Tab 8
+    # Initialize untuk tab 8
     if 'show_all_positions' not in st.session_state:
         st.session_state.show_all_positions = False
     
-    # Initialize positions_initialized untuk Tab 6
-    if 'positions_initialized' not in st.session_state:
-        st.session_state.positions_initialized = False
+    # Initialize live monitoring
+    if 'live_monitoring' not in st.session_state:
+        st.session_state.live_monitoring = False
 
     # Show login or main app
     if not st.session_state.logged_in:
