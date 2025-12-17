@@ -984,6 +984,9 @@ def main_app():
         st.session_state.open_position_risk = None
         st.session_state.last_scan_time = None
         st.session_state.scan_attempts = 0
+        # 🔥 TAMBAHKAN INI: Session state untuk Tab 8
+        st.session_state.show_all_positions = False
+        st.session_state.positions_initialized = False
 
     # Sidebar
     with st.sidebar:
@@ -2801,22 +2804,19 @@ def main_app():
                                     if current_price > 0 and current_price != pos['current_price']:
                                         pos['current_price'] = current_price
                                         updated_count += 1
-                            
-                            st.success(f"✅ Updated {updated_count} positions with real-time prices!")
-                            st.rerun()
-            
-            with col_interval:
-                refresh_interval = st.slider("Auto-refresh interval (seconds):", 5, 60, 10, 5,
-                                            key="refresh_interval_tab8")
+                        
+                        st.success(f"✅ Updated {updated_count} positions with real-time prices!")
+                        st.rerun()
         
         # Status monitoring
         col1, col2, col3, col4 = st.columns([1, 2, 1, 1])
         with col1:
+            # Tombol toggle monitoring
             if st.button("🚀 Start Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Stop Monitoring", 
                         key="toggle_live_tab8", type="primary"):
                 st.session_state.live_monitoring = not st.session_state.live_monitoring
                 st.rerun()
-    
+
         with col2:
             auto_refresh_live = st.checkbox("🔄 Auto Refresh (10s)", value=True, key="auto_refresh_live_tab8")
         
@@ -2836,10 +2836,17 @@ def main_app():
                     st.rerun()
         
         with col4:
-            if st.button("📊 Show All", key="show_all_positions"):
-                # Toggle untuk menunjukkan semua posisi
-                st.session_state.show_all_positions = not st.session_state.get('show_all_positions', False)
-                st.rerun()
+            # Tombol Show All - FIXED: Gunakan callback
+            def toggle_show_all():
+                st.session_state.show_all_positions = not st.session_state.show_all_positions
+            
+            # Pastikan session state ada
+            if 'show_all_positions' not in st.session_state:
+                st.session_state.show_all_positions = False
+            
+            button_label = "📊 Show All" if not st.session_state.show_all_positions else "📊 Hide Closed"
+            st.button(button_label, key="show_all_positions", 
+                     on_click=toggle_show_all)
         
         if st.session_state.live_monitoring:
             st.success("📡 LIVE MONITORING ACTIVE")
@@ -2861,13 +2868,19 @@ def main_app():
                 if not st.session_state.get('show_all_positions', False):
                     session_positions = [p for p in session_positions if p.get('status') == 'open']
                 
-                db_symbols = [p.get('symbol') for p in positions_data if isinstance(p, dict)]
+                # Tambahkan posisi dari session
                 for pos in session_positions:
-                    if pos.get('symbol') not in db_symbols:
-                        positions_data.append(pos)
+                    positions_data.append(pos)
             
             if positions_data:
-                st.subheader(f"📊 Active Positions ({len(positions_data)})")
+                open_count = len([p for p in positions_data if p.get('status') == 'open'])
+                total_count = len(positions_data)
+                
+                status_text = f"📊 Showing {open_count} open positions"
+                if st.session_state.show_all_positions:
+                    status_text = f"📊 Showing {total_count} positions ({open_count} open, {total_count - open_count} closed)"
+                
+                st.subheader(status_text)
                 
                 for pos in positions_data:
                     try:
@@ -2887,7 +2900,7 @@ def main_app():
                             continue
                         
                         # Skip closed positions unless show_all
-                        if status != 'open' and not st.session_state.get('show_all_positions', False):
+                        if status != 'open' and not st.session_state.show_all_positions:
                             continue
                         
                         # Get real-time price from provider
@@ -2955,37 +2968,29 @@ def main_app():
                                 st.write(f"💰 Value: <span style='color:{color}'>${pl_value:+,.2f}</span>", unsafe_allow_html=True)
                             
                             with col_live4:
-                                # Update current price in position
-                                update_key = f"update_price_{position_id}"
-                                if st.button("🔄 Update", key=update_key):
-                                    # Update in session state
-                                    if hasattr(st.session_state, 'test_positions'):
-                                        for i, p in enumerate(st.session_state.test_positions):
-                                            if p.get('id') == position_id:
-                                                st.session_state.test_positions[i]['current_price'] = live_price
-                                                st.success(f"✅ {display_symbol} updated to ${live_price:,.5f}")
-                                                st.rerun()
-                    
+                                # Tombol hanya untuk posisi open
+                                if status == 'open':
+                                    # Update current price in position
+                                    update_key = f"update_price_{position_id}"
+                                    if st.button("🔄 Update", key=update_key):
+                                        # Update in session state
+                                        if hasattr(st.session_state, 'test_positions'):
+                                            for i, p in enumerate(st.session_state.test_positions):
+                                                if p.get('id') == position_id:
+                                                    st.session_state.test_positions[i]['current_price'] = live_price
+                                                    st.success(f"✅ {display_symbol} updated to ${live_price:,.5f}")
+                                                    st.rerun()
+                        
                         st.divider()
                         
                     except Exception as e:
                         st.error(f"❌ Error updating {symbol}: {e}")
                         continue
-                
-                # Summary
-                total_positions = len([p for p in positions_data if isinstance(p, dict) and p.get('status') == 'open'])
-                if total_positions > 0:
-                    st.info(f"📊 **Monitoring {total_positions} open positions**")
             
             else:
                 st.info("📭 No active positions to monitor")
                 st.info("👉 Open a position in Tab 4 first!")
-            
-            # Auto-refresh
-            if auto_refresh_live and st.session_state.live_monitoring:
-                import time
-                time.sleep(10)
-                st.rerun()
+        
         else:
             st.info("👉 Click 'Start Live Monitoring' to begin tracking positions")
 
@@ -3241,6 +3246,14 @@ def main():
     # Initialize open_position_risk
     if 'open_position_risk' not in st.session_state:
         st.session_state.open_position_risk = None
+    
+    # Initialize show_all_positions untuk Tab 8
+    if 'show_all_positions' not in st.session_state:
+        st.session_state.show_all_positions = False
+    
+    # Initialize positions_initialized untuk Tab 6
+    if 'positions_initialized' not in st.session_state:
+        st.session_state.positions_initialized = False
 
     # Show login or main app
     if not st.session_state.logged_in:
