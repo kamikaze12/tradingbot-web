@@ -775,6 +775,10 @@ def open_position(symbol, action, entry_price=None, tp1=None, tp2=None, tp3=None
     try:
         bot = st.session_state.bot_instance
         
+        if bot is None:
+            st.error("❌ Bot is not initialized")
+            return False
+        
         # Jika entry_price tidak diberikan, ambil harga real-time
         if entry_price is None or entry_price <= 0:
             real_time_price = get_real_time_price(symbol, bot)
@@ -889,6 +893,9 @@ def update_all_positions_prices(bot):
     """Update semua harga posisi dengan data real-time"""
     updated_positions = []
     
+    if bot is None:
+        return updated_positions
+    
     # Update positions dari database
     if hasattr(bot, 'get_active_positions'):
         try:
@@ -935,8 +942,8 @@ def main_app():
             st.session_state.logged_in = False
             st.rerun()
 
-    # Initialize bot
-    if 'bot_instance' not in st.session_state:
+    # Initialize bot - PERBAIKAN UTAMA
+    if 'bot_instance' not in st.session_state or st.session_state.bot_instance is None:
         with st.spinner("Initializing TradingBot..."):
             try:
                 bot = init_bot()
@@ -958,6 +965,11 @@ def main_app():
                 st.stop()
     
     bot = st.session_state.bot_instance
+    
+    # Pastikan bot tidak None
+    if bot is None:
+        st.error("❌ Bot is not available. Please refresh the page.")
+        st.stop()
     
     # Initialize session state jika belum
     if 'app_initialized' not in st.session_state:
@@ -1076,8 +1088,13 @@ def main_app():
         if market_choice in ["Forex", "Saham Indonesia", "US Stocks"]:
             st.warning("⚠️ **SHORT TRADING NOT AVAILABLE** - Only LONG signals will be generated")
 
-        # Set Market Button
+        # Set Market Button - PERBAIKAN UTAMA: Tambah pengecekan bot
         if st.button("🎯 Set Market", key="set_market_btn", type="primary"):
+            # Pastikan bot tidak None
+            if bot is None:
+                st.error("❌ Bot is not initialized. Please refresh the page.")
+                st.rerun()
+            
             try:
                 # Validasi Futures hanya untuk Crypto
                 if market_choice != "Crypto" and trading_mode == "Futures":
@@ -1267,7 +1284,7 @@ def main_app():
         """)
         return
 
-    # Main Tabs - 🔥 UPDATED DENGAN TAB BARU (MENGHAPUS TAB 5)
+    # Main Tabs
     tab1, tab2, tab3, tab4, tab6, tab7, tab8, tab9, tab10 = st.tabs([
         "📊 Scan Assets", "⚡ Scalping Mode", "🔍 Analyze", "🎯 Custom Entry", 
         "💼 Positions", "📈 History", "📡 Live Scanner", 
@@ -1337,6 +1354,11 @@ def main_app():
                         limit = 20  # Lebih banyak untuk scalping
                     else:
                         limit = 20
+                    
+                    # Pastikan bot tidak None
+                    if bot is None:
+                        st.error("❌ Bot is not initialized")
+                        return
                     
                     # Gunakan scan_potential_assets_optimized jika tersedia
                     if hasattr(bot, 'scan_potential_assets_optimized'):
@@ -2494,7 +2516,7 @@ def main_app():
                     else:
                         st.warning("⚠️ Session Only")
 
-    # Tab 6: Positions - ENHANCED WITH DATABASE (PERBAIKAN 4)
+    # Tab 6: Positions - ENHANCED WITH DATABASE
     with tab6:
         st.subheader("💼 Active Positions")
         
@@ -2715,7 +2737,7 @@ def main_app():
                     st.error(f"❌ Error displaying position: {e}")
                     continue
 
-    # Tab 7: History (sebelumnya Tab 8, sekarang jadi Tab 7)
+    # Tab 7: History
     with tab7:
         st.subheader("📈 Trade History")
         
@@ -2769,7 +2791,7 @@ def main_app():
                 except Exception as e:
                     st.error(f"History error: {e}")
 
-    # Tab 8: Live Scanner & Position Monitor - FIXED WITH REAL PRICES
+    # Tab 8: Live Scanner & Position Monitor
     with tab8:
         st.subheader("📡 Live Scanner & Position Monitor")
         
@@ -2993,7 +3015,7 @@ def main_app():
         else:
             st.info("👉 Click 'Start Live Monitoring' to begin tracking positions")
 
-    # Tab 9: ML Backtest (sebelumnya Tab 10, sekarang jadi Tab 9)
+    # Tab 9: ML Backtest
     with tab9:
         st.subheader("🤖 ML Backtest & Analysis")
         
@@ -3086,7 +3108,7 @@ def main_app():
         elif st.session_state.backtest_results and 'error' in st.session_state.backtest_results:
             st.error(f"Backtest Error: {st.session_state.backtest_results['error']}")
 
-    # Tab 10: Portfolio Optimization (sebelumnya Tab 11, sekarang jadi Tab 10)
+    # Tab 10: Portfolio Optimization
     with tab10:
         st.subheader("⚖️ Portfolio Optimization")
         
@@ -3242,7 +3264,7 @@ def main():
         'last_scan_time': None,
         'scan_attempts': 0,
         'show_all_positions': False,
-        'bot_instance': None,
+        # JANGAN inisialisasi bot_instance di sini - biarkan di main_app()
         'positions_initialized': False,
         'refresh_counter': 0
     }
