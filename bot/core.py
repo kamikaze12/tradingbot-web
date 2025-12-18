@@ -2254,6 +2254,103 @@ class EnhancedTradingBot:
         
         logger.info("✅ Enhanced TradingBot initialized dengan Universal Provider")
 
+    # =============================================
+    # PERBAIKAN UTAMA: POSITION MANAGEMENT METHODS
+    # =============================================
+
+    def get_active_positions(self, market_type=None):
+        """Get positions from database with consistent format"""
+        try:
+            if hasattr(self, 'db') and self.db:
+                # Get positions from database
+                positions = self.db.get_active_positions(market_type or self.mode)
+                
+                # Format positions to be consistent with app expectations
+                formatted_positions = []
+                for pos in positions:
+                    if isinstance(pos, dict):
+                        # Standardize status
+                        status = pos.get('status', '')
+                        if status == 'active':
+                            pos['status'] = 'open'
+                        
+                        # Ensure all required fields exist
+                        required_fields = ['id', 'symbol', 'action', 'entry_price', 'current_price', 
+                                         'tp1', 'tp2', 'tp3', 'sl', 'position_size']
+                        
+                        for field in required_fields:
+                            if field not in pos:
+                                # Set defaults
+                                if field == 'id':
+                                    pos[field] = f"db_{pos.get('id', int(time.time()))}"
+                                elif field == 'current_price':
+                                    pos[field] = pos.get('entry_price', 0)
+                                elif field in ['tp1', 'tp2', 'tp3', 'sl']:
+                                    # Calculate based on action
+                                    entry = pos.get('entry_price', 0)
+                                    action = pos.get('action', 'LONG')
+                                    if action == 'LONG':
+                                        pos['tp1'] = entry * 1.02
+                                        pos['tp2'] = entry * 1.04
+                                        pos['tp3'] = entry * 1.06
+                                        pos['sl'] = entry * 0.98
+                                    else:
+                                        pos['tp1'] = entry * 0.98
+                                        pos['tp2'] = entry * 0.96
+                                        pos['tp3'] = entry * 0.94
+                                        pos['sl'] = entry * 1.02
+                                elif field == 'position_size':
+                                    pos[field] = pos.get('position_size', 100)
+                        
+                        # Add source field
+                        pos['source'] = 'database'
+                        
+                        formatted_positions.append(pos)
+                
+                return formatted_positions
+            else:
+                logger.warning("⚠️ No database connection in bot")
+                return []
+        except Exception as e:
+            logger.error(f"❌ Error getting positions: {e}")
+            return []
+
+    def update_position_current_price(self, position_id, current_price):
+        """Update position current price in database"""
+        try:
+            if hasattr(self, 'db') and self.db:
+                # Check if method exists in database handler
+                if hasattr(self.db, 'update_position_current_price'):
+                    return self.db.update_position_current_price(position_id, current_price)
+                elif hasattr(self.db, 'update_position'):
+                    # Alternative method name
+                    return self.db.update_position(position_id, {'current_price': current_price})
+                else:
+                    logger.warning(f"⚠️ No update method found in DatabaseHandler")
+                    return False
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error updating position price: {e}")
+            return False
+
+    def close_position(self, position_id, close_price=None, close_reason="manual"):
+        """Close position in database"""
+        try:
+            if hasattr(self, 'db') and self.db:
+                if close_price is None:
+                    # Get current price
+                    positions = self.get_active_positions()
+                    for pos in positions:
+                        if str(pos.get('id')) == str(position_id):
+                            close_price = pos.get('current_price', pos.get('entry_price', 0))
+                            break
+                
+                return self.db.close_position(position_id, close_price, close_reason)
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error closing position: {e}")
+            return False
+
     def validate_market_data(self, df: pd.DataFrame, symbol: str, debug_mode: bool = False) -> Tuple[bool, str]:
         """Validasi data market dengan logging lebih detail"""
         checks = []
@@ -3008,17 +3105,9 @@ class EnhancedTradingBot:
         """Backward compatibility method - TANPA BIAS"""
         return self.analyze_with_enhanced_ml(symbol)
     
-    def get_active_positions(self):
-        """Get active positions"""
-        return self.db.get_active_positions(self.mode)
-    
     def get_trade_history(self, limit=20):
         """Get trade history"""
         return self.db.get_trade_history(self.mode, limit)
-    
-    def close_position(self, position_id, close_price):
-        """Close position"""
-        return self.db.close_position(position_id, close_price, "manual")
 
     def calculate_custom_entry(self, symbol, entry_price, action="LONG"):
         """Calculate custom entry dengan TP/SL - DIPERBAIKI"""
