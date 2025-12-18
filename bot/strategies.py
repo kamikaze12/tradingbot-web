@@ -404,12 +404,17 @@ class TradingStrategy(ABC):
             logger.warning(f"Price stuck detected for {symbol}, using synthetic data")
             df = self._synthesize_movement(df, symbol)
         
-        # 4. Cek harga tidak valid (<= 0)
+        # 4. Cek harga tidak valid (<= 0) - PERBAIKAN: GUNAKAN .values
         if (df['close'].values <= 0).any():
             logger.warning(f"Invalid price (<=0) detected for {symbol}, using synthetic data")
             df = self._synthesize_movement(df, symbol)
         
-        # 5. Cek volume = 0
+        # 5. Cek high < low - PERBAIKAN: GUNAKAN .values
+        if (df['high'].values < df['low'].values).any():
+            logger.warning(f"High < Low detected for {symbol}, using synthetic data")
+            df = self._synthesize_movement(df, symbol)
+        
+        # 6. Cek volume = 0
         if df['volume'].mean() < 1:
             logger.warning(f"Zero volume for {symbol}, estimating from volatility")
             df['volume'] = self._estimate_volume_from_volatility(df)
@@ -972,7 +977,7 @@ class TradingStrategy(ABC):
 
 🛑 Stop Loss: {analysis.get('sl', 0):.5f}
 
-{futires_info}
+{futures_info}
 📈 Analytics:
    Confidence: {confidence:.1f}%
    Range Size: ±{range_pct:.1f}%
@@ -1504,12 +1509,12 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                     logger.warning(f"Missing column {col} in {symbol}")
                     return False
             
-            # Cek harga tidak valid (<= 0) - GUNAKAN .any() dengan aman
+            # Cek harga tidak valid (<= 0) - GUNAKAN .values dan .any()
             if (df['close'].values <= 0).any():
                 logger.warning(f"Invalid price (<=0) detected for {symbol}")
                 return False
             
-            # Cek high >= low
+            # Cek high >= low - GUNAKAN .values dan .any()
             if (df['high'].values < df['low'].values).any():
                 logger.warning(f"High < Low detected for {symbol}")
                 return False
@@ -1565,14 +1570,19 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         avg_volume = df['volume'].mean() if 'volume' in df.columns else 1000
         current_price = df['close'].iloc[-1] if len(df) > 0 else 0
         
-        # Cek jika ada NaN
+        # Cek jika ada NaN - GUNAKAN .any() DENGAN AMAN
         if df['close'].isna().any():
             logger.warning(f"Skipping {symbol}: has NaN values")
             return True
         
-        # Cek harga valid
-        if current_price <= 0 or current_price > 100000000:
-            logger.warning(f"Skipping {symbol}: invalid price {current_price}")
+        # Cek harga valid - GUNAKAN .values dan .any()
+        if (df['close'].values <= 0).any() or (df['close'].values > 100000000).any():
+            logger.warning(f"Skipping {symbol}: invalid price range")
+            return True
+        
+        # Cek high >= low - GUNAKAN .values dan .any()
+        if (df['high'].values < df['low'].values).any():
+            logger.warning(f"Skipping {symbol}: High < Low")
             return True
         
         # Cek volume terlalu rendah
@@ -1621,7 +1631,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
         """Analyze market data dengan bias correction untuk scalping"""
         try:
-            # 1. Validasi data dasar
+            # 1. Validasi data dasar - GUNAKAN OPERASI YANG AMAN
             if df is None or df.empty or len(df) < 10:
                 logger.warning(f"Data insufficient for {symbol}: {len(df) if df is not None else 0} bars")
                 return self._get_default_analysis(symbol)
