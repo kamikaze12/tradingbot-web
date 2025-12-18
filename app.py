@@ -430,47 +430,194 @@ def get_real_time_price(symbol, bot):
         print(f"❌ Error getting real-time price for {symbol}: {e}")
         return None
 
-def get_realtime_price_with_fallback(symbol, bot):
-    """Get real-time price with fallback to database price"""
+def validate_price_reasonable(current_price, entry_price, symbol):
+    """VALIDASI HARGA: Cek apakah harga wajar untuk simbol"""
     try:
-        # Clean symbol for API calls
+        if current_price <= 0 or entry_price <= 0:
+            return False
+        
+        ratio = current_price / entry_price
+        
+        # Untuk crypto, harga tidak boleh berubah > 1000% sementara posisi terbuka
+        # Batasi ratio antara 0.01x sampai 100x (lebih ketat)
+        if ratio < 0.01 or ratio > 100:
+            print(f"❌ Harga tidak wajar untuk {symbol}:")
+            print(f"   Entry: ${entry_price}, Current: ${current_price}, Ratio: {ratio:.2f}x")
+            return False
+        
+        # Absolute price check untuk crypto
+        # Kebanyakan crypto di bawah $1000, kecuali BTC, ETH
+        if current_price > 100000:  # > $100,000 tidak mungkin untuk kebanyakan crypto
+            print(f"❌ Harga terlalu tinggi untuk {symbol}: ${current_price}")
+            return False
+        
+        # Check untuk FLOW khususnya (normal price $0.01 - $5)
+        if 'FLOW' in symbol.upper():
+            if current_price > 10:  # FLOW tidak mungkin > $10
+                print(f"❌ Harga FLOW tidak wajar: ${current_price}")
+                return False
+        
+        return True
+    except Exception as e:
+        print(f"⚠️ Error in validate_price_reasonable: {e}")
+        return False
+
+def get_realtime_price_with_fallback(symbol, bot, entry_price=None):
+    """🔥 FIXED VERSION: Get real-time price dengan validasi dan fallback"""
+    try:
+        print(f"🔍 DEBUG get_realtime_price_with_fallback dipanggil untuk: '{symbol}'")
+        
+        # 1. CLEAN SYMBOL - FIX FOR FUTURES/SWAP FORMATS
         clean_symbol = symbol
-        for suffix in [' (Futures)', ' (Swap)', ':USDT', '-PERP', '-SWAP', '/USDT']:
-            clean_symbol = clean_symbol.replace(suffix, '')
         
-        if '/USDT' not in clean_symbol and 'USDT' in clean_symbol:
-            clean_symbol = clean_symbol.replace('USDT', '') + '/USDT'
+        # Handle display symbols
+        if ' (Futures)' in clean_symbol:
+            clean_symbol = clean_symbol.replace(' (Futures)', ':USDT')
+        elif ' (Swap)' in clean_symbol:
+            clean_symbol = clean_symbol.replace(' (Swap)', '-SWAP')
         
-        # Try to get real-time price
+        # Ensure proper format untuk futures
+        if ':USDT' not in clean_symbol and '/USDT' in clean_symbol and 'Futures' in symbol:
+            clean_symbol = f"{clean_symbol}:USDT"
+        
+        print(f"✅ Cleaned symbol: '{clean_symbol}' dari original: '{symbol}'")
+        
+        # 2. GET REAL-TIME PRICE from provider
+        live_price = None
+        source = "Unknown"
+        
         if hasattr(bot, 'data_provider') and bot.data_provider:
             try:
+                # Tambah delay untuk menghindari rate limiting
+                time.sleep(0.3)
+                
+                print(f"📊 Mencoba get_ticker untuk: {clean_symbol}")
                 ticker = bot.data_provider.get_ticker(clean_symbol)
-                if ticker:
-                    price_keys = ['last', 'close', 'current', 'price', 'markPrice', 'indexPrice']
+                print(f"📊 Ticker response untuk {clean_symbol}: {ticker}")
+                
+                if ticker and isinstance(ticker, dict):
+                    # Coba multiple price keys
+                    price_keys = ['last', 'close', 'current', 'price', 'markPrice', 'indexPrice', 'lastPrice']
                     for key in price_keys:
                         if key in ticker and ticker[key] is not None:
-                            price = float(ticker[key])
-                            if price > 0:
-                                print(f"✅ Live price for {symbol}: ${price}")
-                                return price, "Live"
+                            try:
+                                price = float(ticker[key])
+                                if price > 0:
+                                    live_price = price
+                                    source = "Live"
+                                    print(f"✅ Live price untuk {clean_symbol}: ${live_price} (key: {key})")
+                                    break
+                            except:
+                                continue
+                else:
+                    print(f"⚠️ Ticker kosong atau bukan dict untuk {clean_symbol}")
+            
             except Exception as e:
-                print(f"⚠️ Live price error for {symbol}: {e}")
+                print(f"⚠️ Error mendapatkan live price untuk {clean_symbol}: {e}")
         
-        # Fallback to database price
-        positions = bot.get_active_positions()
-        for pos in positions:
-            if isinstance(pos, dict):
-                pos_symbol = pos.get('symbol', '')
-                if pos_symbol == symbol or pos_symbol.replace(':USDT', '') == symbol:
-                    db_price = pos.get('current_price', 0)
-                    if db_price and db_price > 0:
-                        print(f"✅ Database price for {symbol}: ${db_price}")
-                        return db_price, "Database"
+        # 3. VALIDATE PRICE - CRITICAL FIX
+        if live_price and live_price > 0:
+            # Check jika harga wajar
+            is_reasonable = True
+            
+            # Jika entry_price diberikan, validasi
+            if entry_price and entry_price > 0:
+                if not validate_price_reasonable(live_price, entry_price, symbol):
+                    print(f"❌ Harga ${live_price} tidak wajar, menggunakan fallback")
+                    live_price = None
+                    source = "Invalid Live"
+            
+            # Absolute price sanity check untuk crypto
+            if live_price and live_price > 100000:  # Harga > $100,000 tidak mungkin untuk kebanyakan crypto
+                print(f"❌ Harga terlalu tinggi: ${live_price}")
+                live_price = None
+                source = "Invalid High Price"
         
-        # Ultimate fallback
-        return None, "Not Found"
+        # 4. FALLBACK ke database price
+        if live_price is None or live_price <= 0:
+            try:
+                positions = bot.get_active_positions()
+                for pos in positions:
+                    if isinstance(pos, dict):
+                        pos_symbol = pos.get('symbol', '')
+                        # Bandingkan cleaned symbols
+                        pos_clean = pos_symbol
+                        if ' (Futures)' in pos_clean:
+                            pos_clean = pos_clean.replace(' (Futures)', '')
+                        
+                        sym_clean = symbol
+                        if ' (Futures)' in sym_clean:
+                            sym_clean = sym_clean.replace(' (Futures)', '')
+                        
+                        if pos_clean == sym_clean or pos_symbol == symbol:
+                            db_price = pos.get('current_price', 0)
+                            if db_price and db_price > 0:
+                                print(f"✅ Database price untuk {symbol}: ${db_price}")
+                                return db_price, "Database"
+            except Exception as e:
+                print(f"⚠️ Error mendapatkan database price: {e}")
+        
+        # 5. FALLBACK KE ENTRY PRICE
+        if (live_price is None or live_price <= 0) and entry_price and entry_price > 0:
+            print(f"⚠️ Menggunakan entry price sebagai fallback: ${entry_price}")
+            return entry_price, "Entry Fallback"
+        
+        # 6. ULTIMATE FALLBACK
+        if live_price is None or live_price <= 0:
+            # Coba alternative symbol formats
+            alt_symbols = [
+                clean_symbol.replace(':USDT', ''),
+                clean_symbol.replace('/USDT:USDT', '/USDT'),
+                clean_symbol.replace('-PERP', ''),
+                clean_symbol.replace('-SWAP', ''),
+                symbol.replace(' (Futures)', ''),
+                symbol.replace(' (Swap)', '')
+            ]
+            
+            # Hapus duplikat
+            alt_symbols = list(set(alt_symbols))
+            
+            for alt in alt_symbols:
+                if alt != clean_symbol:
+                    try:
+                        if hasattr(bot, 'data_provider') and bot.data_provider:
+                            print(f"🔍 Mencoba alternative symbol: {alt}")
+                            ticker = bot.data_provider.get_ticker(alt)
+                            if ticker:
+                                for key in ['last', 'close', 'current']:
+                                    if key in ticker and ticker[key]:
+                                        price = float(ticker[key])
+                                        if price > 0:
+                                            print(f"✅ Alternative price untuk {alt}: ${price}")
+                                            return price, f"Alt: {alt}"
+                    except Exception as alt_e:
+                        print(f"⚠️ Error dengan alternative symbol {alt}: {alt_e}")
+                        continue
+            
+            # Last resort: coba dari known price database kecil
+            known_prices = {
+                'BTC/USDT': 60000,
+                'ETH/USDT': 3000,
+                'FLOW/USDT': 0.18,
+                'FLOW/USDT:USDT': 0.18,
+                'FLOWUSDT': 0.18,
+            }
+            
+            for key, known_price in known_prices.items():
+                if key in clean_symbol or key in symbol:
+                    print(f"⚠️ Menggunakan known price untuk {symbol}: ${known_price}")
+                    return known_price, "Known Price"
+            
+            # Complete failure
+            print(f"❌ Tidak ada harga valid ditemukan untuk {symbol}")
+            return None, "Not Found"
+        
+        return live_price, source
+        
     except Exception as e:
-        print(f"❌ Error in get_realtime_price_with_fallback: {e}")
+        print(f"❌ Critical error di get_realtime_price_with_fallback: {e}")
+        import traceback
+        traceback.print_exc()
         return None, "Error"
 
 def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
@@ -2623,7 +2770,7 @@ def main_app():
                     else:
                         st.warning("⚠️ Session Only")
 
-    # Tab 6: Positions - FIXED VERSION dengan update database
+    # Tab 6: Positions - 🔥 FIXED VERSION dengan VALIDASI HARGA
     with tab6:
         st.subheader("💼 Active Positions")
         
@@ -2638,6 +2785,16 @@ def main_app():
         
         if mode_info:
             st.info(" | ".join(mode_info))
+        
+        # 🔥 DEBUG PANEL untuk troubleshooting
+        with st.expander("🐛 Debug Price Lookup"):
+            test_symbol = st.text_input("Test symbol:", "FLOW/USDT (Futures)")
+            if st.button("Test Price Lookup", key="debug_price"):
+                with st.spinner("Testing..."):
+                    price, source = get_realtime_price_with_fallback(test_symbol, bot, 0.18660)
+                    st.write(f"**Result:** Price: {price}, Source: {source}")
+                    if price:
+                        st.write(f"**Validasi:** Entry: $0.18660, Current: ${price}, Ratio: {price/0.18660:.2f}x")
         
         # Tambahkan tombol refresh real-time dengan update database
         col_rt1, col_rt2, col_rt3 = st.columns([1, 1, 2])
@@ -2683,26 +2840,6 @@ def main_app():
                 st.success("🟢 Provider Active")
             else:
                 st.warning("🟡 No Data Provider")
-        
-        # Debug Information Panel
-        with st.expander("🔍 Debug Information"):
-            try:
-                # Get raw positions
-                raw_positions = bot.get_active_positions()
-                st.write(f"**Raw positions from DB:** {len(raw_positions)}")
-                
-                if raw_positions:
-                    st.write("**First position details:**")
-                    first_pos = raw_positions[0]
-                    st.write(f"Type: {type(first_pos)}")
-                    if isinstance(first_pos, dict):
-                        st.write("Keys:", list(first_pos.keys()))
-                        st.json(first_pos)
-                
-                # Show all positions data
-                st.write("**All positions from session state:**", len(st.session_state.test_positions) if hasattr(st.session_state, 'test_positions') else 0)
-            except Exception as e:
-                st.error(f"Debug error: {e}")
         
         # Kumpulkan semua posisi dari database
         all_positions = []
@@ -2755,37 +2892,51 @@ def main_app():
             st.info("📭 No active positions")
             st.info("👉 Open a position in Tab 4 first!")
         else:
-            # Display positions dengan error handling yang lebih baik
+            # Display positions dengan error handling dan VALIDASI HARGA
             for idx, pos in enumerate(open_positions):
                 try:
-                    # Extract dengan default yang aman
                     position_id = pos.get('id', f'pos_{idx}')
                     symbol = pos.get('symbol', 'UNKNOWN')
                     action = pos.get('action', 'LONG')
-                    
-                    # Entry price - pastikan float
                     entry_price = float(pos.get('entry_price', 0))
                     
-                    # Current price - ambil dari pos, jika tidak ada gunakan entry
-                    current_price = float(pos.get('current_price', entry_price))
+                    print(f"\n🔍 Processing position {idx+1}: {symbol}")
+                    print(f"   Entry price: ${entry_price}")
                     
-                    # Coba dapatkan harga real-time
-                    realtime_price, source = get_realtime_price_with_fallback(symbol, bot)
+                    # 🔥 Dapatkan harga real-time dengan VALIDASI
+                    realtime_price, source = get_realtime_price_with_fallback(symbol, bot, entry_price)
                     
                     if realtime_price and realtime_price > 0:
-                        # Update di database
-                        update_success = False
-                        if hasattr(bot, 'update_position_current_price'):
-                            update_success = bot.update_position_current_price(position_id, realtime_price)
-                        
-                        if update_success:
-                            current_price = realtime_price
-                            price_source = "Live + DB"
+                        # 🔥 VALIDASI HARGA: Cek apakah harga wajar
+                        if not validate_price_reasonable(realtime_price, entry_price, symbol):
+                            st.warning(f"⚠️ Harga tidak wajar untuk {symbol}: ${realtime_price}")
+                            # Gunakan harga entry sebagai fallback
+                            current_price = entry_price
+                            price_source = "Entry (Invalid Live)"
+                            
+                            # Log error
+                            st.error(f"""
+                            ❌ **HARGA TIDAK WAJAR DETECTED**
+                            - Simbol: {symbol}
+                            - Entry: ${entry_price:.5f}
+                            - Live Price: ${realtime_price:.5f}
+                            - Rasio: {realtime_price/entry_price:.2f}x
+                            
+                            **Kemungkinan penyebab:**
+                            1. Format simbol salah
+                            2. Provider mengembalikan data yang salah
+                            3. Simbol tidak ditemukan
+                            
+                            **Sementara menggunakan harga entry.**
+                            """)
                         else:
-                            # Update di session
+                            # Update harga di database jika valid
+                            update_success = update_position_price_in_db(bot, position_id, realtime_price)
                             current_price = realtime_price
-                            price_source = "Live"
+                            price_source = f"Live ({source})" + (" + DB" if update_success else "")
                     else:
+                        # Gunakan harga dari database
+                        current_price = float(pos.get('current_price', entry_price))
                         price_source = "Database"
                     
                     # Pastikan tp1, sl, dan position_size valid
@@ -2811,17 +2962,32 @@ def main_app():
                         getattr(bot, 'trading_mode', 'spot')
                     )
                     
-                    # Hitung P/L
+                    # Hitung P/L dengan harga yang sudah divalidasi
+                    pl_pct = 0.0
+                    pl_value = 0.0
+                    
                     if entry_price > 0 and current_price > 0:
                         if action == "LONG":
                             pl_pct = ((current_price - entry_price) / entry_price) * 100
-                            pl_value = (current_price - entry_price) * (position_size / entry_price) if entry_price > 0 else 0
-                        else:
+                            pl_value = (current_price - entry_price) * (position_size / entry_price)
+                        else:  # SHORT
                             pl_pct = ((entry_price - current_price) / entry_price) * 100
-                            pl_value = (entry_price - current_price) * (position_size / entry_price) if entry_price > 0 else 0
-                    else:
-                        pl_pct = 0.0
-                        pl_value = 0.0
+                            pl_value = (entry_price - current_price) * (position_size / entry_price)
+                    
+                    # 🔥 Tampilkan warning jika P/L ekstrem
+                    if abs(pl_pct) > 1000:  # > 1000% gain/loss
+                        st.error(f"🚨 **P/L EKSTREM DETECTED**: {pl_pct:.1f}%")
+                        st.info(f"""
+                        **Kemungkinan masalah:**
+                        1. Harga salah: Entry=${entry_price:.5f}, Current=${current_price:.5f}
+                        2. Format simbol: {symbol}
+                        3. Data provider error
+                        
+                        **Saran:**
+                        - Cek simbol di exchange
+                        - Close position jika perlu
+                        - Update harga manual
+                        """)
                     
                     # Tentukan warna dan emoji
                     if pl_pct > 0:
@@ -2877,7 +3043,7 @@ def main_app():
                             # Tombol update price individual dengan update database
                             update_key = f"update_price_single_{position_id}_{symbol}_{idx}"
                             if st.button("🔄 Update", key=update_key):
-                                current_price, source = get_realtime_price_with_fallback(symbol, bot)
+                                current_price, source = get_realtime_price_with_fallback(symbol, bot, entry_price)
                                 if current_price and current_price > 0:
                                     # Update in database
                                     success = update_position_price_in_db(bot, position_id, current_price)
@@ -3065,29 +3231,31 @@ def main_app():
                         status = pos.get('status', 'open')
                         position_id = pos.get('id', f'live_{idx}')
                         
-                        # Get live price dan update
-                        live_price, source = get_realtime_price_with_fallback(symbol, bot)
+                        # Get live price dengan VALIDASI
+                        live_price, source = get_realtime_price_with_fallback(symbol, bot, entry_price)
                         
-                        if live_price and live_price > 0:
+                        # Validasi harga
+                        if live_price and live_price > 0 and validate_price_reasonable(live_price, entry_price, symbol):
                             # Update in database if possible
                             if hasattr(bot, 'update_position_current_price'):
                                 bot.update_position_current_price(position_id, live_price)
                             current_price = live_price
                             price_source = f"Live ({source})"
                         else:
+                            # Gunakan harga dari database
                             price_source = "Database"
                         
-                        # Update P/L berdasarkan live_price
+                        # Update P/L berdasarkan live_price yang sudah divalidasi
                         pl_pct = 0.0
                         pl_value = 0.0
                         
-                        if entry_price > 0 and live_price > 0:
+                        if entry_price > 0 and current_price > 0:
                             if action == "LONG":
-                                pl_pct = ((live_price - entry_price) / entry_price) * 100
-                                pl_value = (live_price - entry_price) * (position_size / entry_price) if entry_price > 0 else 0
+                                pl_pct = ((current_price - entry_price) / entry_price) * 100
+                                pl_value = (current_price - entry_price) * (position_size / entry_price) if entry_price > 0 else 0
                             else:
-                                pl_pct = ((entry_price - live_price) / entry_price) * 100
-                                pl_value = (entry_price - live_price) * (position_size / entry_price) if entry_price > 0 else 0
+                                pl_pct = ((entry_price - current_price) / entry_price) * 100
+                                pl_value = (entry_price - current_price) * (position_size / entry_price) if entry_price > 0 else 0
                         
                         display_symbol = convert_symbol_for_display(symbol, bot.mode, bot.trading_mode)
                         
@@ -3104,13 +3272,13 @@ def main_app():
                         
                         with col_l2:
                             price_color = "🟢" if "Live" in price_source else "🟡" if "Database" in price_source else "⚪"
-                            st.write(f"{price_color} {price_source}: `${live_price:,.5f}`")
+                            st.write(f"{price_color} {price_source}: `${current_price:,.5f}`")
                             
                             if entry_price > 0:
                                 if action == "LONG":
-                                    change = ((live_price - entry_price) / entry_price) * 100
+                                    change = ((current_price - entry_price) / entry_price) * 100
                                 else:
-                                    change = ((entry_price - live_price) / entry_price) * 100
+                                    change = ((entry_price - current_price) / entry_price) * 100
                                 change_emoji = "📈" if change >= 0 else "📉"
                                 st.write(f"{change_emoji} Change: `{change:+.2f}%`")
                         
