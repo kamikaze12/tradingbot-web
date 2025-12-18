@@ -431,21 +431,44 @@ def get_real_time_price(symbol, bot):
         return None
 
 def get_realtime_price_with_fallback(symbol, bot):
-    """Get real-time price with fallback to cached price"""
+    """Get real-time price with fallback to database price"""
     try:
-        # Try to get real-time price
-        realtime_price = get_real_time_price(symbol, bot)
+        # Clean symbol for API calls
+        clean_symbol = symbol
+        for suffix in [' (Futures)', ' (Swap)', ':USDT', '-PERP', '-SWAP', '/USDT']:
+            clean_symbol = clean_symbol.replace(suffix, '')
         
-        if realtime_price is not None and realtime_price > 0:
-            return realtime_price, "Live"
+        if '/USDT' not in clean_symbol and 'USDT' in clean_symbol:
+            clean_symbol = clean_symbol.replace('USDT', '') + '/USDT'
+        
+        # Try to get real-time price
+        if hasattr(bot, 'data_provider') and bot.data_provider:
+            try:
+                ticker = bot.data_provider.get_ticker(clean_symbol)
+                if ticker:
+                    price_keys = ['last', 'close', 'current', 'price', 'markPrice', 'indexPrice']
+                    for key in price_keys:
+                        if key in ticker and ticker[key] is not None:
+                            price = float(ticker[key])
+                            if price > 0:
+                                print(f"✅ Live price for {symbol}: ${price}")
+                                return price, "Live"
+            except Exception as e:
+                print(f"⚠️ Live price error for {symbol}: {e}")
         
         # Fallback to database price
         positions = bot.get_active_positions()
         for pos in positions:
-            if isinstance(pos, dict) and pos.get('symbol') == symbol and pos.get('current_price'):
-                return pos.get('current_price'), "Database"
+            if isinstance(pos, dict):
+                pos_symbol = pos.get('symbol', '')
+                if pos_symbol == symbol or pos_symbol.replace(':USDT', '') == symbol:
+                    db_price = pos.get('current_price', 0)
+                    if db_price and db_price > 0:
+                        print(f"✅ Database price for {symbol}: ${db_price}")
+                        return db_price, "Database"
         
-        return None, "None"
+        # Ultimate fallback
+        return None, "Not Found"
     except Exception as e:
         print(f"❌ Error in get_realtime_price_with_fallback: {e}")
         return None, "Error"
@@ -2661,86 +2684,109 @@ def main_app():
             else:
                 st.warning("🟡 No Data Provider")
         
+        # Debug Information Panel
+        with st.expander("🔍 Debug Information"):
+            try:
+                # Get raw positions
+                raw_positions = bot.get_active_positions()
+                st.write(f"**Raw positions from DB:** {len(raw_positions)}")
+                
+                if raw_positions:
+                    st.write("**First position details:**")
+                    first_pos = raw_positions[0]
+                    st.write(f"Type: {type(first_pos)}")
+                    if isinstance(first_pos, dict):
+                        st.write("Keys:", list(first_pos.keys()))
+                        st.json(first_pos)
+                
+                # Show all positions data
+                st.write("**All positions from session state:**", len(st.session_state.test_positions) if hasattr(st.session_state, 'test_positions') else 0)
+            except Exception as e:
+                st.error(f"Debug error: {e}")
+        
         # Kumpulkan semua posisi dari database
         all_positions = []
-        
-        # 1. Dari database positions
-        if hasattr(st.session_state, 'positions_data') and st.session_state.positions_data:
-            for pos in st.session_state.positions_data:
-                if isinstance(pos, dict) and 'symbol' in pos:
-                    all_positions.append(pos)
-        
-        # 2. Dari session test_positions (fallback)
-        if hasattr(st.session_state, 'test_positions') and st.session_state.test_positions:
-            for pos in st.session_state.test_positions:
-                if isinstance(pos, dict) and 'symbol' in pos:
-                    # Cek apakah posisi sudah ada di all_positions (hindari duplikat)
-                    existing_symbols = [p.get('symbol') for p in all_positions]
-                    if pos.get('symbol') not in existing_symbols:
+
+        # 1. Dari database positions - PASTIKAN menggunakan get_active_positions()
+        try:
+            db_positions = bot.get_active_positions()
+            if db_positions:
+                for pos in db_positions:
+                    if isinstance(pos, dict):
+                        # Standardize status
+                        if pos.get('status') == 'active':
+                            pos['status'] = 'open'
+                        
+                        # Ensure current_price exists
+                        if 'current_price' not in pos or not pos['current_price']:
+                            pos['current_price'] = pos.get('entry_price', 0)
+                        
+                        # Add to list
                         all_positions.append(pos)
-        
+        except Exception as e:
+            st.error(f"❌ Error getting DB positions: {e}")
+
+        # 2. Dari session test_positions (hanya jika tidak ada di DB)
+        if hasattr(st.session_state, 'test_positions') and st.session_state.test_positions:
+            for session_pos in st.session_state.test_positions:
+                # Check if already in all_positions
+                session_symbol = session_pos.get('symbol', '')
+                already_exists = False
+                
+                for db_pos in all_positions:
+                    if db_pos.get('symbol') == session_symbol:
+                        already_exists = True
+                        break
+                
+                if not already_exists and session_pos.get('status', 'open') == 'open':
+                    all_positions.append(session_pos)
+
         # Filter hanya posisi yang open
         open_positions = []
         for pos in all_positions:
-            try:
-                # Pastikan status ada, default ke 'open' jika tidak ada
-                status = pos.get('status', 'open')
-                if status == 'open':
-                    open_positions.append(pos)
-            except:
-                continue
+            status = pos.get('status', 'open').lower()
+            if status in ['open', 'active']:
+                open_positions.append(pos)
+
+        # Tampilkan jumlah posisi
+        st.subheader(f"📊 Active Positions ({len(open_positions)})")
         
         if not open_positions:
             st.info("📭 No active positions")
             st.info("👉 Open a position in Tab 4 first!")
-            
-            # Debug info untuk developer
-            with st.expander("🔍 Debug Information"):
-                st.write("**All Positions Data:**")
-                st.write(f"Total positions found: {len(all_positions)}")
-                for i, pos in enumerate(all_positions):
-                    st.write(f"Position {i+1}: {pos}")
         else:
-            st.subheader(f"📊 Active Positions ({len(open_positions)})")
-            
             # Display positions dengan error handling yang lebih baik
             for idx, pos in enumerate(open_positions):
                 try:
-                    # Extract position data dengan default values
-                    position_id = pos.get('id', f'pos_{idx}_{int(time.time())}')
+                    # Extract dengan default yang aman
+                    position_id = pos.get('id', f'pos_{idx}')
                     symbol = pos.get('symbol', 'UNKNOWN')
                     action = pos.get('action', 'LONG')
                     
-                    # Pastikan entry_price valid
-                    entry_price = 0.0
-                    if 'entry_price' in pos:
-                        try:
-                            entry_price = float(pos.get('entry_price', 0))
-                        except:
-                            entry_price = 0.0
+                    # Entry price - pastikan float
+                    entry_price = float(pos.get('entry_price', 0))
                     
-                    # Dapatkan harga saat ini dari database atau real-time
-                    current_price = pos.get('current_price', entry_price)
-                    price_source = "Database"
+                    # Current price - ambil dari pos, jika tidak ada gunakan entry
+                    current_price = float(pos.get('current_price', entry_price))
                     
-                    # Coba dapatkan harga real-time untuk update
+                    # Coba dapatkan harga real-time
                     realtime_price, source = get_realtime_price_with_fallback(symbol, bot)
+                    
                     if realtime_price and realtime_price > 0:
                         # Update di database
-                        update_success = update_position_price_in_db(bot, position_id, realtime_price)
+                        update_success = False
+                        if hasattr(bot, 'update_position_current_price'):
+                            update_success = bot.update_position_current_price(position_id, realtime_price)
+                        
                         if update_success:
                             current_price = realtime_price
                             price_source = "Live + DB"
-                            # Update posisi dengan harga baru
-                            pos['current_price'] = current_price
                         else:
-                            price_source = f"Live (DB update failed)"
+                            # Update di session
+                            current_price = realtime_price
+                            price_source = "Live"
                     else:
-                        # Jika tidak dapat realtime_price, gunakan entry_price sebagai fallback
-                        if current_price <= 0:
-                            current_price = entry_price
-                            price_source = "Entry (Fallback)"
-                            st.warning(f"⚠️ Live price failed for {symbol}, using entry price.")
+                        price_source = "Database"
                     
                     # Pastikan tp1, sl, dan position_size valid
                     try:
@@ -2958,67 +3004,78 @@ def main_app():
             st.info(" | ".join(mode_info))
         
         # Control buttons
-        col1, col2, col3, col4 = st.columns([1, 2, 1, 1])
+        col1, col2, col3 = st.columns([1, 2, 1])
         with col1:
             if st.button("🚀 Start Live Monitoring" if not st.session_state.live_monitoring else "⏹️ Stop Monitoring", 
                         key="toggle_live_tab8", type="primary"):
                 st.session_state.live_monitoring = not st.session_state.live_monitoring
                 st.rerun()
-    
+
         with col2:
             auto_refresh_live = st.checkbox("🔄 Auto Refresh (10s)", value=True, key="auto_refresh_live_tab8")
-        
+
         with col3:
-            if st.button("🔄 Refresh Prices", key="refresh_prices_btn_tab8"):
-                st.rerun()
-        
-        with col4:
-            if st.button("📊 Show All", key="show_all_btn_tab8"):
-                st.session_state.show_all_positions = not st.session_state.show_all_positions
+            if st.button("📊 Refresh Now", key="refresh_now_tab8"):
                 st.rerun()
         
         if st.session_state.live_monitoring:
             st.success("📡 LIVE MONITORING ACTIVE")
             
-            # Selalu ambil dari database, hilangkan test_positions
-            positions_data = bot.get_active_positions()
+            # Get ALL positions from database (not filtered)
+            try:
+                all_db_positions = bot.get_active_positions()
+            except:
+                all_db_positions = []
             
-            if positions_data:
-                st.subheader(f"📊 Monitoring {len(positions_data)} positions")
+            # Add session positions
+            all_positions = []
+            if all_db_positions:
+                all_positions.extend(all_db_positions)
+            
+            if hasattr(st.session_state, 'test_positions') and st.session_state.test_positions:
+                for session_pos in st.session_state.test_positions:
+                    # Check if already exists
+                    session_symbol = session_pos.get('symbol', '')
+                    exists = False
+                    for db_pos in all_positions:
+                        if db_pos.get('symbol') == session_symbol:
+                            exists = True
+                            break
+                    if not exists:
+                        all_positions.append(session_pos)
+            
+            # Filter hanya yang open/active
+            active_positions = []
+            for pos in all_positions:
+                if isinstance(pos, dict):
+                    status = pos.get('status', 'open').lower()
+                    if status in ['open', 'active']:
+                        active_positions.append(pos)
+            
+            if active_positions:
+                st.subheader(f"📊 Monitoring {len(active_positions)} positions")
                 
-                for idx, pos in enumerate(positions_data):
+                for idx, pos in enumerate(active_positions):
                     try:
-                        if not isinstance(pos, dict):
-                            continue
-                        
                         symbol = pos.get('symbol', 'Unknown')
                         action = pos.get('action', 'Unknown')
                         entry_price = float(pos.get('entry_price', 0))
                         current_price = float(pos.get('current_price', entry_price))
                         position_size = float(pos.get('position_size', 0))
                         status = pos.get('status', 'open')
-                        position_id = pos.get('id')
+                        position_id = pos.get('id', f'live_{idx}')
                         
-                        # Fetch live price dan update ke database
-                        live_price = get_real_time_price(symbol, bot)
-                        price_source = "Live"
+                        # Get live price dan update
+                        live_price, source = get_realtime_price_with_fallback(symbol, bot)
                         
-                        if live_price is None or live_price <= 0:
-                            live_price = current_price
-                            price_source = "Database"
-                            if entry_price > 0 and live_price <= 0:
-                                live_price = entry_price
-                                price_source = "Entry (Fallback)"
-                                st.warning(f"⚠️ Failed to fetch live price for {symbol}. Using entry price: ${live_price:,.5f}")
-                            else:
-                                st.warning(f"⚠️ Failed to fetch live price for {symbol}. Using database price: ${live_price:,.5f}")
+                        if live_price and live_price > 0:
+                            # Update in database if possible
+                            if hasattr(bot, 'update_position_current_price'):
+                                bot.update_position_current_price(position_id, live_price)
+                            current_price = live_price
+                            price_source = f"Live ({source})"
                         else:
-                            # Update ke database
-                            update_success = update_position_price_in_db(bot, position_id, live_price)
-                            if update_success:
-                                price_source = "Live + DB"
-                            else:
-                                price_source = "Live (DB update failed)"
+                            price_source = "Database"
                         
                         # Update P/L berdasarkan live_price
                         pl_pct = 0.0
