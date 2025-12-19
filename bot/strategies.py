@@ -1514,12 +1514,12 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                     logger.warning(f"Missing column {col} in {symbol}")
                     return False
             
-            # Cek harga tidak valid (<= 0) - GUNAKAN .values dan .any()
+            # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek harga
             if (df['close'].values <= 0).any():
                 logger.warning(f"Invalid price (<=0) detected for {symbol}")
                 return False
             
-            # Cek high >= low - GUNAKAN .values dan .any()
+            # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek high >= low
             if (df['high'].values < df['low'].values).any():
                 logger.warning(f"High < Low detected for {symbol}")
                 return False
@@ -1575,17 +1575,17 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         avg_volume = df['volume'].mean() if 'volume' in df.columns else 1000
         current_price = df['close'].iloc[-1] if len(df) > 0 else 0
         
-        # Cek jika ada NaN - GUNAKAN .any() DENGAN AMAN
+        # ✅ PERBAIKAN: Gunakan .any() untuk cek NaN
         if df['close'].isna().any():
             logger.warning(f"Skipping {symbol}: has NaN values")
             return True
         
-        # Cek harga valid - GUNAKAN .values dan .any()
+        # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek harga
         if (df['close'].values <= 0).any() or (df['close'].values > 100000000).any():
             logger.warning(f"Skipping {symbol}: invalid price range")
             return True
         
-        # Cek high >= low - GUNAKAN .values dan .any()
+        # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek high >= low
         if (df['high'].values < df['low'].values).any():
             logger.warning(f"Skipping {symbol}: High < Low")
             return True
@@ -1636,7 +1636,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
         """Analyze market data dengan bias correction untuk scalping"""
         try:
-            # 1. Validasi data dasar - GUNAKAN OPERASI YANG AMAN
+            # 1. Validasi data dasar
             if df is None or df.empty or len(df) < 10:
                 logger.warning(f"Data insufficient for {symbol}: {len(df) if df is not None else 0} bars")
                 return self._get_default_analysis(symbol)
