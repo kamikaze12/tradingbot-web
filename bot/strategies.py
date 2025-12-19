@@ -94,11 +94,11 @@ def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
                 logger.error(f"YFinance download error: {e}")
                 return pd.DataFrame()
             
-            if df.empty:
+            if df is None or df.empty:
                 logger.warning(f"No data for {symbol}")
                 return pd.DataFrame()
         
-        if df.empty:
+        if df is None or df.empty:
             logger.warning(f"Empty DataFrame after provider for {symbol}")
             return pd.DataFrame()
         
@@ -108,7 +108,7 @@ def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
             close_values = df['close'].values
             is_close_to_100 = np.isclose(close_values, 100.0, atol=0.001)
             
-            if np.any(is_close_to_100):  # ← GUNAKAN np.any()
+            if np.any(is_close_to_100):
                 count_100 = np.sum(is_close_to_100)
                 logger.warning(f"Found {count_100} bars with close price 100 in {symbol}. Fixing...")
                 
@@ -176,7 +176,7 @@ def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
             close_values_final = df['close'].values
             is_close_to_100_final = np.isclose(close_values_final, 100.0, atol=0.001)
             
-            if np.any(is_close_to_100_final):  # ← INI YANG BENAR!
+            if np.any(is_close_to_100_final):
                 logger.error(f"🚨 {symbol} still has price 100 after cleaning!")
                 return pd.DataFrame()
         
@@ -198,143 +198,148 @@ def get_trading_data(symbol, provider=None, scalping_mode=False, require_real_da
         scalping_mode: Jika True, tambahkan filter khusus untuk scalping
         require_real_data: Jika True, tolak data dummy/sintetis
     """
-    # 🚨 **PERBAIKAN: Gunakan provider langsung jika tersedia**
-    if provider is not None and hasattr(provider, 'get_ohlcv'):
-        try:
-            logger.info(f"🔍 Getting OHLCV for {symbol} from {provider.__class__.__name__}")
-            
-            # 🔥 PERBAIKAN UTAMA: Gunakan timeframe dan limit yang sesuai
-            timeframe = '5m' if scalping_mode else '1h'
-            limit = 150 if scalping_mode else 100
-            
-            df = provider.get_ohlcv(symbol, timeframe, limit)
-            
-            if df is None or df.empty:
-                logger.warning(f"Provider returned no data for {symbol}")
-                return None
-            
-            # 🔥 PERBAIKAN: Validasi jumlah data minimum berdasarkan mode
-            min_bars = 100 if scalping_mode else 20  # 🔥 DARI 10 ke 20 untuk regular
-            if len(df) < min_bars:
-                logger.warning(f"⚠️ {symbol} insufficient data: {len(df)} < {min_bars} bars")
-                return None
-            
-            # Standardize column names
-            column_mapping = {
-                'Open': 'open',
-                'High': 'high', 
-                'Low': 'low',
-                'Close': 'close',
-                'Volume': 'volume'
-            }
-            
-            for old, new in column_mapping.items():
-                if old in df.columns:
-                    df = df.rename(columns={old: new})
-            
-            # 🔥 PERBAIKAN KETAT: Cek dan bersihkan harga 100 secara eksplisit
-            if 'close' in df.columns:
-                # Debug logging
-                logger.debug(f"🔍 {symbol}: Checking for price 100, current range: {df['close'].min():.4f}-{df['close'].max():.4f}")
+    try:
+        # 🚨 **PERBAIKAN: Gunakan provider langsung jika tersedia**
+        if provider is not None and hasattr(provider, 'get_ohlcv'):
+            try:
+                logger.info(f"🔍 Getting OHLCV for {symbol} from {provider.__class__.__name__}")
                 
-                # Method 1: Direct check dengan numpy
-                close_values = df['close'].values
-                price_100_count = np.sum(np.isclose(close_values, 100.0, atol=0.001))
-                if price_100_count > 0:
-                    logger.error(f"🚨 {symbol}: Found {price_100_count} bars with price ~100, rejecting!")
+                # 🔥 PERBAIKAN UTAMA: Gunakan timeframe dan limit yang sesuai
+                timeframe = '5m' if scalping_mode else '1h'
+                limit = 150 if scalping_mode else 100
+                
+                df = provider.get_ohlcv(symbol, timeframe, limit)
+                
+                if df is None or df.empty:
+                    logger.warning(f"Provider returned no data for {symbol}")
                     return None
                 
-                # Method 2: Filter jika terlalu banyak harga sama
-                unique_prices = len(np.unique(close_values))
-                if unique_prices < 3 and len(df) > 10:
-                    logger.warning(f"⚠️ {symbol}: Too few unique prices ({unique_prices}), possibly stuck at 100")
+                # 🔥 PERBAIKAN: Validasi jumlah data minimum berdasarkan mode
+                min_bars = 100 if scalping_mode else 20  # 🔥 DARI 10 ke 20 untuk regular
+                if len(df) < min_bars:
+                    logger.warning(f"⚠️ {symbol} insufficient data: {len(df)} < {min_bars} bars")
                     return None
-            
-            logger.info(f"✅ Valid data from provider for {symbol}: {len(df)} bars")
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error getting data from provider: {e}")
-            # Fallback ke get_clean_data
-            pass
-    
-    # Fallback ke get_clean_data jika provider tidak tersedia atau gagal
-    data = get_clean_data(symbol, provider)
-    
-    # 🔥 PERBAIKAN: Validasi dengan cara yang lebih aman
-    if data is None or data.empty:
-        return None
-    
-    # Pastikan ini adalah DataFrame
-    if isinstance(data, pd.Series):
-        data = data.to_frame().T
-    
-    # =============================================
-    # FILTER KHUSUS UNTUK SCALPING MODE
-    # =============================================
-    if scalping_mode:
-        # 1. Cek jumlah data minimum untuk scalping
-        if len(data) < 100:
-            logger.warning(f"⚠️ {symbol} insufficient data for scalping: {len(data)} bars")
+                
+                # Standardize column names
+                column_mapping = {
+                    'Open': 'open',
+                    'High': 'high', 
+                    'Low': 'low',
+                    'Close': 'close',
+                    'Volume': 'volume'
+                }
+                
+                for old, new in column_mapping.items():
+                    if old in df.columns:
+                        df = df.rename(columns={old: new})
+                
+                # 🔥 PERBAIKAN KETAT: Cek dan bersihkan harga 100 secara eksplisit
+                if 'close' in df.columns:
+                    # Debug logging
+                    logger.debug(f"🔍 {symbol}: Checking for price 100, current range: {df['close'].min():.4f}-{df['close'].max():.4f}")
+                    
+                    # Method 1: Direct check dengan numpy
+                    close_values = df['close'].values
+                    price_100_count = np.sum(np.isclose(close_values, 100.0, atol=0.001))
+                    if price_100_count > 0:
+                        logger.error(f"🚨 {symbol}: Found {price_100_count} bars with price ~100, rejecting!")
+                        return None
+                    
+                    # Method 2: Filter jika terlalu banyak harga sama
+                    unique_prices = len(np.unique(close_values))
+                    if unique_prices < 3 and len(df) > 10:
+                        logger.warning(f"⚠️ {symbol}: Too few unique prices ({unique_prices}), possibly stuck at 100")
+                        return None
+                
+                logger.info(f"✅ Valid data from provider for {symbol}: {len(df)} bars")
+                return df
+                
+            except Exception as e:
+                logger.error(f"Error getting data from provider: {e}")
+                # Fallback ke get_clean_data
+                pass
+        
+        # Fallback ke get_clean_data jika provider tidak tersedia atau gagal
+        data = get_clean_data(symbol, provider)
+        
+        # 🔥 PERBAIKAN: Validasi dengan cara yang lebih aman
+        if data is None or data.empty:
             return None
         
-        # 2. Cek volatilitas (minimal movement untuk scalping)
-        if len(data) > 1:
-            price_changes = data['close'].pct_change().abs().mean()
-            if price_changes < 0.0005:  # Kurang dari 0.05% average movement
-                logger.warning(f"⚠️ {symbol} too flat for scalping: {price_changes*100:.3f}% avg change")
-                return None
+        # Pastikan ini adalah DataFrame
+        if isinstance(data, pd.Series):
+            data = data.to_frame().T
         
-        # 3. Cek volume (harus cukup liquid untuk scalping)
-        if 'volume' in data.columns:
-            avg_volume = data['volume'].mean()
-            if avg_volume < 100000:  # Minimal volume untuk scalping
-                logger.warning(f"⚠️ {symbol} volume too low for scalping: {avg_volume:.0f}")
-                return None
-        
-        # 4. Cek volatilitas maksimal (terlalu volatile berbahaya untuk scalping)
-        if len(data) > 1:
-            volatility = data['close'].pct_change().std() * np.sqrt(252)
-            if volatility > SCALPING_CONFIG["max_volatility"]:
-                logger.warning(f"⚠️ {symbol} too volatile for scalping: {volatility:.1%}")
-                return None
-    
-    # 🔥 PERBAIKAN: Validasi harga 100 dengan metode yang TIDAK menyebabkan ambiguous truth value
-    try:
-        if 'close' in data.columns:
-            # Gunakan .values untuk menghindari ambiguous truth value
-            close_values = data['close'].values
-            
-            # Cek jika ada harga yang mendekati 100
-            is_close_to_100 = np.isclose(close_values, 100.0, atol=0.001)
-            
-            if np.any(is_close_to_100):
-                count_100 = np.sum(is_close_to_100)
-                logger.error(f"🚨 {symbol}: Found {count_100} bars with price ~100 in final check, rejecting!")
+        # =============================================
+        # FILTER KHUSUS UNTUK SCALPING MODE
+        # =============================================
+        if scalping_mode:
+            # 1. Cek jumlah data minimum untuk scalping
+            if len(data) < 100:
+                logger.warning(f"⚠️ {symbol} insufficient data for scalping: {len(data)} bars")
                 return None
             
-            # Pastikan harga realistic
-            if len(data) > 0:
-                current_price = data['close'].iloc[-1]
-            else:
-                current_price = 0
-            
-            # Skip kalau harga masih aneh
-            if current_price <= 0 or current_price > 1000000:
-                logger.warning(f"⚠️ {symbol} has unrealistic price: {current_price}")
-                return None
-            
-            # Cek pergerakan harga (tidak stuck)
+            # 2. Cek volatilitas (minimal movement untuk scalping)
             if len(data) > 1:
-                price_changes = data['close'].diff().abs().sum()
-                if price_changes < (current_price * 0.0001 * len(data)):
-                    logger.warning(f"⚠️ {symbol} has flatline prices")
+                price_changes = data['close'].pct_change().abs().mean()
+                if price_changes < 0.0005:  # Kurang dari 0.05% average movement
+                    logger.warning(f"⚠️ {symbol} too flat for scalping: {price_changes*100:.3f}% avg change")
                     return None
+            
+            # 3. Cek volume (harus cukup liquid untuk scalping)
+            if 'volume' in data.columns:
+                avg_volume = data['volume'].mean()
+                if avg_volume < 100000:  # Minimal volume untuk scalping
+                    logger.warning(f"⚠️ {symbol} volume too low for scalping: {avg_volume:.0f}")
+                    return None
+            
+            # 4. Cek volatilitas maksimal (terlalu volatile berbahaya untuk scalping)
+            if len(data) > 1:
+                volatility = data['close'].pct_change().std() * np.sqrt(252)
+                if volatility > SCALPING_CONFIG["max_volatility"]:
+                    logger.warning(f"⚠️ {symbol} too volatile for scalping: {volatility:.1%}")
+                    return None
+        
+        # 🔥 PERBAIKAN: Validasi harga 100 dengan metode yang TIDAK menyebabkan ambiguous truth value
+        try:
+            if 'close' in data.columns:
+                # Gunakan .values untuk menghindari ambiguous truth value
+                close_values = data['close'].values
+                
+                # Cek jika ada harga yang mendekati 100
+                is_close_to_100 = np.isclose(close_values, 100.0, atol=0.001)
+                
+                if np.any(is_close_to_100):
+                    count_100 = np.sum(is_close_to_100)
+                    logger.error(f"🚨 {symbol}: Found {count_100} bars with price ~100 in final check, rejecting!")
+                    return None
+                
+                # Pastikan harga realistic
+                if len(data) > 0:
+                    current_price = data['close'].iloc[-1]
+                else:
+                    current_price = 0
+                
+                # Skip kalau harga masih aneh
+                if current_price <= 0 or current_price > 1000000:
+                    logger.warning(f"⚠️ {symbol} has unrealistic price: {current_price}")
+                    return None
+                
+                # Cek pergerakan harga (tidak stuck)
+                if len(data) > 1:
+                    price_changes = data['close'].diff().abs().sum()
+                    if price_changes < (current_price * 0.0001 * len(data)):
+                        logger.warning(f"⚠️ {symbol} has flatline prices")
+                        return None
+        except Exception as e:
+            logger.error(f"Error in final validation for {symbol}: {e}")
+            return None
+        
+        return data
+        
     except Exception as e:
-        logger.error(f"Error in final validation for {symbol}: {e}")
+        logger.error(f"Error in get_trading_data for {symbol}: {e}")
         return None
-    
-    return data
 
 # =============================================
 # BASE STRATEGY CLASS DENGAN BIAS CORRECTION
@@ -1042,7 +1047,7 @@ class AdvancedPatternDetector:
         patterns = {}
         
         try:
-            if df is None or len(df) < 20:
+            if df is None or df.empty:
                 return patterns
             
             current_price = df['close'].iloc[-1] if 'close' in df.columns else 0
@@ -1178,7 +1183,7 @@ class AdvancedPatternDetector:
         patterns = {}
         
         try:
-            if df is None or len(df) < 20:
+            if df is None or df.empty:
                 return patterns
             
             current_price = df['close'].iloc[-1]
