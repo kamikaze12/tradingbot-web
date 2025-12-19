@@ -259,7 +259,8 @@ SCALPING_CONFIG_APP = {
 # ====================================
 def check_login(username, password):
     """Simple login system"""
-    users = {"muraga": "namikaze", "user2": "password2", "user3": "password3", "admin": "admin123"}
+    # Hanya tampilkan account yang benar-benar penting
+    users = {"muraga": "namikaze", "admin": "admin123"}
     return users.get(username) == password
 
 def format_symbol_for_mode(symbol, market_type, trading_mode):
@@ -327,21 +328,36 @@ def login_section():
                 st.rerun()
             else:
                 st.error("Invalid username or password")
-    
-    with st.expander("ℹ️ Test Accounts"):
-        st.write("""
-        **Available test accounts:**
-        - Username: `muraga` | Password: `namikaze`
-        - Username: `user2` | Password: `password2` 
-        - Username: `user3` | Password: `password3`
-        - Username: `admin` | Password: `admin123`
-        """)
 
 def safe_get(data, key, default=0):
     """Safe dictionary access dengan fallback"""
     if isinstance(data, dict):
         return data.get(key, default)
     return default
+
+def get_currency_symbol(market_type):
+    """Dapatkan simbol mata uang berdasarkan market type"""
+    if market_type == "Saham Indonesia":
+        return "IDR"
+    else:
+        return "$"
+
+def format_currency(amount, market_type, decimal_places=2):
+    """Format amount dengan simbol mata uang yang sesuai"""
+    currency_symbol = get_currency_symbol(market_type)
+    
+    if market_type == "Saham Indonesia":
+        # IDR biasanya tanpa desimal atau 2 desimal
+        if decimal_places > 0:
+            return f"{currency_symbol} {amount:,.{decimal_places}f}"
+        else:
+            return f"{currency_symbol} {amount:,.0f}"
+    else:
+        # USD dengan 5 desimal untuk crypto, 2 desimal untuk lainnya
+        if market_type == "Crypto":
+            return f"{currency_symbol}{amount:,.5f}"
+        else:
+            return f"{currency_symbol}{amount:,.2f}"
 
 def get_valid_price(data, symbol=None, bot=None):
     """Get valid price from analysis data - IMPROVED untuk real-time prices"""
@@ -369,7 +385,7 @@ def get_valid_price(data, symbol=None, bot=None):
                         if key in ticker and ticker[key] is not None:
                             price = float(ticker[key])
                             if price > 0:
-                                print(f"✅ Real-time price for {symbol}: ${price}")
+                                print(f"✅ Real-time price for {symbol}: {price}")
                                 # Update data dengan harga baru
                                 data['current_price'] = price
                                 data['last'] = price
@@ -415,14 +431,14 @@ def get_real_time_price(symbol, bot):
                     if key in ticker and ticker[key]:
                         price = float(ticker[key])
                         if price > 0:
-                            print(f"💰 Real-time price for {symbol}: ${price}")
+                            print(f"💰 Real-time price for {symbol}: {price}")
                             return price
         
         # Fallback: coba dari method lain
         if hasattr(bot, 'get_current_price'):
             price = bot.get_current_price(symbol)
             if price and price > 0:
-                print(f"✅ Got current price from bot method: ${price}")
+                print(f"✅ Got current price from bot method: {price}")
                 return price
         
         return None
@@ -442,19 +458,19 @@ def validate_price_reasonable(current_price, entry_price, symbol):
         # Batasi ratio antara 0.01x sampai 100x (lebih ketat)
         if ratio < 0.01 or ratio > 100:
             print(f"❌ Harga tidak wajar untuk {symbol}:")
-            print(f"   Entry: ${entry_price}, Current: ${current_price}, Ratio: {ratio:.2f}x")
+            print(f"   Entry: {entry_price}, Current: {current_price}, Ratio: {ratio:.2f}x")
             return False
         
         # Absolute price check untuk crypto
         # Kebanyakan crypto di bawah $1000, kecuali BTC, ETH
-        if current_price > 100000:  # > $100,000 tidak mungkin untuk kebanyakan crypto
-            print(f"❌ Harga terlalu tinggi untuk {symbol}: ${current_price}")
+        if 'crypto' in symbol.lower() and current_price > 100000:  # > $100,000 tidak mungkin untuk kebanyakan crypto
+            print(f"❌ Harga terlalu tinggi untuk {symbol}: {current_price}")
             return False
         
         # Check untuk FLOW khususnya (normal price $0.01 - $5)
         if 'FLOW' in symbol.upper():
             if current_price > 10:  # FLOW tidak mungkin > $10
-                print(f"❌ Harga FLOW tidak wajar: ${current_price}")
+                print(f"❌ Harga FLOW tidak wajar: {current_price}")
                 return False
         
         return True
@@ -505,7 +521,7 @@ def get_realtime_price_with_fallback(symbol, bot, entry_price=None):
                                 if price > 0:
                                     live_price = price
                                     source = "Live"
-                                    print(f"✅ Live price untuk {clean_symbol}: ${live_price} (key: {key})")
+                                    print(f"✅ Live price untuk {clean_symbol}: {price} (key: {key})")
                                     break
                             except:
                                 continue
@@ -523,13 +539,13 @@ def get_realtime_price_with_fallback(symbol, bot, entry_price=None):
             # Jika entry_price diberikan, validasi
             if entry_price and entry_price > 0:
                 if not validate_price_reasonable(live_price, entry_price, symbol):
-                    print(f"❌ Harga ${live_price} tidak wajar, menggunakan fallback")
+                    print(f"❌ Harga {live_price} tidak wajar, menggunakan fallback")
                     live_price = None
                     source = "Invalid Live"
             
             # Absolute price sanity check untuk crypto
-            if live_price and live_price > 100000:  # Harga > $100,000 tidak mungkin untuk kebanyakan crypto
-                print(f"❌ Harga terlalu tinggi: ${live_price}")
+            if live_price and 'crypto' in symbol.lower() and live_price > 100000:  # Harga > $100,000 tidak mungkin untuk kebanyakan crypto
+                print(f"❌ Harga terlalu tinggi: {live_price}")
                 live_price = None
                 source = "Invalid High Price"
         
@@ -552,14 +568,14 @@ def get_realtime_price_with_fallback(symbol, bot, entry_price=None):
                         if pos_clean == sym_clean or pos_symbol == symbol:
                             db_price = pos.get('current_price', 0)
                             if db_price and db_price > 0:
-                                print(f"✅ Database price untuk {symbol}: ${db_price}")
+                                print(f"✅ Database price untuk {symbol}: {db_price}")
                                 return db_price, "Database"
             except Exception as e:
                 print(f"⚠️ Error mendapatkan database price: {e}")
         
         # 5. FALLBACK KE ENTRY PRICE
         if (live_price is None or live_price <= 0) and entry_price and entry_price > 0:
-            print(f"⚠️ Menggunakan entry price sebagai fallback: ${entry_price}")
+            print(f"⚠️ Menggunakan entry price sebagai fallback: {entry_price}")
             return entry_price, "Entry Fallback"
         
         # 6. ULTIMATE FALLBACK
@@ -588,7 +604,7 @@ def get_realtime_price_with_fallback(symbol, bot, entry_price=None):
                                     if key in ticker and ticker[key]:
                                         price = float(ticker[key])
                                         if price > 0:
-                                            print(f"✅ Alternative price untuk {alt}: ${price}")
+                                            print(f"✅ Alternative price untuk {alt}: {price}")
                                             return price, f"Alt: {alt}"
                     except Exception as alt_e:
                         print(f"⚠️ Error dengan alternative symbol {alt}: {alt_e}")
@@ -605,7 +621,7 @@ def get_realtime_price_with_fallback(symbol, bot, entry_price=None):
             
             for key, known_price in known_prices.items():
                 if key in clean_symbol or key in symbol:
-                    print(f"⚠️ Menggunakan known price untuk {symbol}: ${known_price}")
+                    print(f"⚠️ Menggunakan known price untuk {symbol}: {known_price}")
                     return known_price, "Known Price"
             
             # Complete failure
@@ -948,14 +964,15 @@ def display_scalping_signal(signal, index):
     
     with col2:
         current_price = get_valid_price(signal, symbol, st.session_state.bot_instance)
-        st.write(f"💰 Price: `{current_price:.5f}`")
+        market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+        st.write(f"💰 Price: `{format_currency(current_price, market)}`")
         
         # Entry range untuk scalping
         entry_low = signal.get('entry_range_low', 0)
         entry_high = signal.get('entry_range_high', 0)
         if entry_low and entry_high:
             range_pct = ((entry_high - entry_low) / current_price) * 100
-            st.write(f"🎯 Range: `{entry_low:.5f}` - `{entry_high:.5f}`")
+            st.write(f"🎯 Range: `{format_currency(entry_low, market)}` - `{format_currency(entry_high, market)}`")
             st.write(f"📏 Range Size: `{range_pct:.2f}%`")
     
     with col3:
@@ -972,15 +989,16 @@ def display_scalping_signal(signal, index):
             tp_emoji = "📉"
             risk_reward = (current_price - tp1) / (sl - current_price) if (sl - current_price) > 0 else 0
         
-        st.write(f"{tp_emoji} TP1: `{tp1:.5f}`")
-        st.write(f"{tp_emoji} TP2: `{tp2:.5f}`")
+        st.write(f"{tp_emoji} TP1: `{format_currency(tp1, market)}`")
+        st.write(f"{tp_emoji} TP2: `{format_currency(tp2, market)}`")
+        st.write(f"{tp_emoji} TP3: `{format_currency(tp3, market)}`")
         st.write(f"📊 R/R: `{risk_reward:.2f}`")
     
     with col4:
         # Scalping specific info
         st.write(f"⚡ Scalping Score: `{scalping_score}/7`")
         st.write(f"🎯 Confidence: `{confidence:.1%}`")
-        st.write(f"🛡️ SL: `{sl:.5f}`")
+        st.write(f"🛑 SL: `{format_currency(sl, market)}`")
         
         if signal.get('scalping_suitable', False):
             st.success("✅ Good for Scalping")
@@ -999,7 +1017,7 @@ def display_scalping_signal(signal, index):
 # PERBAIKAN 2: Fungsi Open Position - ENHANCED
 # ====================================
 def open_position(symbol, action, entry_price=None, tp1=None, tp2=None, tp3=None, sl=None, 
-                  position_size=100, risk_percent=1):
+                  position_size=100, risk_percent=None):
     """Open a new position dengan real-time price jika tidak ada entry_price"""
     try:
         bot = st.session_state.bot_instance
@@ -1013,7 +1031,7 @@ def open_position(symbol, action, entry_price=None, tp1=None, tp2=None, tp3=None
             real_time_price = get_real_time_price(symbol, bot)
             if real_time_price and real_time_price > 0:
                 entry_price = real_time_price
-                print(f"✅ Using real-time price for {symbol}: ${entry_price}")
+                print(f"✅ Using real-time price for {symbol}: {entry_price}")
             else:
                 # Ambil dari analysis data jika ada
                 if symbol in st.session_state.selected_for_entry:
@@ -1023,7 +1041,7 @@ def open_position(symbol, action, entry_price=None, tp1=None, tp2=None, tp3=None
         # Jika masih tidak valid, gunakan harga default
         if entry_price is None or entry_price <= 0:
             entry_price = 1.0
-            print(f"⚠️ Using fallback price for {symbol}: ${entry_price}")
+            print(f"⚠️ Using fallback price for {symbol}: {entry_price}")
         
         # Hitung TP/SL jika tidak diberikan
         current_price = entry_price
@@ -1088,7 +1106,7 @@ def open_position(symbol, action, entry_price=None, tp1=None, tp2=None, tp3=None
             'tp3': tp3,
             'sl': sl,
             'position_size': position_size,
-            'position_value': position_size * entry_price,
+            'position_value': position_size,
             'risk_percent': risk_percent,
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'status': 'open',
@@ -1124,7 +1142,7 @@ def update_position_price_in_db(bot, position_id, current_price):
         try:
             success = bot.update_position_current_price(position_id, current_price)
             if success:
-                print(f"✅ Updated DB price for position {position_id}: ${current_price}")
+                print(f"✅ Updated DB price for position {position_id}: {current_price}")
                 return True
             else:
                 print(f"⚠️ DB update failed for {position_id}")
@@ -1163,7 +1181,7 @@ def update_all_positions_prices(bot):
                         
                         if success:
                             updated_count += 1
-                            print(f"✅ Updated {symbol} to ${current_price:.5f} ({source})")
+                            print(f"✅ Updated {symbol} to {format_currency(current_price, st.session_state.current_market)} ({source})")
                         else:
                             failed_count += 1
                             print(f"❌ Failed to update {symbol} in DB")
@@ -1253,6 +1271,7 @@ def main_app():
         st.session_state.last_scan_time = None
         st.session_state.scan_attempts = 0
         st.session_state.show_all_positions = False  # ✅ PERBAIKAN: Initialize here
+        st.session_state.use_risk_management = False  # 🔥 NEW: Flag untuk risk management
 
     # Sidebar
     with st.sidebar:
@@ -1311,7 +1330,8 @@ def main_app():
                 st.success(f"✅ {display_symbol}")
                 st.write(f"Action: {data.get('action', 'N/A')}")
                 st.write(f"Score: {data.get('score', 0)}")
-                st.write(f"Price: ${data.get('current_price', 0):.4f}")
+                market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                st.write(f"Price: {format_currency(data.get('current_price', 0), market)}")
             
             if st.button("🗑️ Clear Selection", key="clear_selection"):
                 clear_selection_callback()
@@ -1581,8 +1601,9 @@ def main_app():
                         bot.mode,
                         getattr(bot, 'trading_mode', 'spot')
                     )
+                    market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
                     st.success(f"✅ **{display_symbol}** - {data.get('action', 'N/A')} (Score: {data.get('score', 0)})")
-                    st.write(f"💰 Price: `{data.get('current_price', 0):.5f}` | Entry Range: `{data.get('entry_range_low', 0):.5f} - {data.get('entry_range_high', 0):.5f}`")
+                    st.write(f"💰 Price: `{format_currency(data.get('current_price', 0), market)}` | Entry Range: `{format_currency(data.get('entry_range_low', 0), market)} - {format_currency(data.get('entry_range_high', 0), market)}`")
                 with col_sel2:
                     if st.button(f"❌ Remove", key=f"remove_{symbol}"):
                         del st.session_state.selected_for_entry[symbol]
@@ -1713,11 +1734,12 @@ def main_app():
                         score = res.get('score', 0)
                         action = res.get('action', 'NEUTRAL')
                         price = get_valid_price(res, symbol, bot)
+                        market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
                         debug_data.append({
                             "Symbol": symbol,
                             "Score": f"{score:+.1f}",
                             "Action": action,
-                            "Price": f"${price:.4f}",
+                            "Price": format_currency(price, market),
                             "Scalping?": "✅" if res.get('scalping_suitable', False) else "❌"
                         })
                     
@@ -1757,11 +1779,12 @@ def main_app():
                         st.write(f"{i}. {action_color} **{display_symbol}** - {action} (Score: {safe_get(res, 'score', 0)})")
                         
                         current_price = get_valid_price(res, symbol, bot)
-                        st.write(f"💰 Current Price: `{current_price:.5f}`")
+                        market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                        st.write(f"💰 Current Price: `{format_currency(current_price, market)}`")
                         
                         # Tampilkan entry range
-                        st.write(f"📊 **Entry Range:** `{res.get('entry_range_low', 0):.5f} - {res.get('entry_range_high', 0):.5f}`")
-                        st.write(f"🎯 **Ideal Entry:** `{res.get('best_entry', 0):.5f}`")
+                        st.write(f"📊 **Entry Range:** `{format_currency(res.get('entry_range_low', 0), market)} - {format_currency(res.get('entry_range_high', 0), market)}`")
+                        st.write(f"🎯 **Ideal Entry:** `{format_currency(res.get('best_entry', 0), market)}`")
                         if 'range_size' in res:
                             st.write(f"📏 **Range Size:** `{res.get('range_size', 0):.1f}%`")
                         
@@ -1769,8 +1792,8 @@ def main_app():
                         tp1, tp2, tp3 = safe_get(res, 'tp1', 0), safe_get(res, 'tp2', 0), safe_get(res, 'tp3', 0)
                         sl = safe_get(res, 'sl', 0)
                         
-                        st.write(f"🎯 **TP Levels:** `{tp1:.5f}` | `{tp2:.5f}` | `{tp3:.5f}`")
-                        st.write(f"🛑 **Stop Loss:** `{sl:.5f}`")
+                        st.write(f"🎯 **TP Levels:** `{format_currency(tp1, market)}` | `{format_currency(tp2, market)}` | `{format_currency(tp3, market)}`")
+                        st.write(f"🛑 **Stop Loss:** `{format_currency(sl, market)}`")
                         
                         # Probabilitas TP
                         if 'tp_probabilities' not in res:
@@ -1814,7 +1837,8 @@ def main_app():
                     
                     with col_info2:
                         current_price = get_valid_price(data, symbol, bot)
-                        st.info(f"**Current Price:** ${current_price:,.5f}")
+                        market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                        st.info(f"**Current Price:** {format_currency(current_price, market)}")
                         
                         # Tombol untuk refresh harga real-time
                         if st.button(f"🔄 Refresh Price", key=f"refresh_price_{symbol}"):
@@ -1839,8 +1863,9 @@ def main_app():
                     with col_entry1:
                         # Entry price input
                         default_entry = st.session_state.get(f'manual_entry_{symbol}', current_price)
+                        currency_symbol = get_currency_symbol(st.session_state.current_market)
                         entry_price = st.number_input(
-                            "Entry Price ($):",
+                            f"Entry Price ({currency_symbol}):",
                             value=float(default_entry),
                             min_value=0.00001,
                             step=0.0001,
@@ -1848,24 +1873,32 @@ def main_app():
                             key=f"entry_price_{symbol}"
                         )
                         
-                        # Position size
+                        # Position size - tanpa batas minimal
                         position_size = st.number_input(
-                            "Position Size ($):",
+                            f"Position Size ({currency_symbol}):",
                             value=100.0,
-                            min_value=10.0,
+                            min_value=0.0,  # 🔥 PERBAIKAN: Bisa 0
                             step=10.0,
                             key=f"position_size_{symbol}"
                         )
                         
-                        # Risk percentage
-                        risk_percent = st.slider(
-                            "Risk %:",
-                            0.5, 5.0, 1.0, 0.5,
-                            key=f"risk_percent_{symbol}"
-                        )
+                        # 🔥 PERBAIKAN: Risk optional dengan checkbox
+                        use_risk = st.checkbox("Use Risk Management", 
+                                             value=st.session_state.get(f'use_risk_{symbol}', False),
+                                             key=f"use_risk_checkbox_{symbol}")
                         
-                        risk_amount = position_size * (risk_percent / 100)
-                        st.metric("Risk Amount", f"${risk_amount:,.2f}")
+                        if use_risk:
+                            risk_percent = st.slider(
+                                "Risk %:",
+                                0.5, 5.0, 1.0, 0.5,
+                                key=f"risk_percent_{symbol}"
+                            )
+                            
+                            risk_amount = position_size * (risk_percent / 100)
+                            st.metric("Risk Amount", f"{format_currency(risk_amount, st.session_state.current_market)}")
+                        else:
+                            risk_percent = None
+                            st.info("⚠️ Risk management disabled")
                     
                     with col_entry2:
                         # Action selection
@@ -1893,7 +1926,7 @@ def main_app():
                             sl_default = entry_price * 1.02
                         
                         tp1 = st.number_input(
-                            "TP1 ($):",
+                            f"TP1 ({currency_symbol}):",
                             value=tp1_default,
                             min_value=0.00001,
                             step=0.0001,
@@ -1902,7 +1935,7 @@ def main_app():
                         )
                         
                         tp2 = st.number_input(
-                            "TP2 ($):",
+                            f"TP2 ({currency_symbol}):",
                             value=tp2_default,
                             min_value=0.00001,
                             step=0.0001,
@@ -1911,7 +1944,7 @@ def main_app():
                         )
                         
                         tp3 = st.number_input(
-                            "TP3 ($):",
+                            f"TP3 ({currency_symbol}):",
                             value=tp3_default,
                             min_value=0.00001,
                             step=0.0001,
@@ -1920,7 +1953,7 @@ def main_app():
                         )
                         
                         sl = st.number_input(
-                            "Stop Loss ($):",
+                            f"Stop Loss ({currency_symbol}):",
                             value=sl_default,
                             min_value=0.00001,
                             step=0.0001,
@@ -1948,15 +1981,15 @@ def main_app():
                             col_rr1, col_rr2, col_rr3 = st.columns(3)
                             with col_rr1:
                                 st.metric("TP1 R/R", f"{reward_tp1/risk:.2f}:1")
-                                st.caption(f"Reward: ${reward_tp1:,.2f}")
+                                st.caption(f"Reward: {format_currency(reward_tp1, st.session_state.current_market)}")
                             with col_rr2:
                                 st.metric("TP2 R/R", f"{reward_tp2/risk:.2f}:1")
-                                st.caption(f"Reward: ${reward_tp2:,.2f}")
+                                st.caption(f"Reward: {format_currency(reward_tp2, st.session_state.current_market)}")
                             with col_rr3:
                                 st.metric("TP3 R/R", f"{reward_tp3/risk:.2f}:1")
-                                st.caption(f"Reward: ${reward_tp3:,.2f}")
+                                st.caption(f"Reward: {format_currency(reward_tp3, st.session_state.current_market)}")
                             
-                            st.metric("Risk Amount", f"${risk:,.2f}", f"{risk/entry_price*100:.1f}%")
+                            st.metric("Risk Amount", f"{format_currency(risk, st.session_state.current_market)}", f"{risk/entry_price*100:.1f}%")
                     
                     # Tombol Open Position
                     st.divider()
@@ -1966,6 +1999,7 @@ def main_app():
                         if st.button(f"📈 OPEN POSITION", key=f"open_position_tab1_{symbol}", type="primary"):
                             # Save parameters to session
                             st.session_state[f'manual_entry_{symbol}'] = entry_price
+                            st.session_state[f'use_risk_{symbol}'] = use_risk
                             
                             # Open position
                             success = open_position(
@@ -2143,14 +2177,17 @@ def main_app():
                         
                         with col_s2:
                             current_price = get_valid_price(signal, symbol, bot)
+                            market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
                             entry_range_low = signal.get('entry_range_low', 0)
                             entry_range_high = signal.get('entry_range_high', 0)
                             
-                            st.write(f"💰 Price: `{current_price:.5f}`")
-                            st.write(f"🎯 Entry: `{entry_range_low:.5f}` - `{entry_range_high:.5f}`")
+                            st.write(f"💰 Price: `{format_currency(current_price, market)}`")
+                            st.write(f"🎯 Entry: `{format_currency(entry_range_low, market)}` - `{format_currency(entry_range_high, market)}`")
                         
                         with col_s3:
                             tp1 = signal.get('tp1', 0)
+                            tp2 = signal.get('tp2', 0)
+                            tp3 = signal.get('tp3', 0)
                             sl = signal.get('sl', 0)
                             
                             if action == "LONG":
@@ -2159,7 +2196,7 @@ def main_app():
                                 rr_ratio = (current_price - tp1) / (sl - current_price) if (sl - current_price) > 0 else 0
                             
                             st.write(f"📊 R/R: `{rr_ratio:.2f}`")
-                            st.write(f"🎯 TP1: `{tp1:.5f}`")
+                            st.write(f"🎯 TP1: `{format_currency(tp1, market)}`")
                             
                             button_key = f"select_scalping_signal_{i}_{symbol}"
                             if st.button(f"📌 Select", key=button_key):
@@ -2256,7 +2293,8 @@ def main_app():
                                         for price_key in ['last', 'close', 'current']:
                                             if price_key in ticker and ticker[price_key]:
                                                 current_price = float(ticker[price_key])
-                                                st.success(f"💰 Current Price: ${current_price:,.2f}")
+                                                market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                                                st.success(f"💰 Current Price: {format_currency(current_price, market)}")
                                                 break
                                 except Exception as e:
                                     st.warning(f"⚠️ Cannot get real-time price: {e}")
@@ -2304,7 +2342,8 @@ def main_app():
                         test_symbol = "BTC/USDT" if bot.trading_mode == "spot" else "BTC/USDT:USDT"
                         ticker = bot.data_provider.get_ticker(test_symbol)
                         if ticker:
-                            st.success(f"✅ Provider active! BTC Price: ${ticker.get('last', 'N/A')}")
+                            market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                            st.success(f"✅ Provider active! BTC Price: {format_currency(ticker.get('last', 'N/A'), market)}")
                         else:
                             st.error("❌ Provider returned no data")
                     except Exception as e:
@@ -2356,7 +2395,8 @@ def main_app():
                                 analysis['current_price'] = new_price
                                 analysis['last'] = new_price
                                 st.session_state.selected_analysis = analysis
-                                st.success(f"✅ Price updated: ${new_price:,.2f}")
+                                market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                                st.success(f"✅ Price updated: {format_currency(new_price, market)}")
                                 st.rerun()
                         except Exception as e:
                             st.error(f"❌ Price update failed: {e}")
@@ -2369,7 +2409,8 @@ def main_app():
                 st.metric("Score", safe_get(analysis, 'score', 0))
                 
                 current_price = get_valid_price(analysis, analysis.get('symbol'), bot)
-                st.metric("Current Price", f"${current_price:,.5f}")
+                market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                st.metric("Current Price", format_currency(current_price, market))
                 
                 st.metric("Trend", safe_get(analysis, 'trend', 'NEUTRAL'))
                 
@@ -2387,13 +2428,13 @@ def main_app():
             col_range1, col_range2, col_range3, col_range4 = st.columns(4)
             with col_range1:
                 entry_low = analysis.get('entry_range_low', 0)
-                st.metric("Entry Range Low", f"${entry_low:,.5f}")
+                st.metric("Entry Range Low", format_currency(entry_low, st.session_state.current_market))
             with col_range2:
                 entry_high = analysis.get('entry_range_high', 0)
-                st.metric("Entry Range High", f"${entry_high:,.5f}")
+                st.metric("Entry Range High", format_currency(entry_high, st.session_state.current_market))
             with col_range3:
                 best_entry = analysis.get('best_entry', 0)
-                st.metric("Ideal Entry", f"${best_entry:,.5f}")
+                st.metric("Ideal Entry", format_currency(best_entry, st.session_state.current_market))
             with col_range4:
                 range_size = analysis.get('range_size', 0)
                 st.metric("Range Size", f"{range_size:.2f}%")
@@ -2403,16 +2444,16 @@ def main_app():
             tp_col1, tp_col2, tp_col3, sl_col = st.columns(4)
             with tp_col1:
                 tp1 = analysis.get('tp1', 0)
-                st.metric("TP1", f"${tp1:,.5f}")
+                st.metric("TP1", format_currency(tp1, st.session_state.current_market))
             with tp_col2:
                 tp2 = analysis.get('tp2', 0)
-                st.metric("TP2", f"${tp2:,.5f}")
+                st.metric("TP2", format_currency(tp2, st.session_state.current_market))
             with tp_col3:
                 tp3 = analysis.get('tp3', 0)
-                st.metric("TP3", f"${tp3:,.5f}")
+                st.metric("TP3", format_currency(tp3, st.session_state.current_market))
             with sl_col:
                 sl = analysis.get('sl', 0)
-                st.metric("Stop Loss", f"${sl:,.5f}")
+                st.metric("Stop Loss", format_currency(sl, st.session_state.current_market))
             
             # TP Probabilities
             if 'tp_probabilities' in analysis:
@@ -2460,8 +2501,9 @@ def main_app():
             with col_info1:
                 st.success(f"✅ Using: **{symbol_selected}**")
                 st.write(f"Action: `{action_selected}` | Score: `{analysis.get('score', 0):.1f}`")
-                st.write(f"Current Price: `${entry_price:,.5f}`")
-                st.write(f"Entry Range: `${analysis.get('entry_range_low', 0):,.5f}` - `${analysis.get('entry_range_high', 0):,.5f}`")
+                market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                st.write(f"Current Price: {format_currency(entry_price, market)}")
+                st.write(f"Entry Range: {format_currency(analysis.get('entry_range_low', 0), market)} - {format_currency(analysis.get('entry_range_high', 0), market)}")
             
             with col_info2:
                 if st.button("📌 Use This", key="use_analysis_btn"):
@@ -2504,11 +2546,12 @@ def main_app():
         col_price1, col_price2 = st.columns([3, 1])
         with col_price1:
             # Input entry price
+            currency_symbol = get_currency_symbol(st.session_state.current_market)
             default_price = st.session_state.get('custom_entry_price', 0.0)
             safe_default_price = max(float(default_price), 0.00001)
             
             entry_price_custom = st.number_input(
-                "Entry Price ($):", 
+                f"Entry Price ({currency_symbol}):", 
                 value=safe_default_price,
                 min_value=0.00001,
                 step=0.01, 
@@ -2527,7 +2570,8 @@ def main_app():
                             if ticker and 'last' in ticker:
                                 current_price = float(ticker['last'])
                                 st.session_state.custom_entry_price = current_price
-                                st.success(f"✅ Current price: ${current_price:,.5f}")
+                                market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                                st.success(f"✅ Current price: {format_currency(current_price, market)}")
                                 st.rerun()
                             else:
                                 st.error("❌ Cannot get current price")
@@ -2540,17 +2584,26 @@ def main_app():
         col_size, col_risk = st.columns(2)
         with col_size:
             position_size = st.number_input(
-                "Position Size ($):",
+                f"Position Size ({currency_symbol}):",
                 value=100.0,
-                min_value=10.0,
+                min_value=0.0,  # 🔥 PERBAIKAN: Bisa 0
                 step=10.0,
                 key="position_size_input_tab4"
             )
         
         with col_risk:
-            risk_percent = st.slider("Risk %:", 0.5, 5.0, 1.0, 0.5, key="risk_percent_tab4")
-            risk_amount = position_size * (risk_percent / 100)
-            st.metric("Risk Amount", f"${risk_amount:,.2f}")
+            # 🔥 PERBAIKAN: Risk optional dengan checkbox
+            use_risk = st.checkbox("Use Risk Management", 
+                                 value=st.session_state.get('use_risk_management', False),
+                                 key="use_risk_tab4")
+            
+            if use_risk:
+                risk_percent = st.slider("Risk %:", 0.5, 5.0, 1.0, 0.5, key="risk_percent_tab4")
+                risk_amount = position_size * (risk_percent / 100)
+                st.metric("Risk Amount", f"{format_currency(risk_amount, st.session_state.current_market)}")
+            else:
+                risk_percent = None
+                st.info("⚠️ Risk management disabled")
         
         st.divider()
         
@@ -2591,11 +2644,11 @@ def main_app():
             # Show auto values
             col_show1, col_show2 = st.columns(2)
             with col_show1:
-                st.info(f"**TP1:** `${tp1_auto:,.5f}`")
-                st.info(f"**TP2:** `${tp2_auto:,.5f}`")
-                st.info(f"**TP3:** `${tp3_auto:,.5f}`")
+                st.info(f"**TP1:** {format_currency(tp1_auto, st.session_state.current_market)}")
+                st.info(f"**TP2:** {format_currency(tp2_auto, st.session_state.current_market)}")
+                st.info(f"**TP3:** {format_currency(tp3_auto, st.session_state.current_market)}")
             with col_show2:
-                st.warning(f"**Stop Loss:** `${sl_auto:,.5f}`")
+                st.warning(f"**Stop Loss:** {format_currency(sl_auto, st.session_state.current_market)}")
                 
         else:  # Manual Input
             st.info("Enter TP/SL values manually:")
@@ -2608,7 +2661,7 @@ def main_app():
                 default_tp3 = st.session_state.get('custom_tp3', 0)
                 
                 tp1_custom = st.number_input(
-                    "TP1 ($):",
+                    f"TP1 ({currency_symbol}):",
                     value=max(default_tp1, entry_price_custom * 1.02),
                     min_value=0.00001,
                     step=0.01,
@@ -2617,7 +2670,7 @@ def main_app():
                 )
                 
                 tp2_custom = st.number_input(
-                    "TP2 ($):",
+                    f"TP2 ({currency_symbol}):",
                     value=max(default_tp2, entry_price_custom * 1.04),
                     min_value=0.00001,
                     step=0.01,
@@ -2626,7 +2679,7 @@ def main_app():
                 )
                 
                 tp3_custom = st.number_input(
-                    "TP3 ($):",
+                    f"TP3 ({currency_symbol}):",
                     value=max(default_tp3, entry_price_custom * 1.06),
                     min_value=0.00001,
                     step=0.01,
@@ -2639,7 +2692,7 @@ def main_app():
                 default_sl = st.session_state.get('custom_sl', 0)
                 
                 sl_custom = st.number_input(
-                    "Stop Loss ($):",
+                    f"Stop Loss ({currency_symbol}):",
                     value=max(default_sl, entry_price_custom * 0.98),
                     min_value=0.00001,
                     step=0.01,
@@ -2687,15 +2740,15 @@ def main_app():
                 col_rr1, col_rr2, col_rr3 = st.columns(3)
                 with col_rr1:
                     st.metric("TP1 R/R", f"{rr1:.2f}:1")
-                    st.caption(f"Reward: ${reward_tp1:,.2f}")
+                    st.caption(f"Reward: {format_currency(reward_tp1, st.session_state.current_market)}")
                 with col_rr2:
                     st.metric("TP2 R/R", f"{rr2:.2f}:1")
-                    st.caption(f"Reward: ${reward_tp2:,.2f}")
+                    st.caption(f"Reward: {format_currency(reward_tp2, st.session_state.current_market)}")
                 with col_rr3:
                     st.metric("TP3 R/R", f"{rr3:.2f}:1")
-                    st.caption(f"Reward: ${reward_tp3:,.2f}")
+                    st.caption(f"Reward: {format_currency(reward_tp3, st.session_state.current_market)}")
                 
-                st.metric("Risk Amount", f"${risk:,.2f}", f"{risk/entry_price_custom*100:.1f}%")
+                st.metric("Risk Amount", f"{format_currency(risk, st.session_state.current_market)}", f"{risk/entry_price_custom*100:.1f}%")
         
         st.divider()
         
@@ -2760,9 +2813,14 @@ def main_app():
                         getattr(bot, 'trading_mode', 'spot')
                     )
                     st.write(f"**{display_symbol}** - {pos['action']}")
-                    st.write(f"Entry: `${pos['entry_price']:,.5f}` | Size: `${pos['position_size']:,.2f}`")
-                    st.write(f"TP1: `${pos['tp1']:,.5f}` | SL: `${pos['sl']:,.5f}`")
-                    st.write(f"Risk: {pos['risk_percent']}% (${pos['position_size'] * pos['risk_percent']/100:,.2f})")
+                    market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                    st.write(f"Entry: {format_currency(pos['entry_price'], market)} | Size: {format_currency(pos['position_size'], market)}")
+                    st.write(f"TP1: {format_currency(pos['tp1'], market)} | TP2: {format_currency(pos['tp2'], market)} | TP3: {format_currency(pos['tp3'], market)}")
+                    st.write(f"SL: {format_currency(pos['sl'], market)}")
+                    if pos['risk_percent']:
+                        st.write(f"Risk: {pos['risk_percent']}% ({format_currency(pos['position_size'] * pos['risk_percent']/100, market)})")
+                    else:
+                        st.write("Risk: Disabled")
                 with col_pos2:
                     st.write(f"⏰ {pos['timestamp']}")
                     if pos.get('saved_to_db'):
@@ -2792,9 +2850,10 @@ def main_app():
             if st.button("Test Price Lookup", key="debug_price"):
                 with st.spinner("Testing..."):
                     price, source = get_realtime_price_with_fallback(test_symbol, bot, 0.18660)
-                    st.write(f"**Result:** Price: {price}, Source: {source}")
+                    market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                    st.write(f"**Result:** Price: {format_currency(price, market) if price else price}, Source: {source}")
                     if price:
-                        st.write(f"**Validasi:** Entry: $0.18660, Current: ${price}, Ratio: {price/0.18660:.2f}x")
+                        st.write(f"**Validasi:** Entry: {format_currency(0.18660, market)}, Current: {format_currency(price, market)}, Ratio: {price/0.18660:.2f}x")
         
         # Tambahkan tombol refresh real-time dengan update database
         col_rt1, col_rt2, col_rt3 = st.columns([1, 1, 2])
@@ -2901,7 +2960,7 @@ def main_app():
                     entry_price = float(pos.get('entry_price', 0))
                     
                     print(f"\n🔍 Processing position {idx+1}: {symbol}")
-                    print(f"   Entry price: ${entry_price}")
+                    print(f"   Entry price: {format_currency(entry_price, st.session_state.current_market)}")
                     
                     # 🔥 Dapatkan harga real-time dengan VALIDASI
                     realtime_price, source = get_realtime_price_with_fallback(symbol, bot, entry_price)
@@ -2909,7 +2968,8 @@ def main_app():
                     if realtime_price and realtime_price > 0:
                         # 🔥 VALIDASI HARGA: Cek apakah harga wajar
                         if not validate_price_reasonable(realtime_price, entry_price, symbol):
-                            st.warning(f"⚠️ Harga tidak wajar untuk {symbol}: ${realtime_price}")
+                            market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                            st.warning(f"⚠️ Harga tidak wajar untuk {symbol}: {format_currency(realtime_price, market)}")
                             # Gunakan harga entry sebagai fallback
                             current_price = entry_price
                             price_source = "Entry (Invalid Live)"
@@ -2918,8 +2978,8 @@ def main_app():
                             st.error(f"""
                             ❌ **HARGA TIDAK WAJAR DETECTED**
                             - Simbol: {symbol}
-                            - Entry: ${entry_price:.5f}
-                            - Live Price: ${realtime_price:.5f}
+                            - Entry: {format_currency(entry_price, market)}
+                            - Live Price: {format_currency(realtime_price, market)}
                             - Rasio: {realtime_price/entry_price:.2f}x
                             
                             **Kemungkinan penyebab:**
@@ -2977,9 +3037,10 @@ def main_app():
                     # 🔥 Tampilkan warning jika P/L ekstrem
                     if abs(pl_pct) > 1000:  # > 1000% gain/loss
                         st.error(f"🚨 **P/L EKSTREM DETECTED**: {pl_pct:.1f}%")
+                        market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
                         st.info(f"""
                         **Kemungkinan masalah:**
-                        1. Harga salah: Entry=${entry_price:.5f}, Current=${current_price:.5f}
+                        1. Harga salah: Entry={format_currency(entry_price, market)}, Current={format_currency(current_price, market)}
                         2. Format simbol: {symbol}
                         3. Data provider error
                         
@@ -3010,13 +3071,14 @@ def main_app():
                         with col_pos1:
                             st.write(f"{emoji} **{display_symbol}**")
                             st.write(f"Action: `{action}`")
-                            st.write(f"🏁 Entry: `${entry_price:.5f}`")
-                            st.write(f"📏 Size: `${position_size:.2f}`")
+                            market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                            st.write(f"🏁 Entry: {format_currency(entry_price, market)}")
+                            st.write(f"📏 Size: {format_currency(position_size, market)}")
                         
                         with col_pos2:
                             # Tampilkan harga dengan indikator source
                             price_emoji = "🟢" if "Live" in price_source else "🟡" if "Database" in price_source else "⚪"
-                            st.write(f"{price_emoji} {price_source}: `${current_price:.5f}`")
+                            st.write(f"{price_emoji} {price_source}: {format_currency(current_price, market)}")
                             
                             # Calculate change from entry
                             if entry_price > 0:
@@ -3033,9 +3095,11 @@ def main_app():
                         with col_pos3:
                             if entry_price > 0:
                                 st.write(f"📊 P/L: <span style='color:{color}; font-weight:bold'>{pl_pct:+.2f}%</span>", unsafe_allow_html=True)
-                                st.write(f"💰 Value: <span style='color:{color}'>${pl_value:+.2f}</span>", unsafe_allow_html=True)
-                                st.write(f"🎯 TP1: `${tp1:.5f}`")
-                                st.write(f"🛑 SL: `${sl:.5f}`")
+                                st.write(f"💰 Value: <span style='color:{color}'>{format_currency(pl_value, market)}</span>", unsafe_allow_html=True)
+                                st.write(f"🎯 TP1: {format_currency(tp1, market)}")
+                                st.write(f"🎯 TP2: {format_currency(tp2, market)}")
+                                st.write(f"🎯 TP3: {format_currency(tp3, market)}")
+                                st.write(f"🛑 SL: {format_currency(sl, market)}")
                             else:
                                 st.write("⚠️ Invalid entry price")
                         
@@ -3048,7 +3112,7 @@ def main_app():
                                     # Update in database
                                     success = update_position_price_in_db(bot, position_id, current_price)
                                     if success:
-                                        st.success(f"✅ {display_symbol} updated to ${current_price:,.5f} in DB!")
+                                        st.success(f"✅ {display_symbol} updated to {format_currency(current_price, market)} in DB!")
                                     else:
                                         st.warning(f"⚠️ {display_symbol} price update failed")
                                     st.rerun()
@@ -3075,7 +3139,7 @@ def main_app():
                                             ]
                                         
                                         if success:
-                                            st.success(f"✅ {display_symbol} closed at ${close_price:,.5f}!")
+                                            st.success(f"✅ {display_symbol} closed at {format_currency(close_price, market)}!")
                                             time.sleep(1)
                                             # Refresh positions
                                             if hasattr(bot, 'get_active_positions'):
@@ -3147,8 +3211,9 @@ def main_app():
                     emoji = "✅" if profit_loss > 0 else "❌"
                     
                     st.write(f"{emoji} **{display_symbol}** - {action}")
-                    st.write(f"Entry: `{entry_price:.5f}` | Exit: `{exit_price:.5f}`")
-                    st.write(f"P/L: <span style='color:{color}'>{profit_loss:.5f}</span>", unsafe_allow_html=True)
+                    market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
+                    st.write(f"Entry: `{format_currency(entry_price, market)}` | Exit: `{format_currency(exit_price, market)}`")
+                    st.write(f"P/L: <span style='color:{color}'>{format_currency(profit_loss, market)}</span>", unsafe_allow_html=True)
                     st.markdown("---")
                 except Exception as e:
                     st.error(f"History error: {e}")
@@ -3258,6 +3323,7 @@ def main_app():
                                 pl_value = (entry_price - current_price) * (position_size / entry_price) if entry_price > 0 else 0
                         
                         display_symbol = convert_symbol_for_display(symbol, bot.mode, bot.trading_mode)
+                        market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
                         
                         # Display
                         col_l1, col_l2, col_l3, col_l4 = st.columns([2, 2, 2, 1])
@@ -3267,12 +3333,12 @@ def main_app():
                             st.write(f"{status_emoji} **{display_symbol}**")
                             st.write(f"Action: `{action}` | Status: `{status}`")
                             if entry_price > 0:
-                                st.write(f"🏁 Entry: `${entry_price:,.5f}`")
-                            st.write(f"Size: `${position_size:,.2f}`")
+                                st.write(f"🏁 Entry: {format_currency(entry_price, market)}")
+                            st.write(f"Size: {format_currency(position_size, market)}")
                         
                         with col_l2:
                             price_color = "🟢" if "Live" in price_source else "🟡" if "Database" in price_source else "⚪"
-                            st.write(f"{price_color} {price_source}: `${current_price:,.5f}`")
+                            st.write(f"{price_color} {price_source}: {format_currency(current_price, market)}")
                             
                             if entry_price > 0:
                                 if action == "LONG":
@@ -3286,7 +3352,11 @@ def main_app():
                             color = "green" if pl_pct >= 0 else "red"
                             emoji = "📈" if pl_pct >= 0 else "📉"
                             st.write(f"{emoji} P/L: <span style='color:{color}; font-weight:bold'>{pl_pct:+.2f}%</span>", unsafe_allow_html=True)
-                            st.write(f"💰 Value: <span style='color:{color}'>${pl_value:+,.2f}</span>", unsafe_allow_html=True)
+                            st.write(f"💰 Value: <span style='color:{color}'>{format_currency(pl_value, market)}</span>", unsafe_allow_html=True)
+                            st.write(f"🎯 TP1: {format_currency(pos.get('tp1', 0), market)}")
+                            st.write(f"🎯 TP2: {format_currency(pos.get('tp2', 0), market)}")
+                            st.write(f"🎯 TP3: {format_currency(pos.get('tp3', 0), market)}")
+                            st.write(f"🛑 SL: {format_currency(pos.get('sl', 0), market)}")
                         
                         with col_l4:
                             # Simple update button
@@ -3574,6 +3644,7 @@ def main():
         'last_scan_time': None,
         'scan_attempts': 0,
         'show_all_positions': False,
+        'use_risk_management': False,
         # JANGAN inisialisasi bot_instance di sini - biarkan di main_app()
         'positions_initialized': False,
         'refresh_counter': 0
