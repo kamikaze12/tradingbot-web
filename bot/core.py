@@ -2297,6 +2297,54 @@ class EnhancedTradingBot:
             return 20  # Crypto default 20 bar
 
     # =============================================
+    # HELPER METHODS FOR MARKET CONSTRAINTS (SHORT FILTER)
+    # =============================================
+    
+    def _is_short_allowed(self, market_type: str, symbol: str = None) -> bool:
+        """
+        Check apakah short selling diizinkan untuk market type tertentu.
+        Rules:
+        - Crypto: SHORT diizinkan untuk spot & futures (semua pair)
+        - Saham Indonesia (IDX): SHORT TIDAK diizinkan (hanya long)
+        - Forex: SHORT diizinkan untuk semua pair
+        - US Stocks: SHORT diizinkan (tapi dengan regulasi tertentu)
+        - Futures: SHORT diizinkan
+        """
+        if market_type == 'crypto':
+            # Crypto: semua SHORT diizinkan
+            return True
+        elif market_type == 'saham_id':
+            # Saham Indonesia: TIDAK boleh short (IDX tidak mengizinkan short selling reguler)
+            return False
+        elif market_type == 'forex':
+            # Forex: SHORT diizinkan (trading pasangan mata uang)
+            return True
+        elif market_type == 'us_stocks':
+            # US Stocks: SHORT diizinkan dengan regulasi tertentu
+            return True
+        else:
+            # Default: tidak diizinkan
+            return False
+    
+    def _get_market_min_score(self, market_type: str, action: str = "LONG") -> float:
+        """
+        Get minimum score yang berbeda berdasarkan market type dan action.
+        Untuk non-crypto yang tidak mengizinkan SHORT, gunakan threshold yang lebih tinggi.
+        """
+        base_min_score = self.config.get("min_score", 2.0)
+        
+        if market_type == 'saham_id' and action == "SHORT":
+            # Saham Indonesia: sangat tinggi untuk SHORT karena tidak diizinkan
+            return 999.0  # Effectifely mencegah SHORT
+        elif market_type == 'saham_id' and action == "LONG":
+            # Saham Indonesia: sedikit lebih tinggi untuk LONG
+            return max(base_min_score, 3.0)
+        elif self.scalping_mode:
+            return self.scalping_config.get("min_score", 4.0)
+        else:
+            return base_min_score
+
+    # =============================================
     # PERBAIKAN UTAMA: POSITION MANAGEMENT METHODS
     # =============================================
 
@@ -2748,6 +2796,7 @@ class EnhancedTradingBot:
             logger.info(f"🔍 Scanning for {limit} signals...")
             logger.info(f"📊 Will analyze up to {assets_limit} assets")
             logger.info(f"🏢 Using provider: {self.data_provider.__class__.__name__}")
+            logger.info(f"📈 Market Mode: {self.mode} | Short Allowed: {self._is_short_allowed(self.mode)}")
             
             # Get assets menggunakan metode yang sudah diperbaiki
             assets = self.get_popular_assets(assets_limit)
@@ -2852,17 +2901,17 @@ class EnhancedTradingBot:
                         logger.info(f"    ⚠️ No analysis for {symbol}")
                         continue
                     
-                    # **PERUBAHAN PENTING: TANPA BIAS - Terima sinyal SHORT untuk crypto**
-                    # Tidak ada bias yang diterapkan
+                    # **PERBAIKAN PENTING: Filter SHORT untuk market yang tidak mengizinkan**
+                    if analysis['action'] == "SHORT" and not self._is_short_allowed(self.mode, symbol):
+                        logger.info(f"    ⛔ SHORT tidak diizinkan untuk {self.mode}, mengubah menjadi NEUTRAL")
+                        analysis['action'] = 'NEUTRAL'
+                        analysis['score'] = 0
                     
                     score = analysis.get('score', 0)
                     action = analysis.get('action', 'NEUTRAL')
                     
-                    # Gunakan min_score yang berbeda untuk scalping
-                    if self.scalping_mode:
-                        min_score = self.scalping_config.get("min_score", 4.0)
-                    else:
-                        min_score = self.config.get("min_score", 2.0)
+                    # Gunakan min_score yang berbeda berdasarkan market type dan action
+                    min_score = self._get_market_min_score(self.mode, action)
                     
                     # Check jika signal valid
                     if abs(score) >= min_score and action != 'NEUTRAL':
@@ -2885,11 +2934,12 @@ class EnhancedTradingBot:
                             'provider': 'universal',
                             'asset_type': detected_type,
                             'leverage': leverage,
-                            'strategy': 'scalping' if self.scalping_mode else 'standard'
+                            'strategy': 'scalping' if self.scalping_mode else 'standard',
+                            'short_allowed': self._is_short_allowed(self.mode, symbol)
                         }
                         
                         signals.append(signal_data)
-                        logger.info(f"✅ Signal: {formatted_symbol} | {action} | Score: {score:.2f} | Type: {detected_type} | Strategy: {'SCALPING' if self.scalping_mode else 'STANDARD'}")
+                        logger.info(f"✅ Signal: {formatted_symbol} | {action} | Score: {score:.2f} | Type: {detected_type} | Strategy: {'SCALPING' if self.scalping_mode else 'STANDARD'} | Short Allowed: {self._is_short_allowed(self.mode, symbol)}")
                         
                         # Stop jika sudah cukup sinyal
                         max_signals = self.scalping_config.get("max_signals", 10) if self.scalping_mode else limit
@@ -2927,15 +2977,17 @@ class EnhancedTradingBot:
             self.current_scan_task = None
 
     def _apply_market_constraints(self, analysis: dict, detected_type: str = "spot") -> dict:
-        """Apply market constraints berdasarkan detected type"""
+        """Apply market constraints berdasarkan detected type - DIPERBAIKI UNTUK NON-CRYPTO"""
         if not isinstance(analysis, dict):
             return analysis
             
         action = analysis.get('action', 'NEUTRAL')
         
-        # **PERUBAHAN: Tidak ada bias untuk crypto, semua sinyal diterima**
-        # SHORT diizinkan untuk semua crypto (spot & futures)
-        # Tidak ada bias yang diterapkan
+        # **PERUBAHAN: Filter SHORT untuk market yang tidak mengizinkan**
+        if action == "SHORT" and not self._is_short_allowed(self.mode):
+            logger.info(f"🔒 Market constraint: SHORT tidak diizinkan untuk {self.mode}")
+            analysis['action'] = 'NEUTRAL'
+            analysis['score'] = 0
         
         return analysis
 
@@ -2978,7 +3030,7 @@ class EnhancedTradingBot:
             if not analysis:
                 return {'error': 'Analysis failed'}
             
-            # Apply market constraints (tanpa bias)
+            # Apply market constraints (dengan filter SHORT untuk non-crypto)
             analysis = self._apply_market_constraints(analysis, detected_type)
             
             return analysis
@@ -3737,6 +3789,9 @@ def test_universal_provider():
         if signals:
             for i, signal in enumerate(signals[:10]):
                 print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']})")
+                # Pastikan tidak ada sinyal SHORT untuk saham Indonesia
+                if signal['action'] == 'SHORT':
+                    print(f"     ⚠️ ERROR: SHORT signal found for Indonesian stock!")
         else:
             print("   ℹ️ No Indonesian stock signals found - this is normal with real data")
     
@@ -3765,6 +3820,7 @@ def test_universal_provider():
     print("   Menggunakan get_trading_data untuk membersihkan data")
     print("   TANPA BIAS untuk semua sinyal")
     print("   SHORT diizinkan untuk crypto (spot & futures)")
+    print("   SHORT TIDAK diizinkan untuk Saham Indonesia (sesuai regulasi IDX)")
     print("   SCALPING mode dengan filter ketat dan timeframe 5m")
 
 def test_data_cleaner_integration():
@@ -3883,10 +3939,73 @@ def test_scalping_filters():
         print(f"   Volume filter: {'✅' if volume_ok else '❌'} (min ${min_volume:,})")
         print(f"   Overall: {'✅ ACCEPTED' if price_ok and volume_ok else '❌ REJECTED'}")
 
+def test_short_filter_for_saham_id():
+    """Test filter SHORT untuk saham Indonesia"""
+    print("\n" + "="*60)
+    print("TESTING SHORT FILTER FOR SAHAM INDONESIA")
+    print("="*60)
+    
+    bot = EnhancedTradingBot()
+    
+    # Test saham Indonesia
+    print("\n🔍 Testing SHORT filter for Saham Indonesia...")
+    success = bot.set_mode("saham_id")
+    
+    if success:
+        print("✅ Saham ID mode set successfully")
+        
+        # Test beberapa saham Indonesia
+        test_symbols = ["BBCA.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK"]
+        
+        for symbol in test_symbols:
+            print(f"\n🔍 Testing {symbol}:")
+            print(f"   Short allowed: {bot._is_short_allowed('saham_id', symbol)}")
+            
+            # Simulasi analisis dengan sinyal SHORT
+            dummy_analysis = {
+                'action': 'SHORT',
+                'score': -3.5,
+                'entry_price': 1000,
+                'sl': 1050,
+                'tp1': 950,
+                'tp2': 900,
+                'tp3': 850
+            }
+            
+            # Apply market constraints
+            constrained_analysis = bot._apply_market_constraints(dummy_analysis, "spot")
+            print(f"   Original action: {dummy_analysis['action']}")
+            print(f"   Constrained action: {constrained_analysis['action']}")
+            print(f"   Result: {'✅ SHORT di-blokir' if constrained_analysis['action'] == 'NEUTRAL' else '❌ ERROR: SHORT tidak di-blokir'}")
+    
+    # Test crypto (harusnya SHORT diizinkan)
+    print("\n🔍 Testing SHORT filter for Crypto...")
+    bot.set_mode("crypto")
+    
+    crypto_symbol = "BTC/USDT"
+    print(f"\n🔍 Testing {crypto_symbol}:")
+    print(f"   Short allowed: {bot._is_short_allowed('crypto', crypto_symbol)}")
+    
+    dummy_analysis = {
+        'action': 'SHORT',
+        'score': -3.5,
+        'entry_price': 50000,
+        'sl': 51500,
+        'tp1': 48500,
+        'tp2': 47000,
+        'tp3': 45500
+    }
+    
+    constrained_analysis = bot._apply_market_constraints(dummy_analysis, "spot")
+    print(f"   Original action: {dummy_analysis['action']}")
+    print(f"   Constrained action: {constrained_analysis['action']}")
+    print(f"   Result: {'✅ SHORT diizinkan' if constrained_analysis['action'] == 'SHORT' else '❌ ERROR: SHORT tidak diizinkan'}")
+
 if __name__ == "__main__":
     test_universal_provider()
     test_data_cleaner_integration()
     test_scalping_filters()
+    test_short_filter_for_saham_id()
     
     print("\n" + "="*60)
     print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER")
@@ -3898,6 +4017,7 @@ if __name__ == "__main__":
     print("🎯 Filter aset berdasarkan market mode (crypto, saham_id, forex, us_stocks)")
     print("🎯 TANPA BIAS - Semua sinyal (LONG/SHORT) diterima berdasarkan analisis murni")
     print("🎯 SHORT DIIZINKAN untuk crypto (spot & futures) - TANPA DIBLOKIR")
+    print("🎯 SHORT TIDAK DIIZINKAN untuk Saham Indonesia (sesuai regulasi IDX)")
     print("🎯 SCALPING MODE dengan konfigurasi khusus:")
     print("   - Timeframe 5m untuk trading cepat")
     print("   - Filter harga ($0.01 - $1000)")
