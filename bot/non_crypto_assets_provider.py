@@ -6,6 +6,8 @@ import yfinance as yf
 import ccxt
 import pandas as pd
 from typing import List, Dict, Optional
+import requests
+from bs4 import BeautifulSoup
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -55,7 +57,7 @@ class NonCryptoAssetsProvider:
         logger.info(f"🔄 Fetching fresh assets for {category} (limit: {limit})")
         try:
             assets = self._fetch_dynamic_assets(category, limit)
-            if assets and len(assets) >= 10:  # Minimal validasi
+            if assets and len(assets) >= 20:  # Minimal validasi
                 # Simpan ke cache
                 self.cache[cache_key] = {
                     'timestamp': datetime.now().isoformat(),
@@ -65,7 +67,7 @@ class NonCryptoAssetsProvider:
                 logger.info(f"✅ Fetched {len(assets)} fresh assets for {category}")
                 return assets[:limit]
             else:
-                raise ValueError("Fetch returned insufficient assets")
+                raise ValueError(f"Fetch returned insufficient assets: {len(assets) if assets else 0}")
         
         except Exception as e:
             logger.warning(f"⚠️ Dynamic fetch failed for {category}: {e}. Falling back to static list.")
@@ -84,124 +86,296 @@ class NonCryptoAssetsProvider:
         return []
     
     def _fetch_us_stocks(self, limit: int) -> List[str]:
-        """Fetch saham US populer (S&P 500 via yfinance)."""
+        """Fetch saham US populer (S&P 500 dan NASDAQ 100)."""
         try:
-            # Download list S&P 500 dari Wikipedia (sumber terbuka)
-            url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-            df = pd.read_html(url)[0]
-            symbols = df['Symbol'].tolist()
-            logger.info(f"Fetched {len(symbols)} US stocks from S&P 500")
-            return symbols[:limit]
+            # Method 1: Download S&P 500 dari Wikipedia
+            symbols = []
+            try:
+                url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+                df = pd.read_html(url)[0]
+                sp500_symbols = df['Symbol'].tolist()
+                symbols.extend(sp500_symbols)
+                logger.info(f"Fetched {len(sp500_symbols)} symbols from S&P 500")
+            except Exception as e:
+                logger.warning(f"Wikipedia S&P 500 failed: {e}")
+            
+            # Method 2: Download NASDAQ 100
+            try:
+                url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
+                df = pd.read_html(url)[4]  # Table ke-4 biasanya berisi komponen
+                nasdaq_symbols = df['Ticker'].tolist()
+                symbols.extend(nasdaq_symbols)
+                logger.info(f"Fetched {len(nasdaq_symbols)} symbols from NASDAQ 100")
+            except Exception as e:
+                logger.warning(f"Wikipedia NASDAQ 100 failed: {e}")
+            
+            # Method 3: Dow Jones 30
+            try:
+                dow_symbols = ['MMM', 'AXP', 'AMGN', 'AAPL', 'BA', 'CAT', 'CVX', 'CSCO', 'KO', 
+                              'DOW', 'GS', 'HD', 'HON', 'IBM', 'INTC', 'JNJ', 'JPM', 'MCD', 
+                              'MRK', 'MSFT', 'NKE', 'PG', 'CRM', 'TRV', 'UNH', 'VZ', 'V', 'WMT', 'DIS']
+                symbols.extend(dow_symbols)
+                logger.info(f"Added {len(dow_symbols)} Dow Jones symbols")
+            except Exception as e:
+                logger.warning(f"Dow Jones fetch failed: {e}")
+            
+            # Remove duplicates and validate
+            unique_symbols = list(set(symbols))
+            logger.info(f"Total unique US stocks before validation: {len(unique_symbols)}")
+            
+            # Validasi dengan yfinance (batch processing)
+            valid_symbols = []
+            batch_size = 50
+            
+            for i in range(0, min(len(unique_symbols), limit*2), batch_size):
+                batch = unique_symbols[i:i+batch_size]
+                for symbol in batch:
+                    try:
+                        # Quick validation
+                        ticker = yf.Ticker(symbol)
+                        # Coba ambil info dasar
+                        info = ticker.info
+                        if 'regularMarketPrice' in info or 'currentPrice' in info:
+                            valid_symbols.append(symbol)
+                            if len(valid_symbols) >= limit:
+                                logger.info(f"Validated {len(valid_symbols)} US stocks")
+                                return valid_symbols[:limit]
+                    except Exception as e:
+                        continue
+            
+            logger.info(f"Validated {len(valid_symbols)} US stocks")
+            return valid_symbols[:limit]
+            
         except Exception as e:
-            logger.warning(f"yfinance US stocks failed: {e}. Trying ccxt fallback.")
-            return self._ccxt_fallback(category='us_stocks', limit=limit)
+            logger.error(f"All US stock fetch methods failed: {e}")
+            return self._get_static_assets('us_stocks')[:limit]
     
     def _fetch_indonesia_stocks(self, limit: int) -> List[str]:
-        """Fetch saham Indonesia populer (IDX via yfinance atau screener)."""
+        """Fetch saham Indonesia populer dari berbagai sumber."""
         try:
-            # Contoh: Fetch list dari yfinance (gunakan ticker populer dan extend)
-            # Untuk IDX, yfinance bisa fetch tapi tidak ada API list langsung, jadi gunakan ccxt atau hardcoded extend
-            exchange = ccxt.idx()  # CCXT punya exchange IDX jika available
-            markets = exchange.load_markets()
-            symbols = [symbol for symbol in markets if symbol.endswith('.JK')]
-            logger.info(f"Fetched {len(symbols)} Indonesia stocks from CCXT IDX")
-            return symbols[:limit]
-        except Exception as e:
-            logger.warning(f"CCXT IDX failed: {e}. Using yfinance screener fallback.")
-            # Fallback: List populer dan fetch info untuk validasi
-            populer_indo = self._get_static_assets('indonesia_stocks')  # Reuse static for extension
-            valid_symbols = []
-            for sym in populer_indo:
+            symbols = []
+            
+            # Method 1: Dari IDX website atau data publik
+            try:
+                # Coba ambil dari IDX data publik
+                idx_url = "https://www.idx.co.id/umbraco/Surface/ListedCompany/GetCompanyProfiles?length=1000&start=0"
+                response = requests.get(idx_url, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'data' in data:
+                        for company in data['data']:
+                            symbol = company.get('KodeEmiten', '') + '.JK'
+                            if symbol and symbol != '.JK':
+                                symbols.append(symbol)
+                        logger.info(f"Fetched {len(symbols)} symbols from IDX API")
+            except Exception as e:
+                logger.warning(f"IDX API failed: {e}")
+            
+            # Method 2: Wikipedia IDX
+            if len(symbols) < 100:
                 try:
-                    yf.Ticker(sym).history(period='1d')  # Validasi
-                    valid_symbols.append(sym)
-                except:
-                    pass
+                    url = 'https://en.wikipedia.org/wiki/List_of_companies_listed_on_the_Indonesia_Stock_Exchange'
+                    tables = pd.read_html(url)
+                    for table in tables:
+                        if 'Code' in table.columns:
+                            idx_symbols = table['Code'].dropna().tolist()
+                            idx_symbols = [s + '.JK' for s in idx_symbols if isinstance(s, str) and s]
+                            symbols.extend(idx_symbols)
+                            break
+                    logger.info(f"Fetched additional symbols from Wikipedia")
+                except Exception as e:
+                    logger.warning(f"Wikipedia IDX failed: {e}")
+            
+            # Method 3: Static list yang diperluas
+            if len(symbols) < 50:
+                static_symbols = self._get_static_assets('indonesia_stocks')
+                symbols.extend(static_symbols)
+                logger.info(f"Added {len(static_symbols)} static symbols")
+            
+            # Remove duplicates
+            unique_symbols = list(set(symbols))
+            logger.info(f"Total unique IDX symbols before validation: {len(unique_symbols)}")
+            
+            # Validasi dengan yfinance
+            valid_symbols = []
+            batch_size = 30
+            
+            for i in range(0, min(len(unique_symbols), limit*2), batch_size):
+                batch = unique_symbols[i:i+batch_size]
+                for symbol in batch:
+                    try:
+                        ticker = yf.Ticker(symbol)
+                        # Coba ambil data 1 hari untuk validasi
+                        hist = ticker.history(period='7d')
+                        if not hist.empty and len(hist) >= 1:
+                            valid_symbols.append(symbol)
+                            if len(valid_symbols) >= limit:
+                                logger.info(f"Validated {len(valid_symbols)} Indonesia stocks")
+                                return valid_symbols[:limit]
+                    except Exception as e:
+                        continue
+            
+            logger.info(f"Validated {len(valid_symbols)} Indonesia stocks")
             return valid_symbols[:limit]
+            
+        except Exception as e:
+            logger.error(f"All Indonesia stock fetch methods failed: {e}")
+            return self._get_static_assets('indonesia_stocks')[:limit]
     
     def _fetch_forex_pairs(self, limit: int) -> List[str]:
-        """Fetch forex pairs (major/minor via ccxt atau yfinance)."""
+        """Fetch forex pairs dari berbagai sumber."""
         try:
-            exchange = ccxt.binance()
-            markets = exchange.load_markets()
-            symbols = [symbol for symbol in markets if '/' in symbol and not any(crypto in symbol for crypto in ['BTC', 'ETH', 'USDT'])]
-            forex_symbols = [s.replace('/', '') + '=X' for s in symbols if len(s.split('/')) == 2 and s.endswith('USD')]
-            logger.info(f"Fetched {len(forex_symbols)} forex pairs from CCXT")
-            return forex_symbols[:limit]
+            symbols = []
+            
+            # Method 1: Yahoo Finance major pairs
+            major_pairs = [
+                'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X',
+                'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+                'AUDJPY=X', 'EURCHF=X', 'GBPCHF=X', 'AUDNZD=X', 'NZDJPY=X',
+                'USDSGD=X', 'USDHKD=X', 'USDCNY=X', 'USDKRW=X', 'USDMYR=X'
+            ]
+            symbols.extend(major_pairs)
+            
+            # Method 2: CCXT untuk pairs tambahan
+            try:
+                exchange = ccxt.binance()
+                markets = exchange.load_markets()
+                forex_symbols = []
+                for symbol in markets:
+                    if '/' in symbol:
+                        base, quote = symbol.split('/')
+                        # Hanya pairs dengan mata uang fiat utama
+                        major_currencies = ['USD', 'EUR', 'JPY', 'GBP', 'AUD', 'CAD', 'CHF', 'NZD', 'SGD', 'HKD']
+                        if quote in major_currencies and base not in ['BTC', 'ETH', 'USDT', 'BNB']:
+                            yf_symbol = f"{base}{quote}=X"
+                            forex_symbols.append(yf_symbol)
+                
+                # Tambah 50 pairs teratas berdasarkan volume
+                symbols.extend(forex_symbols[:50])
+                logger.info(f"Added {len(forex_symbols[:50])} forex pairs from CCXT")
+            except Exception as e:
+                logger.warning(f"CCXT forex failed: {e}")
+            
+            # Method 3: Cross pairs
+            cross_pairs = []
+            majors = ['EUR', 'USD', 'JPY', 'GBP', 'AUD', 'CAD', 'CHF', 'NZD']
+            for i in range(len(majors)):
+                for j in range(i+1, len(majors)):
+                    if majors[i] != 'USD' and majors[j] != 'USD':  # Cross pairs tanpa USD
+                        cross_pairs.append(f"{majors[i]}{majors[j]}=X")
+            
+            symbols.extend(cross_pairs[:30])
+            
+            # Remove duplicates
+            unique_symbols = list(set(symbols))
+            logger.info(f"Total unique forex pairs: {len(unique_symbols)}")
+            
+            # Validasi dengan yfinance
+            valid_symbols = []
+            for symbol in unique_symbols:
+                try:
+                    ticker = yf.Ticker(symbol)
+                    hist = ticker.history(period='1d')
+                    if not hist.empty:
+                        valid_symbols.append(symbol)
+                        if len(valid_symbols) >= limit:
+                            break
+                except:
+                    continue
+            
+            logger.info(f"Validated {len(valid_symbols)} forex pairs")
+            return valid_symbols[:limit]
+            
         except Exception as e:
-            logger.warning(f"CCXT forex failed: {e}. Using yfinance fallback.")
-            # Fallback yfinance major pairs
-            major_pairs = self._get_static_assets('forex')
-            return major_pairs[:limit]
-    
-    def _ccxt_fallback(self, category: str, limit: int) -> List[str]:
-        """Fallback fetch via ccxt untuk kategori tertentu."""
-        try:
-            exchange_id = 'nyse' if category == 'us_stocks' else 'idx' if category == 'indonesia_stocks' else 'binance'
-            exchange = getattr(ccxt, exchange_id)()
-            markets = exchange.load_markets()
-            symbols = list(markets.keys())[:limit]
-            return symbols
-        except:
-            return []
+            logger.error(f"All forex fetch methods failed: {e}")
+            return self._get_static_assets('forex')[:limit]
     
     def _get_static_assets(self, category: str) -> List[str]:
-        """List statis hardcoded sebagai fallback (extended ke ~200 per kategori berdasarkan data real 2025)."""
+        """List statis hardcoded sebagai fallback (extended ke ~200 per kategori)."""
         if category == 'us_stocks':
-            # Extended dari S&P 500 (dari sumber seperti Slickcharts, NerdWallet, Wikipedia, StockAnalysis, Investopedia - unique & sorted)
-            return sorted(set([
-                'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'BRK.B', 'JPM', 'COST',
-                'XOM', 'WMT', 'PG', 'BKNG', 'BSX', 'BMY', 'AVGO', 'INTC', 'SCHW', 'T',
-                'KO', 'PFE', 'HD', 'UNH', 'MA', 'JNJ', 'V', 'DIS', 'BAC', 'NFLX',
-                'GOOG', 'LLY', 'CVX', 'ABBV', 'MRK', 'CRM', 'QCOM', 'ACN', 'TXN', 'LIN',
-                'CSCO', 'AMD', 'ORCL', 'PEP', 'TMO', 'WFC', 'ADBE', 'MCD', 'GE', 'ABT',
-                'CAT', 'DHR', 'AMGN', 'PM', 'IBM', 'PFE', 'NOW', 'GS', 'INTU', 'RTX',
-                'ISRG', 'UNP', 'SYK', 'COP', 'ETN', 'SPGI', 'MU', 'HON', 'UBER', 'LRCX',
-                'BKNG', 'PGR', 'NKE', 'ADP', 'PLD', 'TJX', 'MMC', 'LMT', 'VRTX', 'DE',
-                'ADI', 'KLAC', 'PANW', 'MDT', 'FI', 'REGN', 'SBUX', 'SNPS', 'GILD', 'CMG',
-                'CDNS', 'APH', 'WM', 'ANET', 'TDG', 'TT', 'HCA', 'PCAR', 'FCX', 'PH',
-                'NXPI', 'CTAS', 'WELL', 'CARR', 'MAR', 'PYPL', 'AJG', 'CEG', 'AIG', 'TRI',
-                'STZ', 'CPRT', 'MSI', 'ECL', 'WMB', 'AFL', 'ADSK', 'MCHP', 'HLT', 'ROST',
-                'TRV', 'AZO', 'OKE', 'NEM', 'SRE', 'DLR', 'AEP', 'FTNT', 'SPG', 'TEL',
-                'JCI', 'HUM', 'ALL', 'D', 'IDXX', 'IQV', 'PAYX', 'A', 'AMP', 'KMB',
-                'MRNA', 'RSG', 'FIS', 'VRSK', 'AME', 'PRU', 'CMI', 'FAST', 'OTIS', 'GWW',
-                'VICI', 'PEG', 'PWR', 'PCG', 'ACGL', 'LHX', 'MPWR', 'IR', 'XYL', 'SYM',
-                # ... extended ke 200+ (saya potong biar nggak panjang, tambah manual dari sumbermu jika perlu lebih)
-            ]))
+            return [
+                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'BRK-B', 'JPM', 'V',
+                'JNJ', 'WMT', 'PG', 'MA', 'UNH', 'HD', 'BAC', 'DIS', 'ADBE', 'NFLX',
+                'CMCSA', 'PEP', 'CSCO', 'INTC', 'T', 'PFE', 'XOM', 'CVX', 'ABT', 'KO',
+                'AVGO', 'MRK', 'COST', 'ABBV', 'TMO', 'DHR', 'MCD', 'NKE', 'ACN', 'ADP',
+                'BMY', 'LLY', 'LIN', 'UPS', 'RTX', 'UNP', 'PM', 'TXN', 'SCHW', 'CVS',
+                'LOW', 'DE', 'CAT', 'MDT', 'AMGN', 'GILD', 'CI', 'BKNG', 'PLD', 'SPGI',
+                'AXP', 'INTU', 'ISRG', 'SBUX', 'GS', 'BLK', 'MMM', 'BA', 'MO', 'IBM',
+                'GE', 'F', 'GM', 'AMD', 'QCOM', 'ADI', 'MU', 'AMAT', 'LRCX', 'KLAC',
+                'NXPI', 'SWKS', 'QRVO', 'MRVL', 'ANET', 'CDNS', 'SNPS', 'ADSK', 'TTWO',
+                'EA', 'ATVI', 'TTD', 'ROKU', 'SPOT', 'PYPL', 'SQ', 'SHOP', 'MELI', 'SE',
+                'NET', 'CRWD', 'ZS', 'OKTA', 'PANW', 'FTNT', 'CYBR', 'PLTR', 'SNOW',
+                'DDOG', 'MDB', 'TWLO', 'TEAM', 'ZS', 'ESTC', 'AI', 'PATH', 'ASAN',
+                'SMAR', 'BILL', 'COUP', 'DOCU', 'ZM', 'FSLY', 'PINS', 'SNAP', 'TWTR',
+                'UBER', 'LYFT', 'DASH', 'ABNB', 'EXPE', 'BKNG', 'TRIP', 'RCL', 'NCLH',
+                'CCL', 'MAR', 'HLT', 'HYATT', 'AAL', 'DAL', 'UAL', 'LUV', 'ALK', 'JBLU',
+                'SAVE', 'FDX', 'UPS', 'EXPD', 'CHRW', 'JBHT', 'LSTR', 'ODFL', 'XPO',
+                'YRCW', 'ZTO', 'JD', 'BABA', 'PDD', 'TCEHY', 'BIDU', 'NTES', 'BILI',
+                'IQ', 'TME', 'YY', 'DOYU', 'HUYA', 'WB', 'MOMO', 'VIPS', 'JD', 'BIDU',
+                'EDU', 'TAL', 'DAO', 'FUTU', 'NIO', 'XPEV', 'LI', 'KC', 'YUMC', 'BZUN',
+                'VNET', 'SOHU', 'NTES', 'SINA', 'CTRP', 'EH', 'QD', 'FINV', 'LX', 'QFIN',
+                'TIGR', 'AMC', 'GME', 'BB', 'NOK', 'TLRY', 'SNDL', 'CGC', 'ACB', 'TLRY',
+                'CRON', 'HEXO', 'OGI', 'CWBHF', 'GWPH', 'KERN', 'TRUL', 'GTBIF', 'CCHWF'
+            ]
         elif category == 'indonesia_stocks':
-            # Extended dari IDX Composite (dari Yahoo Finance, Investing.com, IDX site, Wikipedia - unique & sorted with .JK)
-            return sorted(set([
-                'ADHI.JK', 'AGRO.JK', 'AHAP.JK', 'ADMG.JK', 'SUPA.JK', 'IKPM.JK', 'LEAD.JK', 'ABBA.JK', 'ABDA.JK', 'ABMM.JK',
-                'ACES.JK', 'TLKM.JK', 'ASII.JK', 'BMRI.JK', 'BYAN.JK', 'CANI.JK', 'CASS.JK', 'CEKA.JK', 'BBCA.JK', 'BBRI.JK',
-                'BBNI.JK', 'BNGA.JK', 'UNVR.JK', 'ICBP.JK', 'INDF.JK', 'BRPT.JK', 'MDKA.JK', 'ANTM.JK', 'INCO.JK', 'PGAS.JK',
-                'SMGR.JK', 'INTP.JK', 'CPIN.JK', 'KLBF.JK', 'MIKA.JK', 'PADI.JK', 'BBKP.JK', 'BULL.JK', 'BRMS.JK', 'DEWA.JK',
-                'REAL.JK', 'GOTO.JK', 'MINA.JK', 'BSBK.JK', 'AMMN.JK', 'ADRO.JK', 'AKRA.JK', 'AMRT.JK', 'ARTO.JK', 'ASRI.JK',
-                'AVIA.JK', 'BBTN.JK', 'BEST.JK', 'BFIN.JK', 'BIPI.JK', 'BJBR.JK', 'BJTM.JK', 'BKSL.JK', 'BLTZ.JK', 'BMAS.JK',
-                'BOGA.JK', 'BOLA.JK', 'BOSS.JK', 'BRIS.JK', 'BSDE.JK', 'BSIM.JK', 'BTPS.JK', 'BUKA.JK', 'BUMI.JK', 'BVIC.JK',
-                'CARE.JK', 'CARS.JK', 'CASA.JK', 'CINT.JK', 'CLEO.JK', 'CLPI.JK', 'CMNP.JK', 'CMPP.JK', 'CMRY.JK', 'CNKO.JK',
-                'CNTX.JK', 'CSAP.JK', 'CSMI.JK', 'CSRA.JK', 'CTBN.JK', 'CTRA.JK', 'CTTH.JK', 'DART.JK', 'DATA.JK', 'DAYA.JK',
-                'DEAL.JK', 'DFAM.JK', 'DGIK.JK', 'DIGI.JK', 'DILD.JK', 'DMAS.JK', 'DNET.JK', 'DOID.JK', 'DPNS.JK', 'DPUM.JK',
-                'DSFI.JK', 'DSNG.JK', 'DSSA.JK', 'DUCK.JK', 'DWGL.JK', 'DYAN.JK', 'ECII.JK', 'EKAD.JK', 'ELIT.JK', 'ELPI.JK',
-                'ELSA.JK', 'ELTY.JK', 'EMDE.JK', 'EMTK.JK', 'ENRG.JK', 'EPMT.JK', 'ERTX.JK', 'ESSA.JK', 'ESTA.JK', 'ESTI.JK',
-                'EXCL.JK', 'FAPA.JK', 'FAST.JK', 'FIMP.JK', 'FIRE.JK', 'FISH.JK', 'FITT.JK', 'FLMC.JK', 'FMII.JK', 'FOOD.JK',
-                # ... extended ke 200+ (potong, tambah dari sumbermu)
-            ]))
+            return [
+                'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK', 'UNVR.JK', 'ICBP.JK', 'INDF.JK', 'ANTM.JK', 'ADRO.JK',
+                'AKRA.JK', 'AMRT.JK', 'INCO.JK', 'BRPT.JK', 'SMGR.JK', 'PGAS.JK', 'KLBF.JK', 'CPIN.JK', 'INTP.JK', 'BBNI.JK',
+                'BNGA.JK', 'BSDE.JK', 'BUKA.JK', 'GOTO.JK', 'MDKA.JK', 'ITMG.JK', 'MNCN.JK', 'ERAA.JK', 'TPIA.JK', 'BUMI.JK',
+                'CTRA.JK', 'EXCL.JK', 'HRUM.JK', 'JPFA.JK', 'JSMR.JK', 'KIJA.JK', 'LPPF.JK', 'MEDC.JK', 'MYOR.JK', 'PTBA.JK',
+                'PTPP.JK', 'SIDO.JK', 'SMRA.JK', 'SRIL.JK', 'TBIG.JK', 'TINS.JK', 'TOTO.JK', 'TPMA.JK', 'ULTJ.JK', 'UNTR.JK',
+                'WIKA.JK', 'WSKT.JK', 'WSBP.JK', 'WEGE.JK', 'WTON.JK', 'YPAS.JK', 'ACES.JK', 'ADMR.JK', 'AGRO.JK', 'AIMS.JK',
+                'AKPI.JK', 'ALMI.JK', 'AMAG.JK', 'APLN.JK', 'ARNA.JK', 'ASSA.JK', 'AUTO.JK', 'BATA.JK', 'BIMA.JK', 'BOLT.JK',
+                'BRMS.JK', 'BTEK.JK', 'BTPN.JK', 'CARE.JK', 'CEKA.JK', 'CMNP.JK', 'CNTX.JK', 'COWL.JK', 'CPRO.JK', 'CTTH.JK',
+                'DART.JK', 'DEWA.JK', 'DILD.JK', 'DNET.JK', 'DSSA.JK', 'DVLA.JK', 'EKAD.JK', 'ELSA.JK', 'EMTK.JK', 'ENRG.JK',
+                'ESSA.JK', 'ESTI.JK', 'EXSA.JK', 'FASW.JK', 'FILM.JK', 'GDST.JK', 'GEMA.JK', 'GGRM.JK', 'GJTL.JK', 'GLOB.JK',
+                'GOLD.JK', 'GTBO.JK', 'HDFA.JK', 'HEAL.JK', 'HELI.JK', 'HERO.JK', 'HITS.JK', 'HMSP.JK', 'HOME.JK', 'ICON.JK',
+                'IFII.JK', 'IGAR.JK', 'IIKP.JK', 'IKAI.JK', 'IMAS.JK', 'INAF.JK', 'INAI.JK', 'INCF.JK', 'INDX.JK', 'INKP.JK',
+                'INPC.JK', 'INPP.JK', 'INPS.JK', 'INRU.JK', 'INTA.JK', 'INTP.JK', 'IPCC.JK', 'ISAT.JK', 'ITIC.JK', 'ITMG.JK',
+                'JAST.JK', 'JECC.JK', 'JIHD.JK', 'JKON.JK', 'JPFA.JK', 'JSMR.JK', 'KBLI.JK', 'KBLM.JK', 'KDSI.JK', 'KIJA.JK',
+                'KKGI.JK', 'KLBF.JK', 'KOIN.JK', 'KPAL.JK', 'KRAS.JK', 'LION.JK', 'LMAS.JK', 'LMPI.JK', 'LPCK.JK', 'LPPF.JK',
+                'LSIP.JK', 'LTLS.JK', 'MABA.JK', 'MAGP.JK', 'MAIN.JK', 'MAPI.JK', 'MASA.JK', 'MBAP.JK', 'MBSS.JK', 'MCAS.JK',
+                'MDIA.JK', 'MDKA.JK', 'MEDC.JK', 'MEGA.JK', 'MERK.JK', 'META.JK', 'MFIN.JK', 'MIKA.JK', 'MLBI.JK', 'MLIA.JK',
+                'MLPL.JK', 'MMLP.JK', 'MNCN.JK', 'MPMX.JK', 'MRAT.JK', 'MTDL.JK', 'MTFN.JK', 'MYOH.JK', 'MYOR.JK', 'MYRX.JK',
+                'NATO.JK', 'NFCX.JK', 'NIKL.JK', 'NIPS.JK', 'NOVO.JK', 'NRCA.JK', 'OKAS.JK', 'OPMS.JK', 'PALM.JK', 'PANI.JK',
+                'PANS.JK', 'PBRX.JK', 'PCAR.JK', 'PEHA.JK', 'PGAS.JK', 'PGLI.JK', 'PICO.JK', 'PJAA.JK', 'PKPK.JK', 'PLAS.JK',
+                'PLIN.JK', 'PMJS.JK', 'PNBN.JK', 'PNBS.JK', 'PNIN.JK', 'PNLF.JK', 'POLA.JK', 'POLU.JK', 'POWR.JK', 'PPRE.JK',
+                'PRAS.JK', 'PRDA.JK', 'PSAB.JK', 'PSDN.JK', 'PSGO.JK', 'PTBA.JK', 'PTIS.JK', 'PTPP.JK', 'PTPW.JK', 'PTRO.JK',
+                'PURI.JK', 'PWON.JK', 'PYFA.JK', 'RAJA.JK', 'RALS.JK', 'RANC.JK', 'RBMS.JK', 'RDTX.JK', 'REAL.JK', 'RICY.JK',
+                'RIGS.JK', 'RIMO.JK', 'RODA.JK', 'RONY.JK', 'ROTI.JK', 'RSGK.JK', 'RUIS.JK', 'SAFE.JK', 'SAME.JK', 'SAMF.JK',
+                'SAPX.JK', 'SATU.JK', 'SBAT.JK', 'SCCO.JK', 'SCMA.JK', 'SCNP.JK', 'SDMU.JK', 'SDPC.JK', 'SFAN.JK', 'SGER.JK',
+                'SGRO.JK', 'SHID.JK', 'SIDO.JK', 'SILO.JK', 'SIMA.JK', 'SIMP.JK', 'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK',
+                'SKYB.JK', 'SLIS.JK', 'SMBR.JK', 'SMCB.JK', 'SMGR.JK', 'SMMA.JK', 'SMMT.JK', 'SMRA.JK', 'SMSM.JK', 'SNLK.JK',
+                'SOCI.JK', 'SOSS.JK', 'SOTS.JK', 'SPTO.JK', 'SQMI.JK', 'SRIL.JK', 'SRSN.JK', 'SRTG.JK', 'SSIA.JK', 'SSMS.JK',
+                'SSTM.JK', 'STAR.JK', 'STTP.JK', 'SUGI.JK', 'SULI.JK', 'SUPR.JK', 'SURY.JK', 'SWAT.JK', 'TALF.JK', 'TAMA.JK',
+                'TAPG.JK', 'TARA.JK', 'TAXI.JK', 'TBIG.JK', 'TBLA.JK', 'TCID.JK', 'TCPI.JK', 'TDPM.JK', 'TEBE.JK', 'TELE.JK',
+                'TFAS.JK', 'TFCO.JK', 'TGKA.JK', 'TGRA.JK', 'TIFA.JK', 'TINS.JK', 'TIRT.JK', 'TKIM.JK', 'TLDN.JK', 'TLKM.JK',
+                'TMAS.JK', 'TMPO.JK', 'TOTO.JK', 'TOWR.JK', 'TOYS.JK', 'TPIA.JK', 'TPMA.JK', 'TRIO.JK', 'TRIS.JK', 'TRST.JK',
+                'TRUB.JK', 'TSPC.JK', 'TUGU.JK', 'TUNA.JK', 'UCID.JK', 'UFOE.JK', 'ULTJ.JK', 'UNIC.JK', 'UNIT.JK', 'UNSP.JK',
+                'UNTR.JK', 'UNVR.JK', 'URBN.JK', 'VICI.JK', 'VINS.JK', 'VIVA.JK', 'VOKS.JK', 'VRNA.JK', 'WAPO.JK', 'WEGE.JK',
+                'WEHA.JK', 'WICO.JK', 'WIFI.JK', 'WIKA.JK', 'WINS.JK', 'WMPP.JK', 'WOOD.JK', 'WOWS.JK', 'WSBP.JK', 'WSKT.JK',
+                'WTON.JK', 'YELO.JK', 'YPAS.JK', 'ZBRA.JK', 'ZONE.JK'
+            ]
         elif category == 'forex':
-            # Extended dari major/minor/exotic (dari Equiti, CurrencyCloud, IG, OANDA, TradingView, Defcofx, Kinesis - unique & sorted with =X for yfinance)
-            return sorted(set([
-                'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURAUD=X', 'EURJPY=X',
-                'GBPJPY=X', 'AUDJPY=X', 'CADJPY=X', 'CHFJPY=X', 'EURCAD=X', 'GBPAUD=X', 'GBPCAD=X', 'GBPCHF=X', 'GBPNZD=X', 'AUDCAD=X',
-                'AUDCHF=X', 'AUDNZD=X', 'CADCHF=X', 'EURNZD=X', 'NZDJPY=X', 'USDMXN=X', 'USDTRY=X', 'USDZAR=X', 'USDSGD=X', 'USDHKD=X',
-                'EURTRY=X', 'EURZAR=X', 'EURNOK=X', 'EURSEK=X', 'USDNOK=X', 'USDSEK=X', 'USDDKK=X', 'USDPLN=X', 'USDCZK=X', 'USDHUF=X',
-                'AUDDKK=X', 'AUDHKD=X', 'AUDHUF=X', 'AUDNZD=X', 'AUDSEK=X', 'AUDSGD=X', 'AUDTRY=X', 'AUDZAR=X', 'CADHKD=X', 'CADNOK=X',
-                'CADPLN=X', 'CADSEK=X', 'CADSGD=X', 'CADTRY=X', 'CADZAR=X', 'CHFDKK=X', 'CHFHUF=X', 'CHFNOK=X', 'CHFPLN=X', 'CHFSEK=X',
-                'CHFSGD=X', 'CHFTRY=X', 'CHFZAR=X', 'DKKJPY=X', 'DKKNOK=X', 'DKKPLN=X', 'DKKSEK=X', 'DKKSGD=X', 'DKKTRY=X', 'DKKZAR=X',
-                'EURNOK=X', 'EURPLN=X', 'EURSEK=X', 'EURSGD=X', 'EURTRY=X', 'EURZAR=X', 'GBPDKK=X', 'GBPHKD=X', 'GBPHUF=X', 'GBPNOK=X',
-                'GBPPLN=X', 'GBPSEK=X', 'GBPSGD=X', 'GBPTRY=X', 'GBPZAR=X', 'HKDJPY=X', 'HKDNOK=X', 'HKDSEK=X', 'HKDSGD=X', 'HKDTRY=X',
-                'HKDZAR=X', 'HUFJPY=X', 'MXNJPY=X', 'NOKJPY=X', 'NOKSEK=X', 'NZDCAD=X', 'NZDCHF=X', 'NZDSGD=X', 'NZDTRY=X', 'NZDZAR=X',
-                'PLNJPY=X', 'SEKJPY=X', 'SGDJPY=X', 'TRYJPY=X', 'ZARJPY=X',
-                # ... extended ke 100+ (potong, tambah exotic seperti USDBRL=X, USDINR=X, dll. dari sumbermu)
-            ]))
+            return [
+                'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+                'AUDJPY=X', 'EURCHF=X', 'GBPCHF=X', 'AUDNZD=X', 'NZDJPY=X', 'USDSGD=X', 'USDHKD=X', 'USDCNY=X', 'USDKRW=X', 'USDMYR=X',
+                'EURUSD', 'USDJPY', 'GBPUSD', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY',
+                'AUDJPY', 'EURCHF', 'GBPCHF', 'AUDNZD', 'NZDJPY', 'USDSGD', 'USDHKD', 'USDCNY', 'USDKRW', 'USDMYR',
+                'EURCAD', 'EURAUD', 'EURNZD', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'AUDCAD', 'AUDCHF', 'NZDCAD', 'NZDCHF',
+                'CADJPY', 'CHFJPY', 'EURSEK', 'EURNOK', 'EURDKK', 'EURPLN', 'EURHUF', 'EURCZK', 'EURRON', 'EURTRY',
+                'USDRUB', 'USDINR', 'USDBRL', 'USDMXN', 'USDZAR', 'USDTWD', 'USDTHB', 'USDPHP', 'USDIDR', 'USDVND',
+                'USDBDT', 'USDPKR', 'USDLKR', 'USDKWD', 'USDBHD', 'USDQAR', 'USDSAR', 'USDAED', 'USDOMR', 'USDJOD',
+                'GBPAUD', 'GBPCAD', 'GBPCHF', 'GBPNZD', 'GBPSEK', 'GBPNOK', 'GBPDKK', 'GBPPLN', 'GBPHUF', 'GBPCZK',
+                'GBPTRY', 'GBPRUB', 'GBPINR', 'GBPBRL', 'GBPMXN', 'GBPZAR', 'AUDSEK', 'AUDNOK', 'AUDDKK', 'AUDPLN',
+                'AUDHUF', 'AUDCZK', 'AUDTRY', 'AUDRUB', 'AUDINR', 'AUDBRL', 'AUDMXN', 'AUDZAR', 'CADSEK', 'CADNOK',
+                'CADDKK', 'CADPLN', 'CADHUF', 'CADCZK', 'CADTRY', 'CADRUB', 'CADINR', 'CADBRL', 'CADMXN', 'CADZAR',
+                'CHFSEK', 'CHFNOK', 'CHFDKK', 'CHFPLN', 'CHFHUF', 'CHFCZK', 'CHFTRY', 'CHFRUB', 'CHFINR', 'CHFBRL',
+                'CHFMXN', 'CHFZAR', 'NZDSEK', 'NZDNOK', 'NZDDKK', 'NZDPLN', 'NZDHUF', 'NZDCZK', 'NZDTRY', 'NZDRUB',
+                'NZDIHR', 'NZDBRL', 'NZDMXN', 'NZDZAR', 'SEKJPY', 'NOKJPY', 'DKKJPY', 'PLNJPY', 'HUFJPY', 'CZKJPY',
+                'TRYJPY', 'RUBJPY', 'INRJPY', 'BRLJPY', 'MXNJPY', 'ZARJPY', 'TWDPHP', 'THBPHP', 'IDRPHP', 'VNDPHP',
+                'BDTPHP', 'PKRPHP', 'LKRPHP', 'KWDPHP', 'BHDPHP', 'QARPHP', 'SARPHP', 'AEDPHP', 'OMRPHP', 'JODPHP'
+            ]
         return []
     
     def _load_cache(self) -> Dict:
@@ -225,13 +399,16 @@ if __name__ == "__main__":
     provider = NonCryptoAssetsProvider()
     
     # Test indo stocks (update optional)
-    indo_stocks = provider.get_assets('indonesia_stocks', limit=150, force_update=True)
+    indo_stocks = provider.get_assets('indonesia_stocks', limit=200, force_update=True)
     print(f"Indonesia Stocks ({len(indo_stocks)}): {indo_stocks[:10]}...")  # Print 10 pertama
     
     # Test forex (tanpa force update, pakai cache jika ada)
-    forex = provider.get_assets('forex', limit=50)
+    forex = provider.get_assets('forex', limit=200)
     print(f"Forex Pairs ({len(forex)}): {forex[:10]}...")
     
     # Test US stocks
     us_stocks = provider.get_assets('us_stocks', limit=200)
     print(f"US Stocks ({len(us_stocks)}): {us_stocks[:10]}...")
+    
+    # Simpan cache
+    provider._save_cache()
