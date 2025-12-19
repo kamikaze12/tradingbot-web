@@ -35,6 +35,9 @@ SCALPING_CONFIG = {
     "min_score": 4.0,            # Minimal score untuk eksekusi
     "max_signals": 10,           # Maksimal sinyal per scan
     "min_volume_usd": 500000,    # Minimal volume $500k
+    "min_bars": 50,              # Minimal data bars untuk scalping (PERBAIKAN NON-CRYPTO)
+    "yfinance_timeout": 30,      # Timeout khusus untuk YFinance
+    "skip_weekends": True,       # Skip weekend data untuk stocks
     "price_filter": {
         "min": 0.01,             # Harga minimal $0.01
         "max": 1000              # Harga maksimal $1000
@@ -58,7 +61,7 @@ class ScalpingStrategy:
         
     def analyze(self, df, symbol=None):
         """Analisis untuk scalping dengan timeframe 5m"""
-        if df is None or len(df) < 50:
+        if df is None or df.empty or len(df) < 50:  # PERBAIKAN: df.empty untuk safety
             return None
             
         try:
@@ -193,7 +196,7 @@ class ScalpingStrategy:
     
     def _calculate_volume_ratio(self, df, period=20):
         """Calculate volume ratio"""
-        if len(df) < period:
+        if df is None or df.empty or len(df) < period:  # PERBAIKAN: cek df.empty
             return 1
         current_volume = df['volume'].iloc[-1] if 'volume' in df.columns else 0
         avg_volume = df['volume'].rolling(period).mean().iloc[-1]
@@ -201,7 +204,7 @@ class ScalpingStrategy:
     
     def _calculate_volatility(self, df, period=20):
         """Calculate volatility"""
-        if len(df) < period:
+        if df is None or df.empty or len(df) < period:  # PERBAIKAN: cek df.empty
             return 0.02
         returns = df['close'].pct_change().dropna()
         volatility = returns.rolling(period).std().iloc[-1]
@@ -209,7 +212,7 @@ class ScalpingStrategy:
     
     def _find_support_resistance(self, df, lookback=50):
         """Find support and resistance levels"""
-        if len(df) < lookback:
+        if df is None or df.empty or len(df) < lookback:  # PERBAIKAN: cek df.empty
             return df['low'].min(), df['high'].max()
         
         recent_lows = df['low'].iloc[-lookback:].nsmallest(3).values
@@ -223,7 +226,7 @@ class ScalpingStrategy:
     def _calculate_atr(self, df, period=14):
         """Calculate ATR"""
         try:
-            if len(df) < period:
+            if df is None or df.empty or len(df) < period:  # PERBAIKAN: cek df.empty
                 return df['close'].iloc[-1] * 0.02
             
             high = df['high'].values
@@ -537,7 +540,7 @@ class BacktestEngine:
             max_balance = balance
             max_drawdown = 0
             
-            if df is None or len(df) < 100:
+            if df is None or df.empty or len(df) < 100:  # PERBAIKAN: df.empty
                 return self._get_empty_results()
             
             logger.info(f"🔄 Running backtest on {len(df)} bars...")
@@ -623,7 +626,7 @@ class BacktestEngine:
     def run_walk_forward_analysis(self, df, strategy_class, periods=5, **kwargs):
         """Walk-forward analysis for strategy validation"""
         try:
-            if len(df) < 200:
+            if df is None or df.empty or len(df) < 200:  # PERBAIKAN: df.empty
                 return {"error": "Insufficient data for walk-forward analysis"}
             
             period_length = len(df) // periods
@@ -1377,7 +1380,7 @@ class EnsembleMLModel:
     
     def advanced_feature_engineering(self, df: pd.DataFrame) -> pd.DataFrame:
         """Advanced feature engineering dengan technical indicators"""
-        if df is None or len(df) < 50:
+        if df is None or df.empty or len(df) < 50:  # PERBAIKAN: df.empty
             return pd.DataFrame()
         
         features = {}
@@ -1492,7 +1495,7 @@ class EnsembleMLModel:
     def _calculate_atr(self, df, period=14):
         """Calculate ATR dengan fallback yang lebih baik"""
         try:
-            if len(df) < period:
+            if df is None or df.empty or len(df) < period:  # PERBAIKAN: df.empty
                 return df['close'].iloc[-1] * 0.02 if len(df) > 0 else 0.02
                 
             high = df['high'].values
@@ -1888,7 +1891,7 @@ class MLEnhancedBot:
             targets = []
             
             for symbol, data in historical_data.items():
-                if len(data) < 100:
+                if data is None or data.empty or len(data) < 100:  # PERBAIKAN: data.empty
                     continue
                     
                 for i in range(50, len(data) - 10):
@@ -1979,7 +1982,7 @@ class MLEnhancedBot:
     def _extract_detailed_features(self, df):
         """Extract detailed features untuk training dan prediction"""
         try:
-            if len(df) < 50:
+            if df is None or df.empty or len(df) < 50:  # PERBAIKAN: df.empty
                 return None
                 
             features = {}
@@ -2055,7 +2058,7 @@ class MLEnhancedBot:
                 return 0.5, 0
             
             features_df = self.extract_features(df)
-            if features_df.empty:
+            if features_df is None or features_df.empty:  # PERBAIKAN: cek features_df.empty
                 return 0.5, 0
             
             features_scaled = self.scaler.transform(features_df)
@@ -2083,7 +2086,7 @@ class MLEnhancedBot:
             
             for symbol, df in symbols_data.items():
                 features_df = self.extract_features(df)
-                if not features_df.empty:
+                if features_df is not None and not features_df.empty:  # PERBAIKAN: cek empty
                     features_list.append(features_df.iloc[0].values)
                     symbol_features[symbol] = features_df.iloc[0].values
             
@@ -2114,7 +2117,7 @@ class MLEnhancedBot:
     # Technical Indicators
     def _calculate_rsi(self, prices, period=14):
         try:
-            if len(prices) < period + 1:
+            if prices is None or prices.empty or len(prices) < period + 1:  # PERBAIKAN: prices.empty
                 return 50
             delta = prices.diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -2127,7 +2130,7 @@ class MLEnhancedBot:
 
     def _calculate_macd(self, prices):
         try:
-            if len(prices) < 26:
+            if prices is None or prices.empty or len(prices) < 26:  # PERBAIKAN: prices.empty
                 return 0
             exp1 = prices.ewm(span=12).mean()
             exp2 = prices.ewm(span=26).mean()
@@ -2138,6 +2141,9 @@ class MLEnhancedBot:
 
     def _calculate_atr(self, df, period=14):
         try:
+            if df is None or df.empty:  # PERBAIKAN: df.empty
+                return 0.02
+                
             high = df['high']
             low = df['low']
             close = df['close']
@@ -2154,6 +2160,9 @@ class MLEnhancedBot:
 
     def _calculate_williams_r(self, df, period=14):
         try:
+            if df is None or df.empty:  # PERBAIKAN: df.empty
+                return -50
+                
             high = df['high'].rolling(period).max()
             low = df['low'].rolling(period).min()
             close = df['close']
@@ -2165,6 +2174,9 @@ class MLEnhancedBot:
 
     def _calculate_cci(self, df, period=20):
         try:
+            if df is None or df.empty:  # PERBAIKAN: df.empty
+                return 0
+                
             typical_price = (df['high'] + df['low'] + df['close']) / 3
             sma = typical_price.rolling(period).mean()
             mad = typical_price.rolling(period).apply(lambda x: np.mean(np.abs(x - np.mean(x))))
@@ -2176,6 +2188,9 @@ class MLEnhancedBot:
 
     def _calculate_obv(self, df):
         try:
+            if df is None or df.empty:  # PERBAIKAN: df.empty
+                return 0
+                
             close = df['close']
             volume = df['volume']
             obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
@@ -2352,76 +2367,61 @@ class EnhancedTradingBot:
             return False
 
     def validate_market_data(self, df: pd.DataFrame, symbol: str, debug_mode: bool = False) -> Tuple[bool, str]:
-        """Validasi data market dengan logging lebih detail"""
-        checks = []
-        messages = []
-        
-        # Check 1: DataFrame tidak kosong
-        if df is None or len(df) == 0:
-            return False, "Empty DataFrame"
-        
-        # Check 2: Column yang diperlukan ada
-        required_columns = ['open', 'high', 'low', 'close']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            return False, f"Missing columns: {missing_columns}"
-        
-        # Check 3: Minimal data points
-        min_data_points = 20
-        if len(df) < min_data_points:
-            return False, f"Insufficient data points: {len(df)} < {min_data_points}"
-        
-        # Check 4: Validasi harga positif
-        price_columns = ['open', 'high', 'low', 'close']
-        for col in price_columns:
-            if (df[col] <= 0).any():
-                checks.append(False)
-                messages.append(f"❌ Non-positive values in {col}")
-        
-        # Check 5: Harga high >= low
-        if (df['high'] < df['low']).any():
-            checks.append(False)
-            messages.append("❌ High < Low detected")
-        
-        # Check 6: Harga dalam range yang wajar
-        if 'close' in df.columns and len(df) > 0:
-            avg_price = df['close'].mean()
-            min_price = df['close'].min()
-            max_price = df['close'].max()
+        """Validasi data market dengan logging lebih detail - PERBAIKAN UTAMA"""
+        try:
+            # PERBAIKAN: Ganti 'not df' menjadi 'df is None', dan gunakan df.empty hanya jika df bukan None
+            if df is None or df.empty:
+                return False, "Empty DataFrame"
+
+            # Check 2: Column yang diperlukan ada
+            required_columns = ['open', 'high', 'low', 'close']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                return False, f"Missing columns: {missing_columns}"
             
-            if debug_mode:
-                logger.debug(f"🔍 DEBUG {symbol}: Avg price = {avg_price:.8f}, Min = {min_price:.8f}, Max = {max_price:.8f}")
+            # Check 3: Minimal data points
+            min_data_points = 20
+            if len(df) < min_data_points:
+                return False, f"Insufficient data points: {len(df)} < {min_data_points}"
             
-            # Deteksi dini harga ~100 (kemungkinan data sintetik)
-            if abs(avg_price - 100.0) < 0.1:
-                logger.error(f"🚨 CRITICAL: {symbol} has average price ~100 (likely synthetic/bad data)")
-                checks.append(False)
-                messages.append(f"❌ Average price is ~100 (invalid data)")
+            # Check 4: Validasi harga positif
+            price_columns = ['open', 'high', 'low', 'close']
+            for col in price_columns:
+                if (df[col] <= 0).any():
+                    return False, f"Non-positive values in {col}"
             
-            # Check volume jika ada
-            if 'volume' in df.columns:
-                avg_volume = df['volume'].mean()
-                if avg_volume <= 0:
-                    checks.append(False)
-                    messages.append(f"❌ Invalid volume: {avg_volume}")
+            # Check 5: Harga high >= low
+            if (df['high'] < df['low']).any():
+                return False, "Invalid high/low values"
+            
+            # Check 6: Validasi data numerik
+            for col in required_columns:
+                if not pd.api.types.is_numeric_dtype(df[col]):
+                    return False, f"Non-numeric values in {col}"
+            
+            # Check 7: Tidak ada NaN values di kolom penting
+            for col in required_columns:
+                if df[col].isna().any():
+                    return False, f"NaN values in {col}"
+            
+            # Check 8: Harga dalam range yang wajar
+            if 'close' in df.columns and len(df) > 0:
+                avg_price = df['close'].mean()
+                min_price = df['close'].min()
+                max_price = df['close'].max()
+                
+                if debug_mode:
+                    logger.debug(f"🔍 DEBUG {symbol}: Avg price = {avg_price:.8f}, Min = {min_price:.8f}, Max = {max_price:.8f}")
+                
+                # Deteksi dini harga ~100 (kemungkinan data sintetik)
+                if np.any(np.isclose(df['close'].values, 100.0, atol=0.001)):
+                    logger.error(f"🚨 CRITICAL: {symbol} has average price ~100 (likely synthetic/bad data)")
+                    return False, f"Average price is ~100 (invalid data)"
+            
+            return True, "Data validation passed"
         
-        # Check 7: Tidak ada NaN values di kolom penting
-        important_columns = ['open', 'high', 'low', 'close']
-        for col in important_columns:
-            if df[col].isna().any():
-                checks.append(False)
-                messages.append(f"❌ NaN values in {col}")
-        
-        # Hasil akhir
-        all_checks_pass = all(checks) if checks else True
-        
-        if not all_checks_pass:
-            error_msg = f"Data validation failed for {symbol}: " + "; ".join(messages)
-            if debug_mode:
-                logger.error(error_msg)
-            return False, error_msg
-        
-        return True, "Data validation passed"
+        except Exception as e:
+            return False, f"Validation error: {str(e)}"
 
     def _setup_universal_provider(self):
         """Setup provider universal dengan SmartChain priority"""
@@ -2756,8 +2756,9 @@ class EnhancedTradingBot:
                         logger.info(f"    ⚡ Scalping mode: {timeframe} timeframe, {limit} bars")
                         df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
                         
-                        if df is None or len(df) < 50:
-                            logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df else 0} bars")
+                        # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
+                        if df is None or df.empty or len(df) < 50:
+                            logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df is not None and not df.empty else 0} bars")
                             continue
                         
                         # Filter harga untuk scalping
@@ -2789,8 +2790,9 @@ class EnhancedTradingBot:
                             logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
                             df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
                     
-                    if df is None or len(df) < 50:
-                        logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df else 0} bars")
+                    # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
+                    if df is None or df.empty or len(df) < 50:
+                        logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df is not None and not df.empty else 0} bars")
                         continue
                     
                     # Validasi kualitas data
@@ -2869,6 +2871,7 @@ class EnhancedTradingBot:
                 
                 except Exception as e:
                     logger.error(f"❌ Error analyzing {asset.get('symbol', 'unknown')}: {str(e)[:100]}")
+                    logger.error(traceback.format_exc())  # PERBAIKAN: Tambah traceback untuk debug
                     continue
             
             logger.info(f"🎯 Scan completed: {len(signals)} signals found")
@@ -2886,6 +2889,7 @@ class EnhancedTradingBot:
             
         except Exception as e:
             logger.error(f"💥 Error during scanning: {e}")
+            logger.error(traceback.format_exc())
             return []
         finally:
             self.scanning_in_progress = False
@@ -2921,7 +2925,8 @@ class EnhancedTradingBot:
                 logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
             
-            if df is None or len(df) < 50:
+            # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
+            if df is None or df.empty or len(df) < 50:
                 return {'error': 'Insufficient data'}
             
             # Validasi data
@@ -2974,7 +2979,8 @@ class EnhancedTradingBot:
                 logger.info(f"  🔧 Menggunakan provider {self.data_provider.__class__.__name__}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
             
-            if df is None or len(df) < 100:
+            # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
+            if df is None or df.empty or len(df) < 100:
                 return {"error": "Insufficient data for backtest"}
             
             # Validasi data
@@ -3122,7 +3128,8 @@ class EnhancedTradingBot:
                 logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk {formatted_symbol}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 50)
             
-            if df is None or len(df) < 20:
+            # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
+            if df is None or df.empty or len(df) < 20:
                 # Fallback calculation dengan ATR default
                 atr_value = entry_price * 0.02  # 2% ATR default
                 
@@ -3411,7 +3418,7 @@ class EnhancedTradingBot:
                     df = self.data_provider.get_ohlcv(test_symbol, '1h', 10)
                 
                 # Validasi data
-                if df is not None and len(df) > 0:
+                if df is not None and not df.empty:
                     is_valid, msg = self.validate_market_data(df, test_symbol, debug_mode=True)
                     if is_valid:
                         logger.info(f"  ✅ OHLCV data: {len(df)} bars (valid)")
@@ -3597,6 +3604,7 @@ class TradingCore:
                             limit=200
                         )
                     
+                    # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
                     if df is None or df.empty:
                         continue
                     
@@ -3861,4 +3869,6 @@ if __name__ == "__main__":
     print("   - Minimal volume $500k")
     print("   - Skip dummy data")
     print("   - Minimal score 4.0")
+    print("🎯 PERBAIKAN: Semua kondisi 'if df' diperbaiki dengan 'df is None or df.empty'")
+    print("🎯 FIXED: Error 'ambiguous truth value' untuk mode non-crypto (saham_id, forex, us_stocks)")
     print("="*60)
