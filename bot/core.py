@@ -2270,6 +2270,33 @@ class EnhancedTradingBot:
         logger.info("✅ Enhanced TradingBot initialized dengan Universal Provider")
 
     # =============================================
+    # HELPER METHODS FOR MINIMUM BARS BY MARKET TYPE
+    # =============================================
+    
+    def _get_min_bars(self):
+        """Get minimum bars required based on market type"""
+        if self.mode in ['saham_id', 'forex', 'us_stocks']:
+            return 30  # Untuk non-crypto, minimal 30 bar
+        elif self.scalping_mode:
+            return 50  # Scalping tetap 50 bar
+        else:
+            return 50  # Crypto default 50 bar
+
+    def _get_min_bars_backtest(self):
+        """Get minimum bars for backtest based on market type"""
+        if self.mode in ['saham_id', 'forex', 'us_stocks']:
+            return 40  # Untuk backtest non-crypto, minimal 40 bar
+        else:
+            return 100  # Crypto default 100 bar
+
+    def _get_min_data_points_validation(self):
+        """Get minimum data points for validation based on market type"""
+        if self.mode in ['saham_id', 'forex', 'us_stocks']:
+            return 10  # Untuk validasi non-crypto, minimal 10 bar
+        else:
+            return 20  # Crypto default 20 bar
+
+    # =============================================
     # PERBAIKAN UTAMA: POSITION MANAGEMENT METHODS
     # =============================================
 
@@ -2380,7 +2407,7 @@ class EnhancedTradingBot:
                 return False, f"Missing columns: {missing_columns}"
             
             # Check 3: Minimal data points
-            min_data_points = 20
+            min_data_points = self._get_min_data_points_validation()
             if len(df) < min_data_points:
                 return False, f"Insufficient data points: {len(df)} < {min_data_points}"
             
@@ -2757,8 +2784,10 @@ class EnhancedTradingBot:
                         df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
                         
                         # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
-                        if df is None or df.empty or len(df) < 50:
-                            logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df is not None and not df.empty else 0} bars")
+                        # Gunakan minimum bars yang sesuai dengan market type
+                        min_bars = self._get_min_bars()
+                        if df is None or df.empty or len(df) < min_bars:
+                            logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df is not None and not df.empty else 0} bars (minimum {min_bars} required)")
                             continue
                         
                         # Filter harga untuk scalping
@@ -2791,8 +2820,10 @@ class EnhancedTradingBot:
                             df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
                     
                     # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
-                    if df is None or df.empty or len(df) < 50:
-                        logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df is not None and not df.empty else 0} bars")
+                    # Gunakan minimum bars yang sesuai dengan market type
+                    min_bars = self._get_min_bars()
+                    if df is None or df.empty or len(df) < min_bars:
+                        logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df is not None and not df.empty else 0} bars (minimum {min_bars} required)")
                         continue
                     
                     # Validasi kualitas data
@@ -2926,8 +2957,10 @@ class EnhancedTradingBot:
                 df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
-            if df is None or df.empty or len(df) < 50:
-                return {'error': 'Insufficient data'}
+            # Gunakan minimum bars yang sesuai dengan market type
+            min_bars = self._get_min_bars()
+            if df is None or df.empty or len(df) < min_bars:
+                return {'error': f'Insufficient data: {len(df) if df is not None else 0} bars (minimum {min_bars} required)'}
             
             # Validasi data
             is_valid, validation_msg = self.validate_market_data(df, symbol, debug_mode=True)
@@ -2980,8 +3013,10 @@ class EnhancedTradingBot:
                 df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
-            if df is None or df.empty or len(df) < 100:
-                return {"error": "Insufficient data for backtest"}
+            # Gunakan minimum bars yang sesuai dengan market type
+            min_bars_backtest = self._get_min_bars_backtest()
+            if df is None or df.empty or len(df) < min_bars_backtest:
+                return {"error": f"Insufficient data for backtest: {len(df) if df is not None else 0} bars (minimum {min_bars_backtest} required)"}
             
             # Validasi data
             is_valid, validation_msg = self.validate_market_data(df, symbol, debug_mode=True)
@@ -3871,4 +3906,12 @@ if __name__ == "__main__":
     print("   - Minimal score 4.0")
     print("🎯 PERBAIKAN: Semua kondisi 'if df' diperbaiki dengan 'df is None or df.empty'")
     print("🎯 FIXED: Error 'ambiguous truth value' untuk mode non-crypto (saham_id, forex, us_stocks)")
+    print("🎯 PERBAIKAN BARU: Minimum bars berbeda berdasarkan market type:")
+    print("   - Saham ID/Forex/US Stocks: 30 bars untuk scanning")
+    print("   - Crypto: 50 bars untuk scanning")
+    print("   - Scalping: 50 bars (tetap)")
+    print("   - Backtest non-crypto: 40 bars")
+    print("   - Backtest crypto: 100 bars")
+    print("   - Validasi non-crypto: 10 bars")
+    print("   - Validasi crypto: 20 bars")
     print("="*60)
