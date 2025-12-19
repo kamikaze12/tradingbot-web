@@ -296,6 +296,7 @@ EnhancedDexScreenerProvider = None
 get_trading_data = None
 create_strategy_for_symbol = None
 SmartChainDataProvider = None
+NonCryptoAssetsProvider = None  # New import
 
 try:
     print("✅ Mencoba import strategies...")
@@ -351,6 +352,15 @@ except ImportError as e3:
             logger.warning("SoundNotifier dummy digunakan")
         def notify(self, *args, **kwargs):
             pass
+
+# Import NonCryptoAssetsProvider
+try:
+    print("✅ Mencoba import NonCryptoAssetsProvider...")
+    from non_crypto_assets_provider import NonCryptoAssetsProvider
+    print("  ✅ NonCryptoAssetsProvider berhasil diimport")
+except ImportError as e:
+    print(f"  ❌ Gagal import NonCryptoAssetsProvider: {e}")
+    NonCryptoAssetsProvider = None
 
 # PERBAIKAN UTAMA: Import data_provider dengan cara yang benar
 print("\n🔧 Mengimport modul data_provider...")
@@ -2223,6 +2233,10 @@ class EnhancedTradingBot:
         self.data_provider = None
         self._setup_universal_provider()
         
+        # **TAMBAHAN: Setup NonCryptoAssetsProvider**
+        self.non_crypto_provider = None
+        self._setup_non_crypto_provider()
+        
         # Initialize components
         self.strategy = None
         self.notifier = SoundNotifier()
@@ -2591,6 +2605,22 @@ class EnhancedTradingBot:
             logger.error(f"❌ Failed to setup universal provider: {e}")
             return False
 
+    def _setup_non_crypto_provider(self):
+        """Setup NonCryptoAssetsProvider untuk aset non-crypto"""
+        try:
+            if NonCryptoAssetsProvider is not None:
+                self.non_crypto_provider = NonCryptoAssetsProvider()
+                logger.info("✅ NonCryptoAssetsProvider initialized")
+                return True
+            else:
+                logger.warning("⚠️ NonCryptoAssetsProvider not available")
+                self.non_crypto_provider = None
+                return False
+        except Exception as e:
+            logger.error(f"❌ Failed to setup NonCryptoAssetsProvider: {e}")
+            self.non_crypto_provider = None
+            return False
+
     def load_config(self):
         """Load configuration dengan error handling"""
         try:
@@ -2678,7 +2708,11 @@ class EnhancedTradingBot:
         try:
             logger.info(f"🔄 Getting {limit} popular assets for {self.mode} market...")
             
-            # Get assets dari provider
+            # **PERBAIKAN: Gunakan NonCryptoAssetsProvider untuk non-crypto markets**
+            if self.mode in ['saham_id', 'forex', 'us_stocks'] and self.non_crypto_provider:
+                return self._get_non_crypto_assets_from_provider(limit)
+            
+            # Get assets dari provider untuk crypto
             assets = []
             if hasattr(self.data_provider, 'get_popular_assets'):
                 assets = self.data_provider.get_popular_assets(limit=limit * 2)  # Get more untuk difilter
@@ -2774,6 +2808,141 @@ class EnhancedTradingBot:
         except Exception as e:
             logger.error(f"Error getting popular assets: {e}")
             return []
+    
+    def _get_non_crypto_assets_from_provider(self, limit=100):
+        """Get non-crypto assets dari NonCryptoAssetsProvider"""
+        try:
+            if not self.non_crypto_provider:
+                logger.warning("NonCryptoAssetsProvider not available")
+                return []
+            
+            category_map = {
+                'saham_id': 'indonesia_stocks',
+                'forex': 'forex', 
+                'us_stocks': 'us_stocks'
+            }
+            
+            category = category_map.get(self.mode)
+            if not category:
+                logger.error(f"Invalid mode for NonCryptoAssetsProvider: {self.mode}")
+                return []
+            
+            # Get assets dari provider
+            symbols = self.non_crypto_provider.get_assets(
+                category=category, 
+                limit=limit, 
+                force_update=False  # Gunakan cache default
+            )
+            
+            if not symbols:
+                logger.warning(f"No symbols found for {self.mode} from NonCryptoAssetsProvider")
+                return []
+            
+            logger.info(f"📊 NonCryptoAssetsProvider returned {len(symbols)} symbols for {self.mode}")
+            
+            # Format hasil untuk konsistensi
+            processed_assets = []
+            for symbol in symbols:
+                # Untuk non-crypto, semua adalah spot trading
+                detected_type = "spot"
+                
+                # Format simbol untuk provider
+                if self.mode == 'saham_id':
+                    # Saham Indonesia: sudah dalam format .JK
+                    formatted_symbol = symbol
+                elif self.mode == 'forex':
+                    # Forex: pastikan format yfinance
+                    if '=X' not in symbol:
+                        formatted_symbol = f"{symbol}=X"
+                    else:
+                        formatted_symbol = symbol
+                elif self.mode == 'us_stocks':
+                    # US Stocks: tanpa suffix
+                    formatted_symbol = symbol.split('.')[0] if '.' in symbol else symbol
+                else:
+                    formatted_symbol = symbol
+                
+                # Dapatkan nama aset jika memungkinkan
+                name = symbol
+                if self.mode == 'us_stocks' and len(symbol) <= 5:
+                    # Untuk ticker US, coba dapatkan nama dari yfinance
+                    try:
+                        import yfinance as yf
+                        ticker = yf.Ticker(symbol)
+                        info = ticker.info
+                        if 'shortName' in info:
+                            name = info['shortName']
+                        elif 'longName' in info:
+                            name = info['longName']
+                    except:
+                        pass
+                
+                processed_assets.append({
+                    'symbol': symbol,
+                    'name': name,
+                    'detected_type': detected_type,
+                    'formatted_symbol': formatted_symbol,
+                    'source': 'non_crypto_provider'
+                })
+            
+            # Acak urutan untuk menghindari bias
+            random.shuffle(processed_assets)
+            
+            logger.info(f"✅ Processed {len(processed_assets)} assets from NonCryptoAssetsProvider")
+            return processed_assets[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error getting non-crypto assets: {e}")
+            # Fallback ke metode lama
+            return self._get_non_crypto_assets_fallback()
+    
+    def _get_non_crypto_assets_fallback(self):
+        """Fallback method untuk mendapatkan non-crypto assets jika provider gagal"""
+        logger.info(f"🔄 Using fallback method for {self.mode} assets")
+        
+        fallback_assets = []
+        
+        if self.mode == 'saham_id':
+            # Saham Indonesia fallback
+            fallback_symbols = [
+                'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK',
+                'UNVR.JK', 'ICBP.JK', 'INDF.JK', 'ANTM.JK', 'ADRO.JK',
+                'AKRA.JK', 'AMRT.JK', 'INCO.JK', 'BRPT.JK', 'SMGR.JK',
+                'PGAS.JK', 'KLBF.JK', 'CPIN.JK', 'INTP.JK', 'BBNI.JK',
+                'BNGA.JK', 'BSDE.JK', 'BUKA.JK', 'GOTO.JK', 'MDKA.JK',
+                'ITMG.JK', 'MNCN.JK', 'ERAA.JK', 'TPIA.JK', 'BUMI.JK'
+            ]
+            
+        elif self.mode == 'forex':
+            # Forex fallback
+            fallback_symbols = [
+                'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X',
+                'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+                'AUDJPY=X', 'EURCHF=X', 'GBPCHF=X', 'AUDNZD=X', 'NZDJPY=X',
+                'USDSGD=X', 'USDHKD=X', 'USDCNY=X', 'USDKRW=X', 'USDMYR=X'
+            ]
+            
+        elif self.mode == 'us_stocks':
+            # US Stocks fallback
+            fallback_symbols = [
+                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA',
+                'BRK-B', 'JPM', 'V', 'JNJ', 'WMT', 'PG', 'MA', 'UNH',
+                'HD', 'BAC', 'DIS', 'ADBE', 'NFLX', 'CMCSA', 'PEP',
+                'CSCO', 'INTC', 'T', 'PFE', 'XOM', 'CVX', 'ABT', 'KO'
+            ]
+        else:
+            return []
+        
+        for symbol in fallback_symbols:
+            fallback_assets.append({
+                'symbol': symbol,
+                'name': symbol,
+                'detected_type': 'spot',
+                'formatted_symbol': symbol,
+                'source': 'fallback'
+            })
+        
+        return fallback_assets
 
     def scan_potential_assets(self, limit=25, search_query: str = None):
         """Scan sederhana dengan provider universal - PERBAIKAN UTAMA"""
@@ -3477,7 +3646,25 @@ class EnhancedTradingBot:
             logger.info("🧪 Testing UniversalProvider connection...")
             logger.info(f"  Provider: {self.data_provider.__class__.__name__}")
             
-            # Test get popular assets menggunakan metode yang sudah diperbaiki
+            # **PERBAIKAN: Handle non-crypto provider test**
+            if self.mode in ['saham_id', 'forex', 'us_stocks']:
+                logger.info(f"  Mode {self.mode} menggunakan NonCryptoAssetsProvider")
+                
+                # Test NonCryptoAssetsProvider
+                if self.non_crypto_provider:
+                    assets = self.get_popular_assets(5)
+                    if assets:
+                        asset_symbols = [f"{a['symbol']} ({a['name']})" for a in assets[:5]]
+                        logger.info(f"  ✅ NonCryptoAssetsProvider test passed")
+                        return asset_symbols
+                    else:
+                        logger.warning("  ⚠️ NonCryptoAssetsProvider returned no assets")
+                        return []
+                else:
+                    logger.warning("  ⚠️ NonCryptoAssetsProvider not available")
+                    return []
+            
+            # Test get popular assets untuk crypto
             assets = self.get_popular_assets(5)
             
             if not assets:
@@ -4001,11 +4188,79 @@ def test_short_filter_for_saham_id():
     print(f"   Constrained action: {constrained_analysis['action']}")
     print(f"   Result: {'✅ SHORT diizinkan' if constrained_analysis['action'] == 'SHORT' else '❌ ERROR: SHORT tidak diizinkan'}")
 
+def test_non_crypto_provider_integration():
+    """Test integrasi NonCryptoAssetsProvider"""
+    print("\n" + "="*60)
+    print("TESTING NON-CRYPTO PROVIDER INTEGRATION")
+    print("="*60)
+    
+    bot = EnhancedTradingBot()
+    
+    # Test Saham Indonesia
+    print("\n1. Testing SAHAM_ID dengan NonCryptoAssetsProvider...")
+    success = bot.set_mode("saham_id")
+    
+    if success:
+        print("✅ Saham ID mode set successfully")
+        
+        # Test popular assets
+        assets = bot.get_popular_assets(10)
+        print(f"   Found {len(assets)} Indonesian stocks")
+        for i, asset in enumerate(assets[:10]):
+            print(f"   {i+1}. {asset['symbol']} ({asset['name']}) - Source: {asset.get('source', 'unknown')}")
+        
+        # Test scanning
+        print("\n2. Testing scanning SAHAM_ID...")
+        signals = bot.scan_potential_assets(limit=5)
+        print(f"   Found {len(signals)} Indonesian stock signals")
+        
+        if signals:
+            for i, signal in enumerate(signals[:5]):
+                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']})")
+                # Pastikan tidak ada sinyal SHORT untuk saham Indonesia
+                if signal['action'] == 'SHORT':
+                    print(f"     ⚠️ ERROR: SHORT signal found for Indonesian stock!")
+        else:
+            print("   ℹ️ No Indonesian stock signals found - this is normal with real data")
+    
+    # Test US Stocks
+    print("\n3. Testing US_STOCKS dengan NonCryptoAssetsProvider...")
+    success = bot.set_mode("us_stocks")
+    
+    if success:
+        print("✅ US Stocks mode set successfully")
+        
+        # Test popular assets
+        assets = bot.get_popular_assets(10)
+        print(f"   Found {len(assets)} US stocks")
+        for i, asset in enumerate(assets[:10]):
+            print(f"   {i+1}. {asset['symbol']} ({asset['name']}) - Source: {asset.get('source', 'unknown')}")
+    
+    # Test Forex
+    print("\n4. Testing FOREX dengan NonCryptoAssetsProvider...")
+    success = bot.set_mode("forex")
+    
+    if success:
+        print("✅ Forex mode set successfully")
+        
+        # Test popular assets
+        assets = bot.get_popular_assets(10)
+        print(f"   Found {len(assets)} forex pairs")
+        for i, asset in enumerate(assets[:10]):
+            print(f"   {i+1}. {asset['symbol']} ({asset['name']}) - Source: {asset.get('source', 'unknown')}")
+    
+    print("\n" + "="*60)
+    print("✅ NonCryptoAssetsProvider integration test completed")
+    print("   Menggunakan cache untuk mengurangi API calls")
+    print("   Fallback ke list statis jika provider gagal")
+    print("   Auto-detect dan format simbol untuk yfinance")
+
 if __name__ == "__main__":
     test_universal_provider()
     test_data_cleaner_integration()
     test_scalping_filters()
     test_short_filter_for_saham_id()
+    test_non_crypto_provider_integration()
     
     print("\n" + "="*60)
     print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER")
@@ -4014,6 +4269,12 @@ if __name__ == "__main__":
     print("🎯 Leverage auto-detection (1x spot, 5x futures)")
     print("🎯 Provider universal (CCXT untuk crypto, YFinance untuk stocks/forex)")
     print("🎯 SmartChainDataProvider sebagai prioritas utama")
+    print("🎯 NON-CRYPTO ASSETS PROVIDER terintegrasi untuk:")
+    print("   - Saham Indonesia (.JK)")
+    print("   - US Stocks")
+    print("   - Forex pairs")
+    print("🎯 Menggunakan cache 3 hari untuk mengurangi API calls")
+    print("🎯 Fallback ke list statis jika fetch gagal")
     print("🎯 Filter aset berdasarkan market mode (crypto, saham_id, forex, us_stocks)")
     print("🎯 TANPA BIAS - Semua sinyal (LONG/SHORT) diterima berdasarkan analisis murni")
     print("🎯 SHORT DIIZINKAN untuk crypto (spot & futures) - TANPA DIBLOKIR")
