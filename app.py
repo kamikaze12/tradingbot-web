@@ -12,6 +12,8 @@ import os
 import json
 import traceback
 from datetime import datetime, timedelta
+import urllib.request
+from http.client import HTTPConnection
 
 # ✅ FIX: Add the project root to Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -228,6 +230,78 @@ def init_bot():
 # ====================================
 load_dotenv()
 st.set_page_config(page_title="TradingBot Pro", layout="wide")
+
+# 🔥 AUTO-REFRESH SCRIPT untuk keep alive (TAMBAHKAN DI SINI)
+auto_refresh_js = """
+<script>
+function keepAlive() {
+    // Send ping setiap 30 detik untuk menjaga session
+    setInterval(function() {
+        fetch(window.location.href, {method: 'HEAD'});
+        console.log('🔄 Keep-alive ping sent');
+    }, 30000);
+    
+    // Refresh halaman setiap 15 menit jika idle (optional)
+    let lastActivity = Date.now();
+    const idleTimeout = 900000; // 15 menit
+    
+    document.addEventListener('mousemove', () => lastActivity = Date.now());
+    document.addEventListener('keypress', () => lastActivity = Date.now());
+    
+    setInterval(() => {
+        if (Date.now() - lastActivity > idleTimeout) {
+            console.log('🔄 Refreshing page due to inactivity');
+            window.location.reload();
+        }
+    }, 60000);
+}
+window.onload = keepAlive;
+</script>
+"""
+
+# Inject JavaScript untuk keep alive
+st.components.v1.html(auto_refresh_js, height=0)
+
+# ====================================
+# KEEP ALIVE BACKGROUND THREAD
+# ====================================
+def start_background_ping():
+    """Mulai background thread untuk keep alive"""
+    def ping_server():
+        while True:
+            try:
+                # Get the current port from Streamlit config
+                port = 8501  # Default Streamlit port
+                
+                # Try multiple endpoints
+                endpoints = [
+                    f"http://localhost:{port}/_stcore/health",
+                    f"http://localhost:{port}/healthz",
+                    f"http://localhost:{port}/",
+                    f"http://127.0.0.1:{port}/_stcore/health"
+                ]
+                
+                for endpoint in endpoints:
+                    try:
+                        conn = HTTPConnection("localhost", port, timeout=10)
+                        conn.request("HEAD", "/_stcore/health")
+                        response = conn.getresponse()
+                        conn.close()
+                        if response.status < 500:
+                            print(f"🔄 Keep-alive ping at {datetime.now().strftime('%H:%M:%S')}")
+                            break
+                    except:
+                        continue
+                        
+            except Exception as e:
+                print(f"⚠️ Ping failed: {e}")
+            time.sleep(60)  # Ping setiap 60 detik
+    
+    if 'background_thread_started' not in st.session_state:
+        thread = threading.Thread(target=ping_server, daemon=True)
+        thread.start()
+        st.session_state.background_thread_started = True
+        print("✅ Background keep-alive thread started")
 
 # ====================================
 # SCALPING CONFIGURATION FOR APP - PERBAIKAN
@@ -1201,6 +1275,10 @@ def update_all_positions_prices(bot):
 # ====================================
 def main_app():
     st.title("🚀 TradingBot Pro - Enhanced Dashboard with Scalping Support")
+    
+    # 🔥 START KEEP-ALIVE THREAD (TAMBAHKAN DI SINI)
+    if 'background_thread_started' not in st.session_state:
+        start_background_ping()
     
     # User info and logout
     col1, col2 = st.columns([3, 1])
@@ -3647,7 +3725,8 @@ def main():
         'use_risk_management': False,
         # JANGAN inisialisasi bot_instance di sini - biarkan di main_app()
         'positions_initialized': False,
-        'refresh_counter': 0
+        'refresh_counter': 0,
+        'background_thread_started': False  # 🔥 NEW: Untuk thread keep-alive
     }
     
     # Set default values for any missing session states
