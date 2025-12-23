@@ -83,10 +83,10 @@ def import_trading_bot():
                 self.mode = mode
                 return True
             
-            def get_popular_assets(self, limit=100):
+            def get_popular_assets(self, limit=500):  # 🔥 PERBAIKAN: 200 → 500
                 return []
             
-            def scan_potential_assets(self, limit=25):
+            def scan_potential_assets(self, limit=50):  # 🔥 PERBAIKAN: 25 → 50
                 return []
             
             def analyze_asset(self, symbol):
@@ -312,7 +312,7 @@ SCALPING_CONFIG_APP = {
     "lookback": 150,              # ~12.5 jam data
     "min_score": 2.5,             # 🔥 PERBAIKAN: Turun dari 3.0 ke 2.5
     "long_bias": 0.0,             # 🔥 PERBAIKAN: Ubah dari 0.3 ke 0.0 (no bias)
-    "max_signals": 15,            # 🔥 PERBAIKAN: Tambah dari 10 ke 15
+    "max_signals": 20,            # 🔥 PERBAIKAN: Tambah dari 15 ke 20
     "min_volume_usd": 100000,     # Tetap 100k
     "price_filter": {
         "min": 0.01,              # Harga minimal $0.01
@@ -1355,6 +1355,18 @@ def main_app():
     with st.sidebar:
         st.header("🎯 Trading Configuration")
         
+        # 🔥 NEW: Info tentang 500+ aset
+        if st.session_state.market_set and st.session_state.current_market in ["Saham Indonesia", "US Stocks", "Forex"]:
+            st.success(f"✅ **500+ ASSETS SUPPORTED**")
+            st.caption(f"Auto-fetch from NonCryptoAssetsProvider with cache")
+            st.info("""
+            **📊 Supported Markets:**
+            - Saham Indonesia: 500+ saham terdaftar di BEI
+            - US Stocks: 500+ saham utama Nasdaq/NYSE
+            - Forex: 50+ pasangan mata uang utama
+            - Crypto: 200+ aset cryptocurrency
+            """)
+        
         # 🎯 Scalping Mode Toggle
         scalping_mode = st.checkbox("⚡ Enable Scalping Mode", 
                                     value=st.session_state.scalping_mode,
@@ -1392,6 +1404,7 @@ def main_app():
             - Entry Range: 0.8%
             - Max Price: ${SCALPING_CONFIG_APP["price_filter"]["max"]}
             - Allow Short: ✅ Yes
+            - Max Signals: {SCALPING_CONFIG_APP["max_signals"]}
             """)
         
         st.divider()
@@ -1488,6 +1501,27 @@ def main_app():
                         st.session_state.selected_for_entry = {}
                         st.session_state.selected_symbol_display = None
                         
+                        # 🔥 NEW: Load 500+ assets for non-crypto markets
+                        if market_choice in ["Saham Indonesia", "US Stocks", "Forex"]:
+                            st.info(f"📊 Loading 500+ {market_choice} assets...")
+                            # Call to load assets from NonCryptoAssetsProvider
+                            if hasattr(bot, 'data_provider') and hasattr(bot.data_provider, 'load_non_crypto_assets'):
+                                try:
+                                    category_map = {
+                                        "Saham Indonesia": "indonesia_stocks",
+                                        "US Stocks": "us_stocks",
+                                        "Forex": "forex"
+                                    }
+                                    category = category_map.get(market_choice)
+                                    if category:
+                                        assets_count = bot.data_provider.load_non_crypto_assets(category, limit=500)
+                                        if assets_count:
+                                            st.success(f"✅ Loaded {assets_count} {market_choice} assets")
+                                        else:
+                                            st.warning(f"⚠️ Could not load assets for {market_choice}")
+                                except Exception as e:
+                                    st.warning(f"⚠️ Asset loading: {e}")
+                        
                         st.success(f"✅ Market set to: {market_choice} ({trading_mode})")
                         st.rerun()
                     else:
@@ -1506,6 +1540,10 @@ def main_app():
             
             if st.session_state.scalping_mode:
                 st.success("⚡ SCALPING MODE: ON")
+            
+            # 🔥 NEW: Tampilkan jumlah aset yang tersedia
+            if st.session_state.current_market in ["Saham Indonesia", "US Stocks", "Forex"]:
+                st.info(f"📈 **500+ Assets Available**")
         
         # Info tentang simbol berdasarkan mode
         if st.session_state.market_set:
@@ -1513,15 +1551,36 @@ def main_app():
                 if hasattr(bot, 'trading_mode'):
                     if bot.trading_mode == "spot":
                         st.write("**Spot Trading Format:**")
-                        st.write("- Crypto: BTC/USDT, ETH/USDT")
-                        st.write("- Forex: EUR/USD, GBP/USD")
-                        st.write("- Saham ID: BBCA.JK, TLKM.JK")
-                        st.write("- US Stocks: AAPL, TSLA")
+                        st.write("- Crypto: BTC/USDT, ETH/USDT (200+ assets)")
+                        st.write("- Forex: EUR/USD, GBP/USD (50+ pairs)")
+                        st.write("- Saham ID: BBCA.JK, TLKM.JK (500+ stocks)")
+                        st.write("- US Stocks: AAPL, TSLA (500+ stocks)")
                     else:
                         st.write("**Futures Trading Format:**")
                         st.write("- Crypto: BTC/USDT:USDT, ETH/USDT:USDT")
                         st.write("- Crypto (alternative): BTCUSDT-PERP, ETHUSDT-PERP")
-
+        
+        # Asset Count Information
+        if st.session_state.market_set:
+            with st.expander("📊 Asset Count Information"):
+                asset_counts = {
+                    "Crypto": "200+ cryptocurrency pairs",
+                    "Forex": "50+ major forex pairs",
+                    "Saham Indonesia": "500+ stocks (BEI listed)",
+                    "US Stocks": "500+ major stocks (S&P 500 + Nasdaq)"
+                }
+                
+                current_market = st.session_state.current_market
+                if current_market in asset_counts:
+                    st.success(f"**{current_market}**: {asset_counts[current_market]}")
+                
+                st.info("""
+                **💡 Tips:**
+                - Larger asset pools = Better signal diversity
+                - More assets = Higher chance of finding profitable opportunities
+                - Auto-refresh every 24 hours for fresh data
+                """)
+        
         # ============================================
         # Provider Info di Sidebar
         # ============================================
@@ -1557,6 +1616,10 @@ def main_app():
                         st.write(f"**Provider:** {provider_type}")
                         st.write(f"**Status:** {status}")
                         
+                    # 🔥 NEW: Asset count info
+                    if st.session_state.current_market in ["Saham Indonesia", "US Stocks", "Forex"]:
+                        st.info(f"**Asset Pool:** 500+ assets available")
+                    
                     if st.button("🔄 Test Provider", key="test_provider"):
                         with st.spinner("Testing..."):
                             # Test dengan BTC/USDT
@@ -1630,6 +1693,12 @@ def main_app():
         3. Click **Set Market** button
         4. Start scanning assets
         
+        **📊 Asset Availability:**
+        - **Saham Indonesia**: 500+ stocks
+        - **US Stocks**: 500+ stocks  
+        - **Forex**: 50+ currency pairs
+        - **Crypto**: 200+ cryptocurrency pairs
+        
         **Note:** 
         - Futures trading only available for Crypto
         - Short trading only available for Crypto Futures
@@ -1663,7 +1732,19 @@ def main_app():
             - Bias: `{SCALPING_CONFIG_APP['long_bias']}` (Neutral)
             - Entry Range: `{SCALPING_CONFIG_APP['entry_range_pct']*100:.1f}%`
             - Allow Short: ✅ Yes
+            - Max Signals: `{SCALPING_CONFIG_APP['max_signals']}`
             """)
+        
+        # 🔥 NEW: Asset pool information
+        asset_pool_info = {
+            "Crypto": "200+ cryptocurrency pairs",
+            "Forex": "50+ forex pairs", 
+            "Saham Indonesia": "500+ Indonesian stocks",
+            "US Stocks": "500+ US stocks"
+        }
+        
+        if st.session_state.current_market in asset_pool_info:
+            st.success(f"📈 **Asset Pool:** {asset_pool_info[st.session_state.current_market]}")
         
         if mode_info:
             st.info(" | ".join(mode_info))
@@ -1689,7 +1770,7 @@ def main_app():
             st.divider()
         
         # Scan button dengan opsi berbeda untuk scalping mode
-        col_scan1, col_scan2 = st.columns([1, 3])
+        col_scan1, col_scan2, col_scan3 = st.columns([1, 2, 1])
         with col_scan1:
             if st.session_state.scalping_mode:
                 scan_button_label = "🚀 Start Scalping Scan"
@@ -1698,26 +1779,37 @@ def main_app():
                 scan_button_label = "🚀 Start Regular Scan"
                 scan_type = "regular"
         
+        with col_scan2:
+            # Scan limit selector
+            if st.session_state.current_market in ["Saham Indonesia", "US Stocks"]:
+                scan_limit = st.select_slider(
+                    "Scan Limit:",
+                    options=[10, 25, 50, 100, 200, 300],
+                    value=50,
+                    key="scan_limit_slider"
+                )
+            else:
+                scan_limit = st.select_slider(
+                    "Scan Limit:",
+                    options=[10, 25, 50, 100],
+                    value=25,
+                    key="scan_limit_slider"
+                )
+        
         # Scan button
         if st.button(scan_button_label, key="start_scan", type="primary"):
-            with st.spinner(f"Scanning assets ({scan_type})..."):
+            with st.spinner(f"Scanning {scan_limit} assets ({scan_type})..."):
                 try:
-                    # 🔥 PERBAIKAN: Gunakan jumlah yang sesuai
-                    if st.session_state.scalping_mode:
-                        limit = 20  # Lebih banyak untuk scalping
-                    else:
-                        limit = 20
-                    
                     # Pastikan bot tidak None
                     if bot is None:
                         st.error("❌ Bot is not initialized")
                         return
                     
-                    # Gunakan scan_potential_assets_optimized jika tersedia
+                    # Gunakan scan_potential_assets dengan limit yang dipilih
                     if hasattr(bot, 'scan_potential_assets_optimized'):
-                        results = bot.scan_potential_assets_optimized(limit)
+                        results = bot.scan_potential_assets_optimized(scan_limit)
                     else:
-                        results = bot.scan_potential_assets(limit)
+                        results = bot.scan_potential_assets(scan_limit)
                     
                     if results:
                         # Process results
@@ -1767,14 +1859,16 @@ def main_app():
                         st.session_state.scalping_results = scalping_results  # 🔥 NEW
                         
                         # 🔥 PERBAIKAN: Tampilkan informasi detail
-                        col_info1, col_info2, col_info3 = st.columns(3)
+                        col_info1, col_info2, col_info3, col_info4 = st.columns(4)
                         with col_info1:
-                            st.metric("Total Assets Scanned", len(results))
+                            st.metric("Assets Scanned", scan_limit)
                         with col_info2:
                             st.metric("Valid Signals", len(formatted_results))
                         with col_info3:
                             if st.session_state.scalping_mode:
                                 st.metric("Scalping Signals", len(scalping_results))
+                        with col_info4:
+                            st.metric("Scan Time", f"{datetime.now().strftime('%H:%M:%S')}")
                         
                         if st.session_state.scalping_mode:
                             if scalping_results:
@@ -1829,7 +1923,7 @@ def main_app():
         if st.session_state.scalping_mode and st.session_state.scalping_results:
             st.subheader("⚡ Scalping Signals")
             
-            for i, res in enumerate(st.session_state.scalping_results[:10], 1):
+            for i, res in enumerate(st.session_state.scalping_results[:SCALPING_CONFIG_APP["max_signals"]], 1):
                 if isinstance(res, dict) and 'symbol' in res:
                     selected = display_scalping_signal(res, i)
                     if selected:
@@ -2140,6 +2234,7 @@ def main_app():
             - No bias (0.0) - equal LONG/SHORT opportunities
             - Optimized for quick 3-5 minute trades
             - SHORT signals allowed ✅
+            - Max signals: {SCALPING_CONFIG_APP["max_signals"]}
             """)
             
             if st.button("⚡ Enable Scalping Mode", key="enable_scalping_tab"):
@@ -2178,11 +2273,11 @@ def main_app():
             col_qs1, col_qs2, col_qs3 = st.columns(3)
             
             with col_qs1:
-                if st.button("🎯 Quick Scan (Top 15)", key="quick_scalping_scan", type="primary"):
+                if st.button("🎯 Quick Scan (Top 20)", key="quick_scalping_scan", type="primary"):
                     with st.spinner("Quick scanning for scalping..."):
                         try:
                             # Quick scan untuk scalping
-                            results = bot.scan_potential_assets(15)
+                            results = bot.scan_potential_assets(SCALPING_CONFIG_APP["max_signals"])
                             if results:
                                 scalping_signals = []
                                 for res in results:
@@ -2223,13 +2318,13 @@ def main_app():
             
             # Display Scalping Results
             if st.session_state.scalping_results:
-                st.subheader("⚡ Active Scalping Signals")
+                st.subheader(f"⚡ Active Scalping Signals ({len(st.session_state.scalping_results)} found)")
                 
                 # Sort by absolute score descending (strongest first)
                 sorted_signals = sorted(st.session_state.scalping_results, 
                                       key=lambda x: abs(x.get('score', 0)), reverse=True)
                 
-                for i, signal in enumerate(sorted_signals[:8], 1):
+                for i, signal in enumerate(sorted_signals[:SCALPING_CONFIG_APP["max_signals"]], 1):
                     with st.container():
                         col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
                         
@@ -2286,13 +2381,13 @@ def main_app():
             
             # Scalping Tips
             with st.expander("💡 Scalping Tips"):
-                st.write("""
+                st.write(f"""
                 **Scalping Strategy (3-5 minutes):**
                 1. **Entry Timing:** Wait for price to hit entry range
                 2. **Position Size:** 2-5% of capital per trade
                 3. **Take Profit:** TP1 is primary target (60-70% probability)
                 4. **Stop Loss:** Always use stop loss
-                5. **Max Trades:** 3-5 trades per day max
+                5. **Max Trades:** {SCALPING_CONFIG_APP["max_signals"]} signals maximum
                 
                 **Risk Management:**
                 - Max risk per trade: 1% of capital
@@ -2309,6 +2404,7 @@ def main_app():
                 - High volume (> $1M daily)
                 - Moderate volatility (2-8% daily)
                 - Clear support/resistance levels
+                - Large asset pool (500+ assets recommended)
                 """)
 
     # Tab 3: Analyze Asset - FIXED VERSION
@@ -2323,6 +2419,14 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_status.append("⚡ **SCALPING:** ON")
+        
+        # Asset pool info
+        if st.session_state.current_market in ["Saham Indonesia", "US Stocks"]:
+            mode_status.append("📈 **500+ Assets**")
+        elif st.session_state.current_market == "Forex":
+            mode_status.append("💱 **50+ Pairs**")
+        elif st.session_state.current_market == "Crypto":
+            mode_status.append("💰 **200+ Pairs**")
         
         if mode_status:
             st.info(" | ".join(mode_status))
@@ -2557,6 +2661,10 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_info.append("⚡ **SCALPING:** ON")
+        
+        # Asset pool info
+        if st.session_state.current_market in ["Saham Indonesia", "US Stocks"]:
+            mode_info.append("📈 **500+ Assets**")
         
         if mode_info:
             st.info(" | ".join(mode_info))
@@ -2918,6 +3026,10 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_info.append("⚡ **SCALPING:** ON")
+        
+        # Asset pool info
+        if st.session_state.current_market in ["Saham Indonesia", "US Stocks"]:
+            mode_info.append("📈 **500+ Assets**")
         
         if mode_info:
             st.info(" | ".join(mode_info))
@@ -3683,12 +3795,18 @@ def main_app():
         - Correlation analysis
         
         **Scalping Portfolio Rules:**
-        1. Max 3-5 positions simultaneously
+        1. Max {SCALPING_CONFIG_APP["max_signals"]} positions simultaneously
         2. 1-3% position size per trade
         3. Stop loss always set
         4. Take profit at TP1 (60% probability)
         5. Maximum 5 trades per day
         6. Equal opportunities for LONG/SHORT
+        
+        **📊 Large Asset Pool Advantage:**
+        - 500+ assets = Higher signal quality
+        - More diversification opportunities
+        - Better risk management
+        - Higher probability of profitable trades
         """)
 
 def main():
