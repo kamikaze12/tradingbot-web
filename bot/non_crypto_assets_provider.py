@@ -2,7 +2,7 @@ import json
 import os
 from datetime import datetime, timedelta
 import logging
-import yfinance as yf  # Tetap pakai untuk validasi minimal (quick check), tapi bisa dihapus jika ingin pure non-yfinance
+import yfinance as yf
 import ccxt
 import pandas as pd
 from typing import List, Dict, Optional, Set
@@ -153,7 +153,7 @@ class NonCryptoAssetsProvider:
             symbols_list = list(all_symbols)
             logger.info(f"📊 Total unique symbols collected: {len(symbols_list)}")
             
-            # Validasi paralel dengan thread pool - Improve: Tambah check minimal data (gratis, tanpa full OHLCV)
+            # Validasi paralel dengan thread pool
             valid_symbols = self._validate_symbols_parallel(symbols_list[:limit*2])
             
             logger.info(f"✅ Validated {len(valid_symbols)} Indonesia stocks")
@@ -165,10 +165,9 @@ class NonCryptoAssetsProvider:
             return self._get_all_indonesia_static()[:limit]
     
     def _fetch_from_idx_api(self) -> List[str]:
-        """Fetch dari API resmi IDX. - Improve: Tambah headers dan timeout."""
+        """Fetch dari API resmi IDX."""
         symbols = []
         try:
-            # URL untuk semua perusahaan tercatat
             url = "https://www.idx.co.id/umbraco/Surface/ListedCompany/GetCompanyProfiles?length=2000&start=0"
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -184,7 +183,6 @@ class NonCryptoAssetsProvider:
                     for company in data['data']:
                         symbol = company.get('KodeEmiten', '')
                         if symbol:
-                            # Format: kode + .JK
                             formatted = f"{symbol.strip().upper()}.JK"
                             symbols.append(formatted)
         except Exception as e:
@@ -193,10 +191,9 @@ class NonCryptoAssetsProvider:
         return symbols
     
     def _fetch_from_idx_website(self) -> List[str]:
-        """Scrape dari website IDX. - Improve: Tambah headers anti-block."""
+        """Scrape dari website IDX."""
         symbols = []
         try:
-            # Main page for listed companies
             url = "https://www.idx.co.id/listed-companies/company-profiles/"
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -206,11 +203,9 @@ class NonCryptoAssetsProvider:
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Cari semua link yang mengandung kode saham
                 for link in soup.find_all('a'):
                     href = link.get('href', '')
                     if '/listed-companies/company-profiles/' in href and len(href) > 50:
-                        # Extract symbol dari URL
                         parts = href.split('/')
                         if len(parts) >= 2:
                             symbol_part = parts[-2]
@@ -223,23 +218,20 @@ class NonCryptoAssetsProvider:
         return symbols
     
     def _fetch_from_wikipedia(self) -> List[str]:
-        """Fetch dari Wikipedia IDX list. - Improve: Cari multiple tables."""
+        """Fetch dari Wikipedia IDX list."""
         symbols = []
         try:
             url = 'https://en.wikipedia.org/wiki/List_of_companies_listed_on_the_Indonesia_Stock_Exchange'
             
-            # Try multiple table indices
             for table_idx in range(0, 10):
                 try:
                     tables = pd.read_html(url)
                     if table_idx < len(tables):
                         table = tables[table_idx]
                         
-                        # Cari kolom yang berisi kode saham
                         for col in table.columns:
                             col_lower = col.lower()
                             if 'code' in col_lower or 'symbol' in col_lower or 'kode' in col_lower or 'ticker' in col_lower:
-                                # Extract symbols
                                 col_data = table[col].dropna().astype(str)
                                 for item in col_data:
                                     item_clean = item.strip().upper()
@@ -251,7 +243,6 @@ class NonCryptoAssetsProvider:
                 except:
                     continue
             
-            # Remove duplicates
             symbols = list(set(symbols))
             
         except Exception as e:
@@ -260,7 +251,7 @@ class NonCryptoAssetsProvider:
         return symbols
     
     def _fetch_from_investing_com(self) -> List[str]:
-        """NEW: Fetch dari Investing.com Indonesia equities - Scrape table untuk symbols lengkap."""
+        """Fetch dari Investing.com Indonesia equities."""
         symbols = []
         try:
             url = "https://id.investing.com/equities/indonesia"
@@ -273,21 +264,18 @@ class NonCryptoAssetsProvider:
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Cari table saham
-                table = soup.find('table', {'id': 'cross_rate_markets_stocks_1'})  # ID table di Investing.com
+                table = soup.find('table', {'id': 'cross_rate_markets_stocks_1'})
                 if table:
                     rows = table.find_all('tr')
-                    for row in rows[1:]:  # Skip header
+                    for row in rows[1:]:
                         cols = row.find_all('td')
                         if len(cols) > 1:
-                            # Kolom 1 biasanya nama, kolom 2 symbol/ticker
                             symbol_tag = cols[1].find('a') if len(cols) > 1 else None
                             if symbol_tag:
                                 symbol = symbol_tag.text.strip().upper()
                                 if symbol and len(symbol) <= 8:
                                     symbols.append(f"{symbol}.JK")
             
-            # Remove duplicates
             symbols = list(set(symbols))
             
         except Exception as e:
@@ -296,7 +284,7 @@ class NonCryptoAssetsProvider:
         return symbols
     
     def _fetch_from_tradingview_dynamic(self) -> List[str]:
-        """NEW: Dinamis scrape dari TradingView Indonesia stocks - Alternatif gratis."""
+        """Dinamis scrape dari TradingView Indonesia stocks."""
         symbols = []
         try:
             url = "https://www.tradingview.com/markets/stocks-indonesia/market-movers-all-stocks/"
@@ -308,7 +296,6 @@ class NonCryptoAssetsProvider:
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Cari symbols dari table
                 rows = soup.find_all('tr', class_='tv-data-table__row')
                 for row in rows:
                     symbol_tag = row.find('a', class_='tv-screener__symbol')
@@ -317,7 +304,6 @@ class NonCryptoAssetsProvider:
                         if symbol and len(symbol) <= 8 and not symbol.endswith('.JK'):
                             symbols.append(f"{symbol}.JK")
             
-            # Remove duplicates
             symbols = list(set(symbols))
             
         except Exception as e:
@@ -326,7 +312,7 @@ class NonCryptoAssetsProvider:
         return symbols
     
     def _get_static_tradingview(self) -> List[str]:
-        """Fallback statis dari TradingView - Asli, tapi diperluas sedikit dari source publik."""
+        """Fallback statis dari TradingView - versi ringkas."""
         return [
             'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK', 'UNVR.JK',
             'ICBP.JK', 'INDF.JK', 'ANTM.JK', 'ADRO.JK', 'AKRA.JK', 'AMRT.JK',
@@ -345,140 +331,52 @@ class NonCryptoAssetsProvider:
             'DSSA.JK', 'DVLA.JK', 'EKAD.JK', 'ELSA.JK', 'EMTK.JK', 'ENRG.JK',
             'ESSA.JK', 'ESTI.JK', 'EXSA.JK', 'FASW.JK', 'FILM.JK', 'GDST.JK',
             'GEMA.JK', 'GGRM.JK', 'GJTL.JK', 'GLOB.JK', 'GOLD.JK', 'GTBO.JK',
-            'HDFA.JK', 'HEAL.JK', 'HELI.JK', 'HERO.JK', 'HIT...(truncated 9286 characters)...,
-            'HELI.JK', 'HERO.JK', 'HITS.JK', 'HMSP.JK', 'HOME.JK', 'ICON.JK',
-            'IFII.JK', 'IGAR.JK', 'IIKP.JK', 'IKAI.JK', 'IMAS.JK', 'INAF.JK',
-            'INAI.JK', 'INCF.JK', 'INDX.JK', 'INKP.JK', 'INPC.JK', 'INPP.JK',
-            'INPS.JK', 'INRU.JK', 'INTA.JK', 'IPCC.JK', 'ISAT.JK', 'ITIC.JK',
-            'JAST.JK', 'JECC.JK', 'JIHD.JK', 'JKON.JK', 'KBLI.JK', 'KBLM.JK',
-            'KDSI.JK', 'KKGI.JK', 'KOIN.JK', 'KPAL.JK', 'KRAS.JK', 'LION.JK',
-            'LMAS.JK', 'LMPI.JK', 'LPCK.JK', 'LSIP.JK', 'LTLS.JK', 'MABA.JK',
-            'MAGP.JK', 'MAIN.JK', 'MAPI.JK', 'MASA.JK', 'MBAP.JK', 'MBSS.JK',
-            'MCAS.JK', 'MDIA.JK', 'MEGA.JK', 'MERK.JK', 'MFIN.JK', 'MIKA.JK',
-            'MLBI.JK', 'MLIA.JK', 'MLPL.JK', 'MMLP.JK', 'MPMX.JK', 'MRAT.JK',
-            'MTDL.JK', 'MTFN.JK', 'MYOH.JK', 'MYRX.JK', 'NATO.JK', 'NFCX.JK',
-            'NIKL.JK', 'NIPS.JK', 'NOVO.JK', 'NRCA.JK', 'OKAS.JK', 'OPMS.JK',
-            'PALM.JK', 'PANI.JK', 'PANS.JK', 'PBRX.JK', 'PCAR.JK', 'PEHA.JK',
-            'PGLI.JK', 'PICO.JK', 'PJAA.JK', 'PKPK.JK', 'PLAS.JK', 'PLIN.JK',
-            'PMJS.JK', 'PNBN.JK', 'PNBS.JK', 'PNIN.JK', 'PNLF.JK', 'POLA.JK',
-            'POLU.JK', 'POWR.JK', 'PPRE.JK', 'PRAS.JK', 'PRDA.JK', 'PSAB.JK',
-            'PSDN.JK', 'PSGO.JK', 'PTIS.JK', 'PTPW.JK', 'PTRO.JK', 'PURI.JK',
-            'PWON.JK', 'PYFA.JK', 'RAJA.JK', 'RALS.JK', 'RANC.JK', 'RBMS.JK',
-            'RDTX.JK', 'REAL.JK', 'RICY.JK', 'RIGS.JK', 'RIMO.JK', 'RODA.JK',
-            'RONY.JK', 'ROTI.JK', 'RSGK.JK', 'RUIS.JK', 'SAFE.JK', 'SAME.JK',
-            'SAMF.JK', 'SAPX.JK', 'SATU.JK', 'SBAT.JK', 'SCCO.JK', 'SCMA.JK',
-            'SCNP.JK', 'SDMU.JK', 'SDPC.JK', 'SFAN.JK', 'SGER.JK', 'SGRO.JK',
-            'SHID.JK', 'SIDO.JK', 'SILO.JK', 'SIMA.JK', 'SIMP.JK', 'SIPD.JK',
-            'SKBM.JK', 'SKLT.JK', 'SKRN.JK', 'SKYB.JK', 'SLIS.JK', 'SMBR.JK',
-            'SMCB.JK', 'SMMA.JK', 'SMMT.JK', 'SMRA.JK', 'SMSM.JK', 'SNLK.JK',
-            'SOCI.JK', 'SOSS.JK', 'SOTS.JK', 'SPTO.JK', 'SQMI.JK', 'SRSN.JK',
-            'SRTG.JK', 'SSIA.JK', 'SSMS.JK', 'SSTM.JK', 'STAR.JK', 'STTP.JK',
-            'SUGI.JK', 'SULI.JK', 'SUPR.JK', 'SURY.JK', 'SWAT.JK', 'TALF.JK',
-            'TAMA.JK', 'TAPG.JK', 'TARA.JK', 'TAXI.JK', 'TBLA.JK', 'TCID.JK',
-            'TCPI.JK', 'TDPM.JK', 'TELE.JK', 'TFAS.JK', 'TFCO.JK', 'TGKA.JK',
-            'TGRA.JK', 'TIFA.JK', 'TIRT.JK', 'TKIM.JK', 'TLDN.JK', 'TMAS.JK',
-            'TMPO.JK', 'TOWR.JK', 'TOYS.JK', 'TRIO.JK', 'TRIS.JK', 'TRST.JK',
-            'TRUB.JK', 'TSPC.JK', 'TUGU.JK', 'TUNA.JK', 'UCID.JK', 'UFOE.JK',
-            'UNIC.JK', 'UNIT.JK', 'UNSP.JK', 'URBN.JK', 'VICI.JK', 'VINS.JK',
-            'VIVA.JK', 'VOKS.JK', 'VRNA.JK', 'WAPO.JK', 'WEHA.JK', 'WICO.JK',
-            'WIFI.JK', 'WINS.JK', 'WMPP.JK', 'WOOD.JK', 'WOWS.JK', 'YELO.JK',
-            'ZBRA.JK', 'ZONE.JK',
-            
-            # Additional stocks from various sectors (diperluas dari source publik seperti Investing.com statis)
-            'BNII.JK', 'BACA.JK', 'BBSI.JK', 'BJTM.JK', 'BJBR.JK', 'BKSW.JK',
-            'BMAS.JK', 'BNBA.JK', 'BNLI.JK', 'BOGA.JK', 'BRIS.JK', 'BTEK.JK',
-            'BVIC.JK', 'BABP.JK', 'BDMN.JK', 'BEKS.JK', 'BFIN.JK', 'BGTG.JK',
-            'BHIT.JK', 'BINA.JK', 'BIPI.JK', 'BIRD.JK', 'BKKB.JK', 'BLTA.JK',
-            'BMRI.JK', 'BNGA.JK', 'BOBA.JK', 'BRMS.JK', 'BSWD.JK', 'BTEL.JK',
-            'BTPN.JK', 'BUDI.JK', 'CARE.JK', 'CASH.JK', 'CENT.JK', 'CFIN.JK',
-            'CINT.JK', 'CITY.JK', 'CMRY.JK', 'CNTX.JK', 'COWL.JK', 'CSAP.JK',
-            'CSIS.JK', 'CTRA.JK', 'CURR.JK', 'DART.JK', 'DAYA.JK', 'DEWA.JK',
-            'DGIK.JK', 'DILD.JK', 'DIVA.JK', 'DKFT.JK', 'DMAS.JK', 'DMMX.JK',
-            'DNAR.JK', 'DPNS.JK', 'DSNG.JK', 'DUCK.JK', 'DUTI.JK', 'DVLA.JK',
-            'DWGL.JK', 'ECII.JK', 'EKAD.JK', 'ELSA.JK', 'ELTY.JK', 'EMDE.JK',
-            'EMTK.JK', 'ENRG.JK', 'EPMT.JK', 'ERAA.JK', 'ESSA.JK', 'ESTI.JK',
-            'ETWA.JK', 'EXCL.JK', 'FAST.JK', 'FASW.JK', 'FILM.JK', 'FIRE.JK',
-            'FISH.JK', 'FITT.JK', 'FMII.JK', 'FORU.JK', 'FORZ.JK', 'FPNI.JK',
-            'FREN.JK', 'FUJI.JK', 'GAMA.JK', 'GDST.JK', 'GEMA.JK', 'GEMS.JK',
-            'GGRM.JK', 'GIAA.JK', 'GJTL.JK', 'GLOB.JK', 'GMFI.JK', 'GMTD.JK',
-            'GOLD.JK', 'GOLL.JK', 'GPRA.JK', 'GSMF.JK', 'GTBO.JK', 'GTSI.JK',
-            'GWSA.JK', 'HADE.JK', 'HAIS.JK', 'HDFA.JK', 'HDTX.JK', 'HEAL.JK',
-            'HELI.JK', 'HERO.JK', 'HITS.JK', 'HKMU.JK', 'HMSP.JK', 'HOME.JK',
-            'HOMI.JK', 'HOTL.JK', 'HRTA.JK', 'IATA.JK', 'IBFN.JK', 'IBST.JK',
-            'ICON.JK', 'IDPR.JK', 'IFII.JK', 'IFSH.JK', 'IGAR.JK', 'IIKP.JK',
-            'IKAI.JK', 'IKAN.JK', 'IMAS.JK', 'IMPC.JK', 'INAF.JK', 'INAI.JK',
-            'INCF.JK', 'INCI.JK', 'INCO.JK', 'INDF.JK', 'INDO.JK', 'INDR.JK',
-            'INDS.JK', 'INDX.JK', 'INDY.JK', 'INKP.JK', 'INPC.JK', 'INPP.JK',
-            'INPS.JK', 'INRU.JK', 'INTA.JK', 'INTD.JK', 'INTP.JK', 'IPCC.JK',
-            'IPCM.JK', 'IPOL.JK', 'ISAT.JK', 'ISSP.JK', 'ITIC.JK', 'ITMA.JK',
-            'ITMG.JK', 'JAST.JK', 'JAWA.JK', 'JAYA.JK', 'JECC.JK', 'JGLE.JK',
-            'JIHD.JK', 'JKON.JK', 'JKSW.JK', 'JMAS.JK', 'JPFA.JK', 'JRPT.JK',
-            'JSMR.JK', 'JSPT.JK', 'JTPE.JK', 'KAEF.JK', 'KARW.JK', 'KBLI.JK',
-            'KBLM.JK', 'KBRI.JK', 'KDSI.JK', 'KEEN.JK', 'KEJU.JK', 'KIJA.JK',
-            'KINO.JK', 'KIOS.JK', 'KJEN.JK', 'KKGI.JK', 'KLBF.JK', 'KMDS.JK',
-            'KMTR.JK', 'KOIN.JK', 'KONI.JK', 'KOPI.JK', 'KOTA.JK', 'KPAL.JK',
-            'KPAS.JK', 'KPIG.JK', 'KRAS.JK', 'KREN.JK', 'LAND.JK', 'LAPD.JK',
-            'LCGP.JK', 'LCKM.JK', 'LEAD.JK', 'LIFE.JK', 'LINK.JK', 'LION.JK',
-            'LMAS.JK', 'LMPI.JK', 'LMSH.JK', 'LPCK.JK', 'LPGI.JK', 'LPIN.JK',
-            'LPLI.JK', 'LPPF.JK', 'LPPS.JK', 'LRNA.JK', 'LSIP.JK', 'LTLS.JK',
-            'LUCK.JK', 'MABA.JK', 'MAGP.JK', 'MAIN.JK', 'MAMI.JK', 'MAPA.JK',
-            'MAPI.JK', 'MASA.JK', 'MAYA.JK', 'MBAP.JK', 'MBSS.JK', 'MCAS.JK',
-            'MCOL.JK', 'MCOR.JK', 'MDIA.JK', 'MDKA.JK', 'MDLN.JK', 'MEDC.JK',
-            'MEGA.JK', 'MERK.JK', 'META.JK', 'MFIN.JK', 'MGNA.JK', 'MICE.JK',
-            'MIDI.JK', 'MIKA.JK', 'MINA.JK', 'MIRA.JK', 'MITI.JK', 'MKNT.JK',
-            'MLBI.JK', 'MLIA.JK', 'MLPL.JK', 'MLPT.JK', 'MMLP.JK', 'MNCN.JK',
-            'MOLI.JK', 'MPMX.JK', 'MPOW.JK', 'MPPA.JK', 'MRAT.JK', 'MREI.JK',
-            'MSIN.JK', 'MSKY.JK', 'MTDL.JK', 'MTFN.JK', 'MTLA.JK', 'MTPS.JK',
-            'MTSM.JK', 'MYOH.JK', 'MYOR.JK', 'MYRX.JK', 'MYTX.JK', 'NANO.JK',
-            'NASA.JK', 'NATO.JK', 'NELY.JK', 'NFCX.JK', 'NICK.JK', 'NIKL.JK',
-            'NIPS.JK', 'NISP.JK', 'NIRO.JK', 'NOVO.JK', 'NPGF.JK', 'NRCA.JK',
-            'NUSA.JK', 'NZIA.JK', 'OASA.JK', 'OBMD.JK', 'OCAP.JK', 'OKAS.JK',
-            'OMRE.JK', 'OPMS.JK', 'PADI.JK', 'PALM.JK', 'PAMG.JK', 'PANI.JK',
-            'PANS.JK', 'PBRX.JK', 'PCAR.JK', 'PDES.JK', 'PEHA.JK', 'PGAS.JK',
-            'PGLI.JK', 'PICO.JK', 'PJAA.JK', 'PKPK.JK', 'PLAS.JK', 'PLIN.JK',
-            'PMJS.JK', 'PNBN.JK', 'PNBS.JK', 'PNIN.JK', 'PNLF.JK', 'POLA.JK',
-            'POLU.JK', 'PONI.JK', 'PORT.JK', 'POWR.JK', 'PPRE.JK', 'PRAS.JK',
-            'PRDA.JK', 'PRIM.JK', 'PSAB.JK', 'PSDN.JK', 'PSGO.JK', 'PSKT.JK',
-            'PSSI.JK', 'PTBA.JK', 'PTIS.JK', 'PTPP.JK', 'PTPW.JK', 'PTRO.JK',
-            'PTSN.JK', 'PURA.JK', 'PURI.JK', 'PWON.JK', 'PYFA.JK', 'RAJA.JK',
-            'RALS.JK', 'RANC.JK', 'RBMS.JK', 'RDTX.JK', 'REAL.JK', 'RELI.JK',
-            'RICY.JK', 'RIGS.JK', 'RIMO.JK', 'RISE.JK', 'ROCK.JK', 'RODA.JK',
-            'RONY.JK', 'ROTI.JK', 'RSGK.JK', 'RUIS.JK', 'RUNS.JK', 'SAFE.JK',
-            'SAME.JK', 'SAMF.JK', 'SAPX.JK', 'SATU.JK', 'SBAT.JK', 'SCCO.JK',
-            'SCMA.JK', 'SCNP.JK', 'SCPI.JK', 'SDMU.JK', 'SDPC.JK', 'SDRA.JK',
-            'SFAN.JK', 'SGER.JK', 'SGRO.JK', 'SHID.JK', 'SIDO.JK', 'SILO.JK',
-            'SIMA.JK', 'SIMP.JK', 'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK',
-            'SKYB.JK', 'SLIS.JK', 'SMBR.JK', 'SMCB.JK', 'SMDR.JK', 'SMGR.JK',
-            'SMKL.JK', 'SMMA.JK', 'SMMT.JK', 'SMRA.JK', 'SMSM.JK', 'SNLK.JK',
-            'SOCI.JK', 'SOSS.JK', 'SOTS.JK', 'SPTO.JK', 'SQMI.JK', 'SRAJ.JK',
-            'SRIL.JK', 'SRSN.JK', 'SRTG.JK', 'SSIA.JK', 'SSMS.JK', 'SSTM.JK',
+            'HDFA.JK', 'HEAL.JK', 'HELI.JK', 'HERO.JK', 'HITS.JK', 'HMSP.JK',
+            'HOME.JK', 'ICON.JK', 'IFII.JK', 'IGAR.JK', 'IIKP.JK', 'IKAI.JK',
+            'IMAS.JK', 'INAF.JK', 'INAI.JK', 'INCF.JK', 'INDX.JK', 'INKP.JK',
+            'INPC.JK', 'INPP.JK', 'INPS.JK', 'INRU.JK', 'INTA.JK', 'IPCC.JK',
+            'ISAT.JK', 'ITIC.JK', 'JAST.JK', 'JECC.JK', 'JIHD.JK', 'JKON.JK',
+            'KBLI.JK', 'KBLM.JK', 'KDSI.JK', 'KKGI.JK', 'KOIN.JK', 'KPAL.JK',
+            'KRAS.JK', 'LION.JK', 'LMAS.JK', 'LMPI.JK', 'LPCK.JK', 'LSIP.JK',
+            'LTLS.JK', 'MABA.JK', 'MAGP.JK', 'MAIN.JK', 'MAPI.JK', 'MASA.JK',
+            'MBAP.JK', 'MBSS.JK', 'MCAS.JK', 'MDIA.JK', 'MEGA.JK', 'MERK.JK',
+            'MFIN.JK', 'MIKA.JK', 'MLBI.JK', 'MLIA.JK', 'MLPL.JK', 'MMLP.JK',
+            'MPMX.JK', 'MRAT.JK', 'MTDL.JK', 'MTFN.JK', 'MYOH.JK', 'MYRX.JK',
+            'NATO.JK', 'NFCX.JK', 'NIKL.JK', 'NIPS.JK', 'NOVO.JK', 'NRCA.JK',
+            'OKAS.JK', 'OPMS.JK', 'PALM.JK', 'PANI.JK', 'PANS.JK', 'PBRX.JK',
+            'PCAR.JK', 'PEHA.JK', 'PGLI.JK', 'PICO.JK', 'PJAA.JK', 'PKPK.JK',
+            'PLAS.JK', 'PLIN.JK', 'PMJS.JK', 'PNBN.JK', 'PNBS.JK', 'PNIN.JK',
+            'PNLF.JK', 'POLA.JK', 'POLU.JK', 'POWR.JK', 'PPRE.JK', 'PRAS.JK',
+            'PRDA.JK', 'PSAB.JK', 'PSDN.JK', 'PSGO.JK', 'PTIS.JK', 'PTPW.JK',
+            'PTRO.JK', 'PURI.JK', 'PWON.JK', 'PYFA.JK', 'RAJA.JK', 'RALS.JK',
+            'RANC.JK', 'RBMS.JK', 'RDTX.JK', 'REAL.JK', 'RICY.JK', 'RIGS.JK',
+            'RIMO.JK', 'RODA.JK', 'RONY.JK', 'ROTI.JK', 'RSGK.JK', 'RUIS.JK',
+            'SAFE.JK', 'SAME.JK', 'SAMF.JK', 'SAPX.JK', 'SATU.JK', 'SBAT.JK',
+            'SCCO.JK', 'SCMA.JK', 'SCNP.JK', 'SDMU.JK', 'SDPC.JK', 'SFAN.JK',
+            'SGER.JK', 'SGRO.JK', 'SHID.JK', 'SIDO.JK', 'SILO.JK', 'SIMA.JK',
+            'SIMP.JK', 'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK', 'SKYB.JK',
+            'SLIS.JK', 'SMBR.JK', 'SMCB.JK', 'SMMA.JK', 'SMMT.JK', 'SMRA.JK',
+            'SMSM.JK', 'SNLK.JK', 'SOCI.JK', 'SOSS.JK', 'SOTS.JK', 'SPTO.JK',
+            'SQMI.JK', 'SRSN.JK', 'SRTG.JK', 'SSIA.JK', 'SSMS.JK', 'SSTM.JK',
             'STAR.JK', 'STTP.JK', 'SUGI.JK', 'SULI.JK', 'SUPR.JK', 'SURY.JK',
             'SWAT.JK', 'TALF.JK', 'TAMA.JK', 'TAPG.JK', 'TARA.JK', 'TAXI.JK',
-            'TBIG.JK', 'TBLA.JK', 'TCID.JK', 'TCPI.JK', 'TDPM.JK', 'TEBE.JK',
-            'TELE.JK', 'TFAS.JK', 'TFCO.JK', 'TGKA.JK', 'TGRA.JK', 'TIFA.JK',
-            'TINS.JK', 'TIRT.JK', 'TKI.JK', 'TKIM.JK', 'TLDN.JK', 'TLKM.JK',
-            'TMAS.JK', 'TMPO.JK', 'TOTO.JK', 'TOWR.JK', 'TOYS.JK', 'TPIA.JK',
-            'TPMA.JK', 'TRIO.JK', 'TRIS.JK', 'TRST.JK', 'TRUB.JK', 'TSPC.JK',
-            'TUGU.JK', 'TUNA.JK', 'UCID.JK', 'UFOE.JK', 'ULTJ.JK', 'UNIC.JK',
-            'UNIT.JK', 'UNSP.JK', 'UNTR.JK', 'UNVR.JK', 'URBN.JK', 'VICI.JK',
-            'VINS.JK', 'VIVA.JK', 'VOKS.JK', 'VRNA.JK', 'WAPO.JK', 'WEGE.JK',
-            'WEHA.JK', 'WICO.JK', 'WIFI.JK', 'WIKA.JK', 'WINS.JK', 'WMPP.JK',
-            'WOOD.JK', 'WOWS.JK', 'WSBP.JK', 'WSKT.JK', 'WTON.JK', 'YELO.JK',
-            'YPAS.JK', 'ZBRA.JK', 'ZONE.JK', 'ZYRX.JK',
-            # Tambahan dari source publik (Investing.com statis untuk fallback)
-            'ABDA.JK', 'ABMM.JK', 'ACST.JK', 'ADHI.JK', 'AGII.JK', 'AGRS.JK', 'AHAP.JK', 'AISA.JK',
-            'AKSI.JK', 'ALDO.JK', 'ALKA.JK', 'ALTO.JK', 'AMFG.JK', 'AMIN.JK', 'AMOR.JK', 'ANDI.JK',
-            # ... (kamu bisa tambah lebih banyak dari list publik jika perlu, tapi ini cukup untuk contoh)
+            'TBLA.JK', 'TCID.JK', 'TCPI.JK', 'TDPM.JK', 'TELE.JK', 'TFAS.JK',
+            'TFCO.JK', 'TGKA.JK', 'TGRA.JK', 'TIFA.JK', 'TIRT.JK', 'TKIM.JK',
+            'TLDN.JK', 'TMAS.JK', 'TMPO.JK', 'TOWR.JK', 'TOYS.JK', 'TRIO.JK',
+            'TRIS.JK', 'TRST.JK', 'TRUB.JK', 'TSPC.JK', 'TUGU.JK', 'TUNA.JK',
+            'UCID.JK', 'UFOE.JK', 'UNIC.JK', 'UNIT.JK', 'UNSP.JK', 'URBN.JK',
+            'VICI.JK', 'VINS.JK', 'VIVA.JK', 'VOKS.JK', 'VRNA.JK', 'WAPO.JK',
+            'WEHA.JK', 'WICO.JK', 'WIFI.JK', 'WINS.JK', 'WMPP.JK', 'WOOD.JK',
+            'WOWS.JK', 'WSBP.JK', 'WSKT.JK', 'WTON.JK', 'YELO.JK', 'YPAS.JK',
+            'ZBRA.JK', 'ZONE.JK'
         ]
     
     def _validate_symbols_parallel(self, symbols: List[str]) -> List[str]:
-        """Validasi paralel symbols - Improve: Tambah quick check jika symbol punya data minimal (gratis, pakai requests head check jika possible)."""
+        """Validasi paralel symbols."""
         valid_symbols = []
         
         def validate_symbol(symbol):
             try:
-                # Quick check: Cek jika symbol exist di Yahoo (minimal, tanpa full download)
-                # Note: Ini masih pakai yfinance minimal, jika ingin hapus, ganti dengan check URL IDX
                 info = yf.Ticker(symbol).info
                 if info and 'regularMarketPrice' in info and info['regularMarketPrice'] is not None:
                     return symbol
@@ -499,17 +397,15 @@ class NonCryptoAssetsProvider:
         return valid_symbols
     
     def _fetch_dynamic_assets(self, category: str, limit: int) -> List[str]:
-        """Fetch dinamis untuk forex dan us_stocks - Tidak diubah, karena fokus saham ID."""
-        # Kode asli tetap
+        """Fetch dinamis untuk forex dan us_stocks."""
         if category == 'us_stocks':
-            # Contoh fetch dari API atau scrape (asli)
-            return self._get_static_assets(category)  # Bisa diimprove mirip saham ID jika perlu
+            return self._get_static_assets(category)
         elif category == 'forex':
             return self._get_static_assets(category)
         return []
     
     def _get_static_assets(self, category: str) -> List[str]:
-        """List statis sebagai fallback. - Tidak diubah banyak."""
+        """List statis sebagai fallback."""
         if category == 'us_stocks':
             return [
                 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'BRK-B', 'JPM', 'V',
@@ -535,9 +431,9 @@ class NonCryptoAssetsProvider:
         return []
     
     def _get_all_indonesia_static(self) -> List[str]:
-        """Static list semua saham Indonesia - Diperluas dari multiple sources."""
-        all_indonesia_stocks = self._get_static_tradingview()  # Reuse dari statis TradingView
-        return list(set(all_indonesia_stocks))  # Remove duplicates
+        """Static list semua saham Indonesia."""
+        all_indonesia_stocks = self._get_static_tradingview()
+        return list(set(all_indonesia_stocks))
     
     def _load_cache(self) -> Dict:
         """Load cache dari file JSON."""
