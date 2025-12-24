@@ -86,7 +86,7 @@ def import_trading_bot():
             def get_popular_assets(self, limit=500):  # 🔥 PERBAIKAN: 200 → 500
                 return []
             
-            def scan_potential_assets(self, limit=50):  # 🔥 PERBAIKAN: 25 → 50
+            def scan_potential_assets(self, limit=500):  # 🔥 PERBAIKAN: 25 → 50
                 return []
             
             def analyze_asset(self, symbol):
