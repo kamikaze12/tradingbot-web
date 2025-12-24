@@ -2231,6 +2231,10 @@ class EnhancedTradingBot:
         
         self.mode = None
         
+        # **PERBAIKAN: Inisialisasi atribut scanning_in_progress dan current_scan_task**
+        self.scanning_in_progress = False
+        self.current_scan_task = None
+        
         # **PERBAIKAN: Leverage default 1x**
         self.leverage = 1
         
@@ -2279,8 +2283,7 @@ class EnhancedTradingBot:
         # Threading
         self.scheduler_thread = None
         self.stop_scheduler = False
-        self.scanning_in_progress = False
-        self.current_scan_task = None
+        # PERBAIKAN: scanning_in_progress sudah diinisialisasi di atas
         
         # ML enhancements
         self.ml_predictions_cache = {}
