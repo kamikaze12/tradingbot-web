@@ -321,6 +321,19 @@ except ImportError as e1:
         logger.warning("create_strategy_for_symbol dummy digunakan")
         return TechnicalAnalysisStrategy()
 
+try:
+    print("✅ Mencoba import SoundNotifier...")
+    from notifications.sound_notifier import SoundNotifier
+    print("  ✅ SoundNotifier berhasil diimport")
+except ImportError as e:
+    print(f"  ❌ Gagal import SoundNotifier: {e}")
+    # Buat dummy class
+    class SoundNotifier:
+        def __init__(self):
+            pass
+        def play_signal_sound(self, *args, **kwargs):
+            logger.info("Sound notification (dummy)")
+
 # PERBAIKAN: Import NonCryptoAssetsProvider setelah strategies
 try:
     print("✅ Mencoba import NonCryptoAssetsProvider...")
@@ -2221,6 +2234,14 @@ class EnhancedTradingBot:
     """Enhanced trading bot dengan UNIVERSAL provider"""
     
     def __init__(self, config=None):
+        # PERBAIKAN: Inisialisasi semua atribut di awal
+        self.mode = None
+        self.scanning_in_progress = False
+        self.current_scan_task = None
+        self.leverage = 1
+        self.scheduler_thread = None
+        self.stop_scheduler = False
+        
         if config is None:
             config_path = "config/config.json"
             self.config_path = config_path
@@ -2228,15 +2249,6 @@ class EnhancedTradingBot:
         else:
             self.config = config
             self.config_path = "config/config.json"
-        
-        self.mode = None
-        
-        # **PERBAIKAN: Inisialisasi atribut scanning_in_progress dan current_scan_task**
-        self.scanning_in_progress = False
-        self.current_scan_task = None
-        
-        # **PERBAIKAN: Leverage default 1x**
-        self.leverage = 1
         
         # **PERBAIKAN UTAMA: Setup provider universal**
         self.data_provider = None
@@ -2279,11 +2291,6 @@ class EnhancedTradingBot:
         self.max_portfolio_value = 0.0
         self.current_drawdown = 0.0
         self.trading_enabled = True
-        
-        # Threading
-        self.scheduler_thread = None
-        self.stop_scheduler = False
-        # PERBAIKAN: scanning_in_progress sudah diinisialisasi di atas
         
         # ML enhancements
         self.ml_predictions_cache = {}
@@ -3715,34 +3722,42 @@ class EnhancedTradingBot:
         ]
 
     # =============================================
-    # BACKGROUND TASKS
+    # BACKGROUND TASKS - PERBAIKAN UTAMA
     # =============================================
 
     def start_background_tasks(self):
         """Start background tasks"""
         try:
-            if self.scheduler_thread and self.scheduler_thread.is_alive():
-                self.stop_background_tasks()
-                
+            # PERBAIKAN: Cek jika scheduler_thread ada dan masih hidup
+            if self.scheduler_thread is not None and hasattr(self.scheduler_thread, 'is_alive'):
+                if self.scheduler_thread.is_alive():
+                    logger.info("Background tasks already running")
+                    return
+            
             self.stop_scheduler = False
             self.scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
             self.scheduler_thread.start()
             
-            logger.info("Background tasks started successfully")
+            logger.info("✅ Background tasks started successfully")
             
         except Exception as e:
-            logger.error(f"Error starting background tasks: {e}")
+            logger.error(f"❌ Error starting background tasks: {e}")
 
     def stop_background_tasks(self):
         """Stop background tasks"""
         try:
             self.stop_scheduler = True
-            if self.scheduler_thread:
-                self.scheduler_thread.join(timeout=5)
+            
+            # PERBAIKAN: Cek jika scheduler_thread ada
+            if self.scheduler_thread is not None:
+                if hasattr(self.scheduler_thread, 'is_alive') and self.scheduler_thread.is_alive():
+                    self.scheduler_thread.join(timeout=5)
+                self.scheduler_thread = None
+            
             schedule.clear()
-            logger.info("Background tasks stopped")
+            logger.info("✅ Background tasks stopped")
         except Exception as e:
-            logger.error(f"Error stopping background tasks: {e}")
+            logger.error(f"❌ Error stopping background tasks: {e}")
 
     def _run_scheduler(self):
         """Run scheduler loop"""
