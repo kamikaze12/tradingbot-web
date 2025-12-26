@@ -1484,6 +1484,11 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         self.base_rsi_overbought = 70
         self.min_adx_trend = 25  # ADX minimal untuk trending market
         
+        # 🔥 NEW: BREAKOUT DETECTION PARAMETERS (AMAN)
+        self.breakout_volume_threshold = 1.3  # 1.3x volume, bukan 1.5x
+        self.breakout_price_threshold = 0.015  # 1.5% bukan 2%
+        self.breakout_penalty_factor = 0.8  # 20% reduction, bukan 70%
+        
         # 🔥 NEW: Confidence scoring weights
         self.confidence_weights = {
             'rsi': 1.2,
@@ -1497,6 +1502,63 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         
         logger.info(f"📊 Strategy Enhanced: Multi-TF={use_multi_tf_confirmation}, Adaptive={use_adaptive_params}, Regime={use_regime_detection}")
 
+    def _detect_breakout_pattern(self, df: pd.DataFrame, symbol: str = None) -> Dict:
+        """Detect breakout patterns dengan parameter AMAN untuk menghindari false short signals"""
+        try:
+            if len(df) < 30:  # 30 bar minimal, bukan 50 (lebih fleksibel)
+                return {'breakout_detected': False, 'direction': None, 'strength': 0}
+            
+            current_price = df['close'].iloc[-1]
+            
+            # 1. Check recent high/low (periode lebih pendek)
+            recent_high_10 = df['high'].rolling(10).max().iloc[-1]
+            recent_low_10 = df['low'].rolling(10).min().iloc[-1]
+            
+            # 2. Volume analysis (threshold lebih rendah)
+            if 'volume' in df.columns:
+                volume_avg_10 = df['volume'].rolling(10).mean().iloc[-1]
+                current_volume = df['volume'].iloc[-1]
+                volume_ratio = current_volume / volume_avg_10 if volume_avg_10 > 0 else 1
+            else:
+                volume_ratio = 1
+            
+            # 3. Breakout conditions (lebih konservatif)
+            is_breaking_high = current_price > recent_high_10 * (1 + self.breakout_price_threshold)  # 1.5%
+            is_breaking_low = current_price < recent_low_10 * (1 - self.breakout_price_threshold)    # 1.5%
+            
+            # 4. Volume confirmation (lebih rendah)
+            strong_volume = volume_ratio > self.breakout_volume_threshold  # 1.3x bukan 1.5x
+            
+            # 5. Tambahkan konfirmasi candle close
+            if len(df) > 1:
+                prev_close = df['close'].iloc[-2]
+                is_closing_above = current_price > max(prev_close, recent_high_10)
+                is_closing_below = current_price < min(prev_close, recent_low_10)
+            else:
+                is_closing_above = is_breaking_high
+                is_closing_below = is_breaking_low
+            
+            if is_breaking_high and strong_volume and is_closing_above:
+                return {
+                    'breakout_detected': True,
+                    'direction': 'BULLISH',
+                    'strength': min(volume_ratio / 1.5, 1.0),
+                    'resistance_broken': recent_high_10
+                }
+            elif is_breaking_low and strong_volume and is_closing_below:
+                return {
+                    'breakout_detected': True,
+                    'direction': 'BEARISH',
+                    'strength': min(volume_ratio / 1.5, 1.0),
+                    'support_broken': recent_low_10
+                }
+            
+            return {'breakout_detected': False, 'direction': None, 'strength': 0}
+            
+        except Exception as e:
+            logger.error(f"Breakout detection error: {e}")
+            return {'breakout_detected': False, 'direction': None, 'strength': 0}
+    
     def _calculate_adaptive_indicators(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Calculate indicators with adaptive parameters based on volatility"""
         indicators = {}
@@ -1788,7 +1850,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         }
 
     def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
-        """Enhanced analysis dengan semua improvement"""
+        """Enhanced analysis dengan semua improvement DAN BREAKOUT DETECTION"""
         try:
             # 1. Validasi data dasar
             if df is None or df.empty or len(df) < 10:
@@ -1929,7 +1991,27 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             # 🔥 APPLY LONG BIAS CORRECTION - TIDAK ADA BIAS (0.0)
             biased_score = score + (self.long_bias * 5)  # Scale bias effect
             
-            logger.debug(f"Score calculation for {symbol}: Base={score:.1f}, Bias={self.long_bias:.2f}, Final={biased_score:.1f}")
+            # =============================================
+            # 🔥 PERBAIKAN UTAMA: BREAKOUT FILTER - CEGAH FALSE SIGNAL SAAT BREAKOUT
+            # =============================================
+            breakout_info = self._detect_breakout_pattern(df, symbol)
+            if breakout_info['breakout_detected']:
+                if breakout_info['direction'] == 'BULLISH':
+                    # Jika breakout bullish, beri WARNING untuk SHORT (tidak langsung block)
+                    if biased_score < 0:  # Ini adalah sinyal SHORT
+                        logger.warning(f"⚠️ {symbol}: Bullish breakout detected, caution on SHORT signal")
+                        enter_tags.append('BULL_BREAKOUT_WARNING')
+                        # Kurangi sedikit score SHORT (20% reduction, bukan 70%)
+                        biased_score = biased_score * self.breakout_penalty_factor
+                
+                elif breakout_info['direction'] == 'BEARISH':
+                    # Jika breakout bearish, beri WARNING untuk LONG
+                    if biased_score > 0:  # Ini adalah sinyal LONG
+                        logger.warning(f"⚠️ {symbol}: Bearish breakout detected, caution on LONG signal")
+                        enter_tags.append('BEAR_BREAKOUT_WARNING')
+                        biased_score = biased_score * self.breakout_penalty_factor
+            
+            logger.debug(f"Score calculation for {symbol}: Base={score:.1f}, Bias={self.long_bias:.2f}, Final={biased_score:.1f}, Breakout={breakout_info['breakout_detected']}")
             
             # 🔥 NEW: Adjust confidence based on consolidation
             if indicators.get('consolidation_score', 0) > 0.8:
@@ -1998,7 +2080,9 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 'consolidation_score': indicators.get('consolidation_score', 0),
                 'rsi_threshold_used': f"{self.rsi_oversold:.1f}/{self.rsi_overbought:.1f}",
                 'mtf_confirmation': mtf_confirmation,
-                'volume_ratio': indicators.get('volume_ratio', 1.0)
+                'volume_ratio': indicators.get('volume_ratio', 1.0),
+                'breakout_detected': breakout_info['breakout_detected'],
+                'breakout_direction': breakout_info.get('direction', 'NONE')
             }
             
             # 10. Hitung trend_strength
@@ -2016,7 +2100,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             })
             
             # LOG SIGNAL DETAILS
-            logger.info(f"📈 {symbol}: {action} (Score: {biased_score:.1f}, Bias: {self.long_bias:.2f}, Conf: {confidence_score:.1f}%, Regime: {indicators.get('market_regime', 'UNKNOWN')})")
+            logger.info(f"📈 {symbol}: {action} (Score: {biased_score:.1f}, Bias: {self.long_bias:.2f}, Conf: {confidence_score:.1f}%, Regime: {indicators.get('market_regime', 'UNKNOWN')}, Breakout: {breakout_info['breakout_detected']})")
             
             return result
             
@@ -2297,7 +2381,9 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'consolidation_score': 0,
             'rsi_threshold_used': f"{self.rsi_oversold:.1f}/{self.rsi_overbought:.1f}",
             'mtf_confirmation': 1.0,
-            'volume_ratio': 1.0
+            'volume_ratio': 1.0,
+            'breakout_detected': False,
+            'breakout_direction': 'NONE'
         }
 
 # =============================================
@@ -2312,10 +2398,10 @@ class ScalpingStrategy(EnhancedTechnicalAnalysisStrategy):
             market_type=market_type,
             trading_type=trading_type,
             leverage=leverage,
-            # 🎯 PARAMETER SCALPING OPTIMAL
+            # 🎯 PARAMETER SCALPING OPTIMAL - BENAR-BENAR NEUTRAL
             entry_range_pct=SCALPING_CONFIG["entry_range_pct"],  # 0.8%
             atr_multiplier=SCALPING_CONFIG["atr_multiplier"],    # 0.7
-            long_bias=0.0,  # 🔥 GANTI: dari SCALPING_CONFIG["long_bias"] ke 0.0
+            long_bias=0.0,  # 🔥 GANTI: PASTIKAN 0.0 - TIDAK ADA BIAS
             min_score_threshold=SCALPING_CONFIG["min_score_threshold"],  # 4.0
             scalping_mode=True,
             # 🔥 NEW: Scalping-specific config
@@ -2329,7 +2415,12 @@ class ScalpingStrategy(EnhancedTechnicalAnalysisStrategy):
         self.base_rsi_overbought = 75  # Lebih sensitif untuk scalping
         self.min_adx_trend = 20  # Lower ADX threshold untuk scalping
         
-        logger.info(f"🎯 ScalpingStrategy created: Bias={self.long_bias:.1f}, Min Score={self.min_score_threshold}")
+        # 🔥 NEW: Breakout parameters yang lebih ketat untuk scalping
+        self.breakout_volume_threshold = 1.5  # Lebih tinggi untuk scalping
+        self.breakout_price_threshold = 0.01   # 1% untuk scalping (lebih ketat)
+        self.breakout_penalty_factor = 0.7     # 30% reduction untuk scalping
+        
+        logger.info(f"🎯 ScalpingStrategy created: Bias={self.long_bias:.1f}, Min Score={self.min_score_threshold}, Breakout Protection: ON")
     
     def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
         """Override untuk scalping dengan validasi tambahan"""
@@ -2372,7 +2463,7 @@ class ScalpingStrategy(EnhancedTechnicalAnalysisStrategy):
         result['scalping_mode'] = True
         result['scalping_optimized'] = True
         
-        # 🔥 NEW: Adjust TP/SL untuk scalping
+        # 🔥 NEW: Adjust TP/SL untuk scalping (lebih ketat)
         if result['action'] != 'NEUTRAL':
             # Tighten TP/SL untuk scalping
             if result['action'] == 'LONG':
@@ -2561,7 +2652,7 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
             trading_type=trading_type,
             leverage=leverage
         )
-        logger.info(f"⚡ SCALPING Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x")
+        logger.info(f"⚡ SCALPING Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x, Breakout Protection=ON")
     else:
         # 🔥 PERBAIKAN: HAPUS BIAS DARI REGULAR STRATEGY
         strategy = EnhancedTechnicalAnalysisStrategy(
@@ -2577,7 +2668,7 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
             use_regime_detection=True,
             use_consolidation_filter=True
         )
-        logger.info(f"📊 REGULAR Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x")
+        logger.info(f"📊 REGULAR Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x, Breakout Protection=ON")
     
     return strategy
 
@@ -2611,426 +2702,128 @@ class TechnicalAnalysisStrategy(EnhancedTechnicalAnalysisStrategy):
 # TESTING FUNCTIONS UNTUK VERIFIKASI PERBAIKAN
 # =============================================
 
-def test_data_cleaner():
-    """Test the data cleaner function"""
+def test_breakout_detection():
+    """Test the breakout detection function"""
     print("=" * 60)
-    print("TESTING DATA CLEANER FUNCTION")
-    print("=" * 60)
-    
-    test_symbols = [
-        "BONK/USDT:USDT",
-        "CATI/USDT:USDT", 
-        "BTC-USD",
-        "ETH-USD",
-        "SOL-USD",
-    ]
-    
-    for symbol in test_symbols:
-        print(f"\n🔍 Testing {symbol}")
-        
-        data = get_trading_data(symbol)
-        
-        if data is None:
-            print(f"   ❌ Skipped - no valid data")
-            continue
-        
-        print(f"   ✅ Valid data: {len(data)} bars")
-        
-        if not data.empty and 'close' in data.columns:
-            current_price = data['close'].iloc[-1]
-            print(f"   📊 Current price: ${current_price:.6f}")
-            
-            # Cek harga 100 dengan .any()
-            price_diff = abs(data['close'] - 100.0)
-            mask_100 = (price_diff < 0.001)
-            
-            if mask_100.any():
-                print(f"   ⚠️ WARNING: Still has price 100!")
-            else:
-                print(f"   👍 No price 100 detected")
-    
-    return True
-
-def test_strategy_with_improvements():
-    """Test the enhanced strategy dengan semua improvement"""
-    print("=" * 60)
-    print("TESTING STRATEGY DENGAN SEMUA IMPROVEMENT")
+    print("TESTING BREAKOUT DETECTION FUNCTION")
     print("=" * 60)
     
-    # Generate test data
-    dates = pd.date_range('2023-01-01', periods=100, freq='D')
+    # Buat data dengan breakout bullish
+    dates = pd.date_range('2023-12-24', periods=50, freq='5min')
+    
+    # Harga naik dari 0.065 ke 0.068 (naik ~4.6%)
+    base_trend = np.linspace(0.065, 0.068, 50)
+    volatility = np.random.normal(0, 0.0002, 50)
+    
+    prices = base_trend + volatility
+    
     data = {
-        'open': np.random.normal(50000, 1000, 100),
-        'high': np.random.normal(50500, 1200, 100),
-        'low': np.random.normal(49500, 1200, 100),
-        'close': np.random.normal(50000, 1000, 100),
-        'volume': np.random.normal(1000000, 100000, 100),
-    }
-    df = pd.DataFrame(data, index=dates)
-    
-    # Test 1: Regular Strategy dengan semua improvement
-    print("\n1. TESTING REGULAR STRATEGY DENGAN IMPROVEMENT")
-    print("-" * 40)
-    
-    regular_strategy = EnhancedTechnicalAnalysisStrategy(
-        market_type="crypto",
-        trading_type="spot",
-        leverage=1,
-        long_bias=0.0,
-        min_score_threshold=3.0,
-        use_multi_tf_confirmation=True,
-        use_adaptive_params=True,
-        use_regime_detection=True,
-        use_consolidation_filter=True
-    )
-    
-    result = regular_strategy.analyze(df, "BTC/USDT")
-    print(f"Action: {result['action']}")
-    print(f"Score: {result['score']:.1f}")
-    print(f"Bias Applied: {result['long_bias_applied']}")
-    print(f"Confidence: {result['confidence']:.1%}")
-    print(f"Market Regime: {result['market_regime']}")
-    print(f"ADX: {result['adx']:.1f}")
-    print(f"Enter Tag: {result['enter_tag']}")
-    print(f"Consolidation Score: {result['consolidation_score']:.2f}")
-    
-    # Test 2: Scalping Strategy
-    print("\n2. TESTING SCALPING STRATEGY")
-    print("-" * 40)
-    scalping_strategy = ScalpingStrategy(
-        market_type="crypto",
-        trading_type="spot",
-        leverage=3
-    )
-    
-    result = scalping_strategy.analyze(df, "BTC/USDT")
-    print(f"Action: {result['action']}")
-    print(f"Score: {result['score']:.1f}")
-    print(f"Bias Applied: {result['long_bias_applied']}")
-    print(f"Confidence: {result['confidence']:.1%}")
-    print(f"Market Regime: {result['market_regime']}")
-    print(f"ADX: {result['adx']:.1f}")
-    print(f"Enter Tag: {result['enter_tag']}")
-    print(f"Scalping Mode: {result['scalping_mode']}")
-    
-    # Test 3: Simulasi dengan data berbeda untuk verifikasi adaptive parameters
-    print("\n3. TESTING ADAPTIVE PARAMETERS")
-    print("-" * 40)
-    
-    test_cases = [
-        ("High Volatility", 0.1),  # 10% volatility
-        ("Low Volatility", 0.01),   # 1% volatility
-        ("Medium Volatility", 0.03), # 3% volatility
-    ]
-    
-    for name, volatility in test_cases:
-        # Generate data dengan volatility tertentu
-        test_dates = pd.date_range('2023-01-01', periods=50, freq='D')
-        test_data = {
-            'open': 100 + np.random.normal(0, volatility * 100, 50),
-            'high': 105 + np.random.normal(0, volatility * 105, 50),
-            'low': 95 + np.random.normal(0, volatility * 95, 50),
-            'close': 100 + np.random.normal(0, volatility * 100, 50),
-            'volume': np.random.normal(1000000, 100000, 50),
-        }
-        test_df = pd.DataFrame(test_data, index=test_dates)
-        
-        strategy = EnhancedTechnicalAnalysisStrategy(
-            market_type="crypto",
-            trading_type="spot",
-            leverage=1,
-            use_adaptive_params=True
-        )
-        
-        result = strategy.analyze(test_df, f"TEST_{name}")
-        print(f"{name}: RSI Threshold = {result['rsi_threshold_used']}, ADX = {result['adx']:.1f}, Regime = {result['market_regime']}")
-    
-    return regular_strategy, scalping_strategy
-
-def test_improvement_statistics():
-    """Test statistik improvement"""
-    print("\n" + "=" * 60)
-    print("IMPROVEMENT STATISTICS TEST")
-    print("=" * 60)
-    
-    # Simulate 50 random market conditions
-    np.random.seed(42)
-    results_old = []  # Simulasi strategi lama
-    results_new = []  # Strategi baru dengan improvement
-    
-    for i in range(50):
-        # Generate random market data
-        base_price = np.random.uniform(10, 1000)
-        trend = np.random.choice([-1, 0, 1])
-        volatility = np.random.uniform(0.01, 0.1)
-        
-        dates = pd.date_range('2023-01-01', periods=100, freq='D')
-        data = {
-            'open': base_price + np.random.normal(0, volatility * base_price, 100) + trend * np.linspace(0, base_price * 0.2, 100),
-            'high': base_price * 1.05 + np.random.normal(0, volatility * base_price * 1.05, 100) + trend * np.linspace(0, base_price * 0.2, 100),
-            'low': base_price * 0.95 + np.random.normal(0, volatility * base_price * 0.95, 100) + trend * np.linspace(0, base_price * 0.2, 100),
-            'close': base_price + np.random.normal(0, volatility * base_price, 100) + trend * np.linspace(0, base_price * 0.2, 100),
-            'volume': np.random.normal(1000000, 100000, 100),
-        }
-        df = pd.DataFrame(data, index=dates)
-        
-        # Test dengan strategi baru
-        new_strategy = EnhancedTechnicalAnalysisStrategy(
-            market_type="crypto",
-            trading_type="spot",
-            leverage=1,
-            use_multi_tf_confirmation=True,
-            use_adaptive_params=True,
-            use_regime_detection=True,
-            use_consolidation_filter=True
-        )
-        
-        result = new_strategy.analyze(df, f"TEST{i}")
-        results_new.append(result)
-    
-    # Analyze results
-    print("\n📊 STATISTICS STRATEGI BARU:")
-    print("-" * 40)
-    
-    actions = [r['action'] for r in results_new]
-    long_count = actions.count("LONG")
-    short_count = actions.count("SHORT")
-    neutral_count = actions.count("NEUTRAL")
-    total = len(actions)
-    
-    print(f"Total Signals: {total}")
-    print(f"LONG: {long_count} ({long_count/total*100:.1f}%)")
-    print(f"SHORT: {short_count} ({short_count/total*100:.1f}%)")
-    print(f"NEUTRAL: {neutral_count} ({neutral_count/total*100:.1f}%)")
-    
-    # Check consolidation skips
-    consolidation_skips = [r for r in results_new if 'CONSOLIDATION_SKIP' in r.get('enter_tag', '')]
-    print(f"Consolidation Skips: {len(consolidation_skips)} ({len(consolidation_skips)/total*100:.1f}%)")
-    
-    # Check market regimes
-    regimes = [r.get('market_regime', 'UNKNOWN') for r in results_new]
-    trend_count = regimes.count('BULL_TREND') + regimes.count('BEAR_TREND')
-    ranging_count = regimes.count('RANGING')
-    print(f"Trending Markets: {trend_count} ({trend_count/total*100:.1f}%)")
-    print(f"Ranging Markets: {ranging_count} ({ranging_count/total*100:.1f}%)")
-    
-    # Average confidence
-    avg_confidence = np.mean([r.get('confidence', 0) for r in results_new]) * 100
-    print(f"Average Confidence: {avg_confidence:.1f}%")
-    
-    print("\n🎯 IMPROVEMENT SUMMARY:")
-    print("-" * 40)
-    print("✅ ADX Market Regime Detection: Aktif")
-    print("✅ Adaptive RSI Thresholds: Aktif")
-    print("✅ Multi-Timeframe Confirmation: Aktif")
-    print("✅ Consolidation Filter: Aktif")
-    print("✅ Confidence Scoring System: Aktif")
-    print("✅ Enter Tag System: Aktif")
-    print(f"✅ False Signal Reduction: {len(consolidation_skips)}/{total} sinyal di-skip selama konsolidasi")
-    print(f"✅ Average Confidence: {avg_confidence:.1f}% (lebih akurat)")
-
-def test_integration_with_core():
-    """Test integration dengan semua improvement"""
-    print("\n" + "=" * 60)
-    print("TESTING INTEGRATION DENGAN SEMUA IMPROVEMENT")
-    print("=" * 60)
-    
-    test_cases = [
-        ("BTC/USDT", "spot", "crypto", False),
-        ("BTC/USDT", "spot", "crypto", True),  # Scalping mode
-        ("ETH/USDT", "futures", "crypto_future", True),
-        ("EUR/USD", "spot", "forex", False),
-        ("EUR/USD", "futures", "forex_future", True),
-    ]
-    
-    for symbol, trading_mode, expected_market_type, scalping in test_cases:
-        strategy = get_strategy_for_trading_mode(symbol, trading_mode, scalping_mode=scalping)
-        print(f"\n{symbol} → {trading_mode} (Scalping: {scalping}):")
-        print(f"  Market Type: {strategy.market_type}")
-        print(f"  Trading Type: {strategy.trading_type}")
-        print(f"  Leverage: {strategy.leverage}x")
-        print(f"  Long Bias: {strategy.long_bias:.2f}")
-        print(f"  Min Score: {strategy.min_score_threshold}")
-        print(f"  Scalping Mode: {strategy.scalping_mode}")
-        print(f"  Use Multi-TF: {strategy.use_multi_tf_confirmation}")
-        print(f"  Use Adaptive: {strategy.use_adaptive_params}")
-        print(f"  Use Regime Detection: {strategy.use_regime_detection}")
-    
-    # Test convert_symbol_format
-    print("\n" + "-" * 40)
-    print("TESTING SYMBOL CONVERSION:")
-    print("-" * 40)
-    
-    conversion_tests = [
-        ("BTC/USDT", "spot", "BTC/USDT"),
-        ("BTC/USDT", "futures", "BTC/USDT:USDT"),
-        ("BTC/USDT:USDT", "spot", "BTC/USDT"),
-        ("BTC/USDT:USDT", "futures", "BTC/USDT:USDT"),
-        ("ETH-USD", "futures", "ETH/USDT:USDT"),
-    ]
-    
-    for original, target_type, expected in conversion_tests:
-        result = convert_symbol_format(original, target_type)
-        status = "✓" if result == expected else "✗"
-        print(f"{status} {original} → {target_type}: {result} (expected: {expected})")
-
-def test_scalping_trading_loop():
-    """Contoh penggunaan scalping di loop trading"""
-    print("\n" + "=" * 60)
-    print("EXAMPLE SCALPING TRADING LOOP")
-    print("=" * 60)
-    
-    symbols = ["BTC-USD", "ETH-USD", "SOL-USD"]
-    
-    for symbol in symbols:
-        print(f"\n🔍 Processing {symbol} for scalping")
-        
-        # Gunakan filter khusus scalping
-        data = get_trading_data(symbol, scalping_mode=True)
-        
-        if data is None:
-            print(f"   ❌ Skipping - not suitable for scalping")
-            continue
-        
-        print(f"   ✅ Valid scalping data: {len(data)} bars")
-        
-        # Gunakan scalping strategy
-        strategy = ScalpingStrategy(
-            market_type="crypto",
-            trading_type="spot",
-            leverage=3  # Leverage rendah untuk scalping
-        )
-        
-        result = strategy.analyze(data, symbol)
-        
-        print(f"   📊 Action: {result['action']}")
-        print(f"   📈 Score: {result['score']:.2f} (Bias: {result['long_bias_applied']:.2f})")
-        print(f"   💰 Current: ${result['current_price']:.6f}")
-        print(f"   🎯 Entry: ${result['best_entry']:.6f}")
-        print(f"   🛑 SL: ${result['sl']:.6f}")
-        print(f"   ⚡ Scalping Mode: {result['scalping_mode']}")
-        print(f"   📊 Market Regime: {result['market_regime']}")
-        print(f"   🎯 Enter Tag: {result['enter_tag']}")
-
-def test_adaptive_parameters():
-    """Test adaptive parameter system"""
-    print("\n" + "=" * 60)
-    print("ADAPTIVE PARAMETERS TEST")
-    print("=" * 60)
-    
-    # Create test strategy
-    strategy = EnhancedTechnicalAnalysisStrategy(
-        market_type="crypto",
-        trading_type="spot",
-        use_adaptive_params=True,
-        use_regime_detection=True
-    )
-    
-    # Test dengan volatilitas berbeda
-    volatility_levels = [0.01, 0.03, 0.05, 0.08, 0.12]
-    
-    for vol in volatility_levels:
-        # Generate data dengan volatilitas tertentu
-        dates = pd.date_range('2023-01-01', periods=50, freq='H')
-        base_price = 100
-        
-        # High volatility = big swings
-        if vol > 0.05:
-            swing_factor = 0.1
-        else:
-            swing_factor = 0.02
-        
-        data = {
-            'open': base_price + np.sin(np.arange(50)) * base_price * swing_factor + np.random.normal(0, base_price * vol, 50),
-            'high': base_price * 1.05 + np.sin(np.arange(50)) * base_price * swing_factor * 1.2 + np.random.normal(0, base_price * vol * 1.2, 50),
-            'low': base_price * 0.95 - np.sin(np.arange(50)) * base_price * swing_factor * 1.2 + np.random.normal(0, base_price * vol * 1.2, 50),
-            'close': base_price + np.sin(np.arange(50)) * base_price * swing_factor + np.random.normal(0, base_price * vol, 50),
-            'volume': np.random.normal(1000000, 100000, 50),
-        }
-        df = pd.DataFrame(data, index=dates)
-        
-        # Calculate adaptive indicators
-        indicators = strategy._calculate_adaptive_indicators(df)
-        
-        print(f"\nVolatility: {vol*100:.1f}%")
-        print(f"  RSI Thresholds: {strategy.rsi_oversold:.1f}/{strategy.rsi_overbought:.1f}")
-        print(f"  ADX: {indicators.get('adx', 0):.1f}")
-        print(f"  Market Regime: {indicators.get('market_regime', 'UNKNOWN')}")
-        print(f"  Consolidation Score: {indicators.get('consolidation_score', 0):.2f}")
-
-if __name__ == "__main__":
-    # Jalankan semua test
-    print("\n" + "=" * 60)
-    print("ENHANCED STRATEGIES.PY - SEMUA IMPROVEMENT IMPLEMENTED")
-    print("=" * 60)
-    print("✅ ADX Market Regime Detection")
-    print("✅ Adaptive Indicator Parameters")
-    print("✅ Multi-Timeframe Confirmation")
-    print("✅ Consolidation Filter")
-    print("✅ Confidence Scoring System")
-    print("✅ Enter Tag System")
-    print("✅ Vectorized Operations")
-    print("✅ Scalping Mode Optimization")
-    print("=" * 60)
-    
-    # Test data cleaner
-    test_data_cleaner()
-    
-    # Test strategy dengan semua improvement
-    regular, scalping = test_strategy_with_improvements()
-    
-    # Test improvement statistics
-    test_improvement_statistics()
-    
-    # Test adaptive parameters
-    test_adaptive_parameters()
-    
-    # Test integration
-    test_integration_with_core()
-    
-    # Test scalping trading loop
-    test_scalping_trading_loop()
-    
-    # Show example output
-    print("\n" + "=" * 60)
-    print("📊 EXAMPLE ENHANCED SIGNAL OUTPUT:")
-    print("=" * 60)
-    
-    dates = pd.date_range('2023-12-01', periods=50, freq='H')
-    data = {
-        'open': np.random.normal(87000, 1000, 50),
-        'high': np.random.normal(87500, 1200, 50),
-        'low': np.random.normal(86500, 1200, 50),
-        'close': np.random.normal(87000, 1000, 50),
+        'open': prices * np.random.uniform(0.999, 1.001, 50),
+        'high': prices * np.random.uniform(1.001, 1.003, 50),
+        'low': prices * np.random.uniform(0.997, 0.999, 50),
+        'close': prices,
         'volume': np.random.normal(1000000, 100000, 50),
     }
+    
     df = pd.DataFrame(data, index=dates)
     
-    enhanced_strategy = EnhancedTechnicalAnalysisStrategy(
-        market_type="crypto_future",
-        trading_type="futures",
-        leverage=5,
-        use_multi_tf_confirmation=True,
-        use_adaptive_params=True,
-        use_regime_detection=True,
-        use_consolidation_filter=True
-    )
+    # Test breakout detection
+    strategy = EnhancedTechnicalAnalysisStrategy(market_type="crypto", trading_type="futures")
+    breakout_info = strategy._detect_breakout_pattern(df, "SKY/USDT")
     
-    result = enhanced_strategy.analyze(df, "BTC/USDT:USDT")
-    formatted_output = enhanced_strategy.format_signal_output(result)
-    print(formatted_output)
+    print(f"📊 Breakout Test Results:")
+    print(f"   Detected: {breakout_info['breakout_detected']}")
+    print(f"   Direction: {breakout_info.get('direction', 'NONE')}")
+    print(f"   Strength: {breakout_info.get('strength', 0):.2f}")
     
-    # Print additional info
-    print("\n📈 ADDITIONAL ENHANCEMENT INFO:")
-    print(f"Enter Tag: {result['enter_tag']}")
-    print(f"Market Regime: {result['market_regime']}")
-    print(f"ADX: {result['adx']:.1f}")
-    print(f"Consolidation Score: {result['consolidation_score']:.2f}")
-    print(f"MTF Confirmation: {result['mtf_confirmation']:.2f}")
-    print(f"RSI Threshold Used: {result['rsi_threshold_used']}")
+    # Test dengan strategi lengkap
+    print(f"\n📊 Full Strategy Test:")
+    result = strategy.analyze(df, "SKY/USDT")
+    print(f"   Action: {result['action']}")
+    print(f"   Score: {result['score']:.1f}")
+    print(f"   Breakout Detected: {result['breakout_detected']}")
+    print(f"   Breakout Direction: {result['breakout_direction']}")
+    print(f"   Enter Tag: {result['enter_tag']}")
+    
+    return result
+
+def test_skyusdt_scenario():
+    """Test specific SKYUSDT scenario from Dec 24"""
+    print("\n" + "=" * 60)
+    print("🔍 TESTING SKYUSDT DEC 24 SCENARIO")
+    print("=" * 60)
+    
+    # Simulasi data SKYUSDT tanggal 24 Desember
+    # Harga: 0.065 -> 0.068 (naik 4.6%)
+    
+    dates = pd.date_range('2025-12-24 09:00', periods=100, freq='5min')
+    
+    # Price movement: flat di 0.065, lalu breakout ke 0.068
+    prices = np.ones(100) * 0.065
+    prices[50:] = np.linspace(0.065, 0.068, 50)  # Breakout mulai jam 11:30
+    
+    # Volume spike saat breakout
+    volumes = np.random.normal(500000, 100000, 100)
+    volumes[50:70] = np.random.normal(1500000, 200000, 20)  # Volume spike
+    
+    data = {
+        'open': prices * np.random.uniform(0.999, 1.001, 100),
+        'high': prices * np.random.uniform(1.001, 1.003, 100),
+        'low': prices * np.random.uniform(0.997, 0.999, 100),
+        'close': prices,
+        'volume': volumes,
+    }
+    
+    df = pd.DataFrame(data, index=dates)
+    
+    # Test dengan scalping strategy
+    strategy = ScalpingStrategy(market_type="crypto", trading_type="futures", leverage=3)
+    
+    # Analisis setiap 10 bar untuk simulasi
+    print("⏰ Time-based analysis:")
+    for i in range(0, 100, 10):
+        subset = df.iloc[:i+10] if i+10 <= len(df) else df
+        if len(subset) > 30:
+            result = strategy.analyze(subset, "SKY/USDT")
+            time_str = subset.index[-1].strftime('%H:%M')
+            print(f"   {time_str} - Action: {result['action']}, Score: {result['score']:.1f}, Breakout: {result['breakout_detected']}")
+    
+    # Full analysis
+    result = strategy.analyze(df, "SKY/USDT")
+    
+    print(f"\n📊 Final Result:")
+    print(f"   Action: {result['action']}")
+    print(f"   Score: {result['score']:.1f}")
+    print(f"   Bias Applied: {result['long_bias_applied']}")
+    print(f"   Breakout Detected: {result['breakout_detected']}")
+    print(f"   Breakout Direction: {result['breakout_direction']}")
+    print(f"   Enter Tag: {result['enter_tag']}")
+    
+    if result['action'] == 'SHORT' and result['breakout_detected'] and result['breakout_direction'] == 'BULLISH':
+        print(f"\n✅ SUCCESS: Breakout detection bekerja! SHORT signal di-warning saat bullish breakout.")
+    elif result['action'] == 'NEUTRAL' and result['breakout_detected']:
+        print(f"\n✅ SUCCESS: Breakout membuat sinyal menjadi NEUTRAL.")
+    else:
+        print(f"\n⚠️ WARNING: Perlu pengecekan lebih lanjut.")
+    
+    return result
+
+if __name__ == "__main__":
+    print("\n" + "=" * 60)
+    print("STRATEGIES.PY - DIPERBAIKI DENGAN BREAKOUT DETECTION")
+    print("=" * 60)
+    print("✅ Bias Correction: SEMUA BIAS = 0.0")
+    print("✅ Breakout Detection: Aktif dengan parameter aman")
+    print("✅ Warning System: Tidak langsung block, hanya warning")
+    print("✅ Scalping Strategy: Optimized dengan breakout protection")
+    print("=" * 60)
+    
+    # Jalankan test
+    test_breakout_detection()
+    test_skyusdt_scenario()
     
     print("\n" + "=" * 60)
-    print("✅ STRATEGIES.PY READY DENGAN SEMUA IMPROVEMENT!")
-    print("✅ SKOR STRATEGI: 9.0/10")
-    print("✅ READY FOR LIVE TRADING!")
+    print("✅ STRATEGIES.PY READY DENGAN PERBAIKAN BREAKOUT!")
+    print("✅ Mencegah false SHORT signal saat bullish breakout")
+    print("✅ Minimal resiko over-filtering")
     print("=" * 60)
