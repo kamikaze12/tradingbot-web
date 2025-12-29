@@ -14,7 +14,8 @@ from datetime import datetime, timedelta
 import time
 import os
 import sys
-
+import logging
+logger = logging.getLogger(__name__)
 # =============================================
 # IMPORT BACKTESTING LIBRARIES
 # =============================================
