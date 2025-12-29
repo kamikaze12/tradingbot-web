@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 try:
     # Crypto scraper modules
-    from external_repos.Crypto_History_Scraper_BinanceApi.scraper import BinanceScraper
+    from bot.external_repos.Crypto_History_Scraper_BinanceApi.scraper import BinanceScraper
     BINANCE_SCRAPER_AVAILABLE = True
     logger.info("✅ BinanceScraper module imported successfully")
 except ImportError as e:
@@ -26,7 +26,7 @@ except ImportError as e:
 
 try:
     # General crypto scraper
-    from external_repos.cryptocurrency_scraper.scraper import CryptoScraper
+    from bot.external_repos.cryptocurrency_scraper.scraper import CryptoScraper
     CRYPTO_SCRAPER_AVAILABLE = True
     logger.info("✅ CryptoScraper module imported successfully")
 except ImportError as e:
@@ -35,7 +35,7 @@ except ImportError as e:
 
 try:
     # Indonesia stocks scraper
-    from external_repos.indonesia_stocks_scraper.scraper import IndonesiaStocksScraper
+    from bot.external_repos.indonesia_stocks_scraper.scraper import IndonesiaStocksScraper
     ID_STOCKS_SCRAPER_AVAILABLE = True
     logger.info("✅ IndonesiaStocksScraper module imported successfully")
 except ImportError as e:
@@ -44,7 +44,7 @@ except ImportError as e:
 
 try:
     # Forex scraper modules
-    from external_repos.ForexTrackerpro.tracker import ForexTracker
+    from bot.external_repos.ForexTrackerpro.tracker import ForexTracker
     FOREX_TRACKER_AVAILABLE = True
     logger.info("✅ ForexTracker module imported successfully")
 except ImportError as e:
@@ -52,7 +52,7 @@ except ImportError as e:
     logger.warning(f"⚠️ ForexTracker module not available: {e}")
 
 try:
-    from external_repos.Forex_analyzer_X_scrapper.analyzer import ForexXScraper
+    from bot.external_repos.Forex_analyzer_X_scrapper.analyzer import ForexXScraper
     FOREX_X_SCRAPER_AVAILABLE = True
     logger.info("✅ ForexXScraper module imported successfully")
 except ImportError as e:
@@ -60,7 +60,7 @@ except ImportError as e:
     logger.warning(f"⚠️ ForexXScraper module not available: {e}")
 
 try:
-    from external_repos.ForexScraper.scraper import ForexGeneralScraper
+    from bot.external_repos.ForexScraper.scraper import ForexGeneralScraper
     FOREX_GENERAL_AVAILABLE = True
     logger.info("✅ ForexGeneralScraper module imported successfully")
 except ImportError as e:
@@ -69,7 +69,7 @@ except ImportError as e:
 
 try:
     # Investing.com scraper
-    from external_repos.Investing_com_Scraper.scraper import InvestingScraper
+    from bot.external_repos.Investing_com_Scraper.scraper import InvestingScraper
     INVESTING_SCRAPER_AVAILABLE = True
     logger.info("✅ InvestingScraper module imported successfully")
 except ImportError as e:
