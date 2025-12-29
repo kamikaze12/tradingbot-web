@@ -22,21 +22,21 @@ CACHE_TTL_DAYS = 3  # Update setiap 3 hari
 
 # Import scraper dari external repos
 try:
-    from external_repos.indonesia_stocks_scraper.scraper import IndonesiaStocksScraper
+    from bot.external_repos.indonesia_stocks_scraper.scraper import IndonesiaStocksScraper
     INDONESIA_SCRAPER_AVAILABLE = True
 except ImportError:
     logger.warning("IndonesiaStocksScraper tidak tersedia, menggunakan metode alternatif")
     INDONESIA_SCRAPER_AVAILABLE = False
 
 try:
-    from external_repos.Investing_com_Scraper.scraper import InvestingScraper
+    from bot.external_repos.Investing_com_Scraper.scraper import InvestingScraper
     INVESTING_SCRAPER_AVAILABLE = True
 except ImportError:
     logger.warning("InvestingScraper tidak tersedia, menggunakan metode alternatif")
     INVESTING_SCRAPER_AVAILABLE = False
 
 try:
-    from external_repos.ForexScraper.scraper import ForexGeneralScraper
+    from bot.external_repos.ForexScraper.scraper import ForexGeneralScraper
     FOREX_SCRAPER_AVAILABLE = True
 except ImportError:
     logger.warning("ForexGeneralScraper tidak tersedia, menggunakan metode alternatif")
