@@ -16,6 +16,7 @@ import os
 import sys
 import logging
 logger = logging.getLogger(__name__)
+
 # =============================================
 # IMPORT BACKTESTING LIBRARIES
 # =============================================
@@ -365,955 +366,6 @@ def get_trading_data(symbol, provider=None, scalping_mode=False, require_real_da
         return None
 
 # =============================================
-# BACKTESTING STRATEGY CLASSES
-# =============================================
-
-class BacktestingWrapper:
-    """Wrapper untuk menjalankan backtesting dengan berbagai library"""
-    
-    def __init__(self, strategy, initial_cash=10000, commission=0.001):
-        self.strategy = strategy
-        self.initial_cash = initial_cash
-        self.commission = commission
-        self.results = {}
-        
-    def run_backtest(self, df, symbol=None, use_library='backtesting'):
-        """
-        Run backtest dengan library yang dipilih
-        
-        Args:
-            df: DataFrame dengan data OHLCV
-            symbol: Nama simbol (optional)
-            use_library: 'backtesting', 'backtrader', atau 'custom'
-        """
-        logger.info(f"📊 Running backtest for {symbol or 'unknown'} using {use_library}")
-        
-        if use_library == 'backtesting' and BACKTESTING_AVAILABLE:
-            return self._run_backtesting_py(df, symbol)
-        elif use_library == 'backtrader' and BACKTRADER_AVAILABLE:
-            return self._run_backtrader(df, symbol)
-        else:
-            return self._run_custom_backtest(df, symbol)
-    
-    def _run_backtesting_py(self, df, symbol):
-        """Run backtest menggunakan backtesting.py"""
-        try:
-            class StrategyWrapper(BTStrategy):
-                def init(self):
-                    # Inisialisasi indikator
-                    self.rsi = self.I(talib.RSI, self.data.Close, timeperiod=14)
-                    self.macd, self.signal, self.hist = self.I(talib.MACD, self.data.Close)
-                    
-                def next(self):
-                    current_price = self.data.Close[-1]
-                    
-                    # Dapatkan sinyal dari strategi utama
-                    current_df = pd.DataFrame({
-                        'open': self.data.Open[-50:],
-                        'high': self.data.High[-50:],
-                        'low': self.data.Low[-50:],
-                        'close': self.data.Close[-50:],
-                        'volume': self.data.Volume[-50:]
-                    })
-                    
-                    signal = self.strategy.analyze(current_df, symbol)
-                    
-                    if signal['action'] == 'LONG' and not self.position:
-                        self.buy()
-                    elif signal['action'] == 'SHORT' and not self.position:
-                        self.sell()
-                    elif signal['action'] == 'NEUTRAL' and self.position:
-                        self.position.close()
-            
-            bt = Backtest(df, StrategyWrapper, 
-                         cash=self.initial_cash, 
-                         commission=self.commission)
-            
-            stats = bt.run()
-            return {
-                'library': 'backtesting.py',
-                'sharpe_ratio': stats['Sharpe Ratio'],
-                'max_drawdown': stats['Max. Drawdown [%]'],
-                'win_rate': stats['Win Rate [%]'],
-                'profit_factor': stats['Profit Factor'],
-                'total_return': stats['Return [%]'],
-                'total_trades': stats['# Trades'],
-                'details': stats
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in backtesting.py backtest: {e}")
-            return self._run_custom_backtest(df, symbol)
-    
-    def _run_backtrader(self, df, symbol):
-        """Run backtest menggunakan backtrader"""
-        try:
-            class BacktraderStrategy(bt.Strategy):
-                params = (
-                    ('initial_cash', self.initial_cash),
-                )
-                
-                def __init__(self):
-                    self.rsi = bt.indicators.RSI(self.data.close, period=14)
-                    self.macd = bt.indicators.MACD(self.data.close)
-                    
-                def next(self):
-                    current_price = self.data.close[0]
-                    
-                    current_df = pd.DataFrame({
-                        'open': self.data.open.get(size=50),
-                        'high': self.data.high.get(size=50),
-                        'low': self.data.low.get(size=50),
-                        'close': self.data.close.get(size=50),
-                        'volume': self.data.volume.get(size=50)
-                    })
-                    
-                    signal = self.strategy.analyze(current_df, symbol)
-                    
-                    if signal['action'] == 'LONG' and not self.position:
-                        self.buy()
-                    elif signal['action'] == 'SHORT' and not self.position:
-                        self.sell()
-                    elif signal['action'] == 'NEUTRAL' and self.position:
-                        self.close()
-            
-            cerebro = bt.Cerebro()
-            cerebro.broker.setcash(self.initial_cash)
-            cerebro.broker.setcommission(commission=self.commission)
-            
-            data = btfeeds.PandasData(dataname=df)
-            cerebro.adddata(data)
-            cerebro.addstrategy(BacktraderStrategy)
-            
-            cerebro.addanalyzer(btanalyzers.SharpeRatio, _name='sharpe')
-            cerebro.addanalyzer(btanalyzers.DrawDown, _name='drawdown')
-            cerebro.addanalyzer(btanalyzers.TradeAnalyzer, _name='trades')
-            cerebro.addanalyzer(btanalyzers.Returns, _name='returns')
-            
-            results = cerebro.run()
-            strat = results[0]
-            
-            return {
-                'library': 'backtrader',
-                'sharpe_ratio': strat.analyzers.sharpe.get_analysis()['sharperatio'],
-                'max_drawdown': strat.analyzers.drawdown.get_analysis()['max']['drawdown'],
-                'total_return': strat.analyzers.returns.get_analysis()['rtot'],
-                'details': {
-                    'sharpe': strat.analyzers.sharpe.get_analysis(),
-                    'drawdown': strat.analyzers.drawdown.get_analysis(),
-                    'trades': strat.analyzers.trades.get_analysis()
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in backtrader backtest: {e}")
-            return self._run_custom_backtest(df, symbol)
-    
-    def _run_custom_backtest(self, df, symbol):
-        """Run backtest custom sederhana"""
-        try:
-            cash = self.initial_cash
-            position = 0
-            trades = []
-            equity_curve = []
-            
-            for i in range(50, len(df)):
-                current_data = df.iloc[i-50:i]
-                signal = self.strategy.analyze(current_data, symbol)
-                
-                current_price = df['close'].iloc[i]
-                equity_curve.append(cash + (position * current_price))
-                
-                if signal['action'] == 'LONG' and position <= 0:
-                    if position < 0:  # Close short position
-                        cash -= position * current_price * (1 + self.commission)
-                        trades.append({
-                            'type': 'close_short',
-                            'price': current_price,
-                            'profit': (position * (current_price - trades[-1]['price']))
-                        })
-                        position = 0
-                    
-                    # Open long position
-                    shares = cash * 0.95 / current_price
-                    cash -= shares * current_price * (1 + self.commission)
-                    position = shares
-                    trades.append({
-                        'type': 'open_long',
-                        'price': current_price,
-                        'shares': shares
-                    })
-                    
-                elif signal['action'] == 'SHORT' and position >= 0:
-                    if position > 0:  # Close long position
-                        cash += position * current_price * (1 - self.commission)
-                        trades.append({
-                            'type': 'close_long',
-                            'price': current_price,
-                            'profit': (position * (current_price - trades[-1]['price']))
-                        })
-                        position = 0
-                    
-                    # Open short position
-                    shares = cash * 0.95 / current_price
-                    cash += shares * current_price * (1 - self.commission)
-                    position = -shares
-                    trades.append({
-                        'type': 'open_short',
-                        'price': current_price,
-                        'shares': shares
-                    })
-                
-                elif signal['action'] == 'NEUTRAL' and position != 0:
-                    if position > 0:  # Close long
-                        cash += position * current_price * (1 - self.commission)
-                        trades.append({
-                            'type': 'close_long_neutral',
-                            'price': current_price,
-                            'profit': (position * (current_price - trades[-1]['price']))
-                        })
-                    elif position < 0:  # Close short
-                        cash -= position * current_price * (1 + self.commission)
-                        trades.append({
-                            'type': 'close_short_neutral',
-                            'price': current_price,
-                            'profit': (position * (current_price - trades[-1]['price']))
-                        })
-                    position = 0
-            
-            # Close final position
-            final_price = df['close'].iloc[-1]
-            final_value = cash + (position * final_price)
-            total_return = (final_value / self.initial_cash - 1) * 100
-            
-            # Calculate metrics
-            winning_trades = [t for t in trades if 'profit' in t and t['profit'] > 0]
-            losing_trades = [t for t in trades if 'profit' in t and t['profit'] <= 0]
-            
-            win_rate = len(winning_trades) / len(trades) * 100 if trades else 0
-            profit_factor = abs(sum(t['profit'] for t in winning_trades)) / abs(sum(t['profit'] for t in losing_trades)) if losing_trades else float('inf')
-            
-            # Sharpe ratio (simplified)
-            equity_array = np.array(equity_curve)
-            returns = np.diff(equity_array) / equity_array[:-1]
-            sharpe = np.mean(returns) / np.std(returns) * np.sqrt(252) if len(returns) > 1 and np.std(returns) > 0 else 0
-            
-            # Max drawdown
-            rolling_max = np.maximum.accumulate(equity_array)
-            drawdowns = (equity_array - rolling_max) / rolling_max
-            max_drawdown = np.min(drawdowns) * 100 if len(drawdowns) > 0 else 0
-            
-            return {
-                'library': 'custom',
-                'sharpe_ratio': sharpe,
-                'max_drawdown': max_drawdown,
-                'win_rate': win_rate,
-                'profit_factor': profit_factor,
-                'total_return': total_return,
-                'total_trades': len(trades),
-                'winning_trades': len(winning_trades),
-                'losing_trades': len(losing_trades),
-                'final_value': final_value,
-                'details': {
-                    'equity_curve': equity_curve,
-                    'trades': trades
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in custom backtest: {e}")
-            return {
-                'library': 'error',
-                'error': str(e),
-                'sharpe_ratio': 0,
-                'max_drawdown': 0,
-                'win_rate': 0,
-                'total_return': 0
-            }
-
-# =============================================
-# QUANTITATIVE TRADING STRATEGIES
-# =============================================
-
-class MeanReversionStrategy(TradingStrategy):
-    """Mean Reversion Strategy dari quant-trading repo"""
-    
-    def __init__(self, market_type="crypto", lookback_period=20, 
-                 std_dev_threshold=2.0, **kwargs):
-        super().__init__(market_type=market_type, **kwargs)
-        self.lookback_period = lookback_period
-        self.std_dev_threshold = std_dev_threshold
-        
-        if QUANT_STRATEGIES_AVAILABLE:
-            self.quant_strategy = QMeanReversionStrategy(lookback=lookback_period)
-        else:
-            self.quant_strategy = None
-        
-        logger.info(f"📈 MeanReversionStrategy initialized (Lookback: {lookback_period}, Std Dev: {std_dev_threshold})")
-    
-    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Implementasi mean reversion strategy"""
-        try:
-            if df is None or len(df) < self.lookback_period:
-                return self._get_default_analysis(symbol)
-            
-            prices = df['close'].values
-            
-            # Calculate Bollinger Bands
-            sma = np.mean(prices[-self.lookback_period:])
-            std = np.std(prices[-self.lookback_period:])
-            
-            upper_band = sma + (std * self.std_dev_threshold)
-            lower_band = sma - (std * self.std_dev_threshold)
-            
-            current_price = prices[-1]
-            
-            # Calculate z-score
-            z_score = (current_price - sma) / std if std > 0 else 0
-            
-            # Determine signal
-            score = 0
-            if current_price < lower_band:
-                score = 3  # Strong buy signal (oversold)
-                action = "LONG"
-            elif current_price > upper_band:
-                score = -3  # Strong sell signal (overbought)
-                action = "SHORT"
-            elif z_score < -1:
-                score = 2
-                action = "LONG"
-            elif z_score > 1:
-                score = -2
-                action = "SHORT"
-            else:
-                score = 0
-                action = "NEUTRAL"
-            
-            # Apply external quant strategy jika tersedia
-            if self.quant_strategy:
-                try:
-                    quant_signal = self.quant_strategy.get_signal(prices)
-                    if quant_signal != 0:
-                        score += quant_signal * 2
-                        logger.debug(f"Quant strategy signal: {quant_signal}")
-                except:
-                    pass
-            
-            # Calculate entry levels
-            entry_calc = self.calculate_custom_entry(
-                symbol=symbol or "UNKNOWN",
-                current_price=current_price,
-                action=action,
-                df=df
-            )
-            
-            result = {
-                'action': action,
-                'score': score,
-                'current_price': current_price,
-                'sma': sma,
-                'std': std,
-                'upper_band': upper_band,
-                'lower_band': lower_band,
-                'z_score': z_score,
-                'symbol': symbol or "UNKNOWN",
-                'strategy_type': 'mean_reversion',
-                'confidence': min(abs(z_score) / 3.0, 1.0),
-                'lookback_period': self.lookback_period,
-                'std_dev_threshold': self.std_dev_threshold
-            }
-            
-            result.update(entry_calc)
-            
-            logger.info(f"📊 {symbol}: MeanReversion {action} (Z-score: {z_score:.2f}, Score: {score:.1f})")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in MeanReversionStrategy analysis: {e}")
-            return self._get_default_analysis(symbol)
-
-class TrendFollowingStrategy(TradingStrategy):
-    """Trend Following Strategy dari quant-trading repo"""
-    
-    def __init__(self, market_type="crypto", fast_period=10, 
-                 slow_period=30, **kwargs):
-        super().__init__(market_type=market_type, **kwargs)
-        self.fast_period = fast_period
-        self.slow_period = slow_period
-        
-        if QUANT_STRATEGIES_AVAILABLE:
-            self.quant_strategy = QTrendFollowingStrategy(fast=fast_period, slow=slow_period)
-        else:
-            self.quant_strategy = None
-        
-        logger.info(f"📈 TrendFollowingStrategy initialized (Fast: {fast_period}, Slow: {slow_period})")
-    
-    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Implementasi trend following strategy"""
-        try:
-            if df is None or len(df) < self.slow_period:
-                return self._get_default_analysis(symbol)
-            
-            prices = df['close'].values
-            
-            # Calculate moving averages
-            fast_ma = np.mean(prices[-self.fast_period:]) if len(prices) >= self.fast_period else prices[-1]
-            slow_ma = np.mean(prices[-self.slow_period:]) if len(prices) >= self.slow_period else prices[-1]
-            
-            current_price = prices[-1]
-            
-            # Calculate ADX untuk konfirmasi trend
-            if len(df) >= 14:
-                high = df['high'].values[-14:]
-                low = df['low'].values[-14:]
-                close = prices[-14:]
-                
-                try:
-                    adx = talib.ADX(high, low, close, timeperiod=14)[-1]
-                except:
-                    adx = 20
-            else:
-                adx = 20
-            
-            # Determine trend direction
-            ma_diff = fast_ma - slow_ma
-            price_above_fast = current_price > fast_ma
-            price_above_slow = current_price > slow_ma
-            
-            # Calculate score
-            score = 0
-            
-            # Uptrend conditions
-            if ma_diff > 0 and price_above_fast and price_above_slow:
-                score = 3
-                if adx > 25:
-                    score += 1
-                action = "LONG"
-            
-            # Downtrend conditions
-            elif ma_diff < 0 and not price_above_fast and not price_above_slow:
-                score = -3
-                if adx > 25:
-                    score -= 1
-                action = "SHORT"
-            
-            # Weak signals
-            elif ma_diff > 0 and price_above_slow:
-                score = 1
-                action = "LONG"
-            elif ma_diff < 0 and not price_above_slow:
-                score = -1
-                action = "SHORT"
-            else:
-                score = 0
-                action = "NEUTRAL"
-            
-            # Apply external quant strategy
-            if self.quant_strategy:
-                try:
-                    quant_signal = self.quant_strategy.get_signal(prices)
-                    if quant_signal != 0:
-                        score += quant_signal
-                except:
-                    pass
-            
-            # Calculate entry levels
-            entry_calc = self.calculate_custom_entry(
-                symbol=symbol or "UNKNOWN",
-                current_price=current_price,
-                action=action,
-                df=df
-            )
-            
-            result = {
-                'action': action,
-                'score': score,
-                'current_price': current_price,
-                'fast_ma': fast_ma,
-                'slow_ma': slow_ma,
-                'ma_diff': ma_diff,
-                'adx': adx,
-                'symbol': symbol or "UNKNOWN",
-                'strategy_type': 'trend_following',
-                'confidence': min(adx / 50.0, 1.0),
-                'fast_period': self.fast_period,
-                'slow_period': self.slow_period
-            }
-            
-            result.update(entry_calc)
-            
-            logger.info(f"📊 {symbol}: TrendFollowing {action} (MA Diff: {ma_diff:.4f}, ADX: {adx:.1f}, Score: {score:.1f})")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in TrendFollowingStrategy analysis: {e}")
-            return self._get_default_analysis(symbol)
-
-class BreakoutStrategy(TradingStrategy):
-    """Breakout Strategy dari quant-trading repo"""
-    
-    def __init__(self, market_type="crypto", lookback_period=20, 
-                 breakout_threshold=0.02, **kwargs):
-        super().__init__(market_type=market_type, **kwargs)
-        self.lookback_period = lookback_period
-        self.breakout_threshold = breakout_threshold
-        
-        if QUANT_STRATEGIES_AVAILABLE:
-            self.quant_strategy = QBreakoutStrategy(lookback=lookback_period)
-        else:
-            self.quant_strategy = None
-        
-        logger.info(f"📈 BreakoutStrategy initialized (Lookback: {lookback_period}, Threshold: {breakout_threshold*100:.1f}%)")
-    
-    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Implementasi breakout strategy"""
-        try:
-            if df is None or len(df) < self.lookback_period:
-                return self._get_default_analysis(symbol)
-            
-            prices = df['close'].values
-            highs = df['high'].values
-            lows = df['low'].values
-            
-            current_price = prices[-1]
-            
-            # Calculate recent high and low
-            recent_high = np.max(highs[-self.lookback_period:-1])
-            recent_low = np.min(lows[-self.lookback_period:-1])
-            
-            # Calculate breakout levels
-            resistance = recent_high * (1 + self.breakout_threshold)
-            support = recent_low * (1 - self.breakout_threshold)
-            
-            # Determine breakout
-            score = 0
-            if current_price > resistance:
-                score = 4  # Strong breakout long
-                action = "LONG"
-                breakout_type = "RESISTANCE"
-            elif current_price < support:
-                score = -4  # Strong breakout short
-                action = "SHORT"
-                breakout_type = "SUPPORT"
-            elif current_price > recent_high:
-                score = 2
-                action = "LONG"
-                breakout_type = "MINOR_BREAKOUT"
-            elif current_price < recent_low:
-                score = -2
-                action = "SHORT"
-                breakout_type = "MINOR_BREAKOUT"
-            else:
-                score = 0
-                action = "NEUTRAL"
-                breakout_type = "NO_BREAKOUT"
-            
-            # Volume confirmation
-            if 'volume' in df.columns:
-                volumes = df['volume'].values
-                avg_volume = np.mean(volumes[-self.lookback_period:-1])
-                current_volume = volumes[-1]
-                volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
-                
-                if volume_ratio > 1.5 and action != "NEUTRAL":
-                    score *= 1.5  # Boost dengan volume confirmation
-            
-            # Apply external quant strategy
-            if self.quant_strategy:
-                try:
-                    quant_signal = self.quant_strategy.get_signal(prices)
-                    if quant_signal != 0:
-                        score += quant_signal
-                except:
-                    pass
-            
-            # Calculate entry levels
-            entry_calc = self.calculate_custom_entry(
-                symbol=symbol or "UNKNOWN",
-                current_price=current_price,
-                action=action,
-                df=df
-            )
-            
-            result = {
-                'action': action,
-                'score': score,
-                'current_price': current_price,
-                'recent_high': recent_high,
-                'recent_low': recent_low,
-                'resistance': resistance,
-                'support': support,
-                'breakout_type': breakout_type,
-                'symbol': symbol or "UNKNOWN",
-                'strategy_type': 'breakout',
-                'confidence': min(abs(score) / 4.0, 1.0),
-                'lookback_period': self.lookback_period,
-                'breakout_threshold': self.breakout_threshold
-            }
-            
-            result.update(entry_calc)
-            
-            logger.info(f"📊 {symbol}: Breakout {action} (Type: {breakout_type}, Score: {score:.1f})")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in BreakoutStrategy analysis: {e}")
-            return self._get_default_analysis(symbol)
-
-# =============================================
-# AWESOME SYSTEMATIC STRATEGIES
-# =============================================
-
-class MomentumStrategy(TradingStrategy):
-    """Momentum Strategy dari awesome-systematic repo"""
-    
-    def __init__(self, market_type="crypto", momentum_period=20, 
-                 ranking_period=30, **kwargs):
-        super().__init__(market_type=market_type, **kwargs)
-        self.momentum_period = momentum_period
-        self.ranking_period = ranking_period
-        
-        if AWESOME_SYSTEMATIC_AVAILABLE:
-            self.systematic_strategy = MomentumStrategy(period=momentum_period)
-        else:
-            self.systematic_strategy = None
-        
-        logger.info(f"📈 MomentumStrategy initialized (Momentum: {momentum_period}, Ranking: {ranking_period})")
-    
-    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Implementasi momentum strategy"""
-        try:
-            if df is None or len(df) < self.momentum_period:
-                return self._get_default_analysis(symbol)
-            
-            prices = df['close'].values
-            
-            # Calculate momentum
-            momentum = (prices[-1] / prices[-self.momentum_period] - 1) * 100
-            
-            # Calculate volatility-adjusted momentum
-            returns = np.diff(prices[-self.momentum_period:]) / prices[-self.momentum_period:-1]
-            volatility = np.std(returns) * np.sqrt(252) if len(returns) > 1 else 0.02
-            
-            momentum_sharpe = momentum / volatility if volatility > 0 else 0
-            
-            # Determine signal
-            score = 0
-            if momentum > 5 and momentum_sharpe > 0.5:
-                score = 4  # Strong momentum long
-                action = "LONG"
-            elif momentum < -5 and momentum_sharpe < -0.5:
-                score = -4  # Strong momentum short
-                action = "SHORT"
-            elif momentum > 2:
-                score = 2
-                action = "LONG"
-            elif momentum < -2:
-                score = -2
-                action = "SHORT"
-            else:
-                score = 0
-                action = "NEUTRAL"
-            
-            # Apply systematic strategy
-            if self.systematic_strategy:
-                try:
-                    systematic_signal = self.systematic_strategy.get_signal(prices)
-                    if systematic_signal != 0:
-                        score += systematic_signal * 2
-                except:
-                    pass
-            
-            # Calculate entry levels
-            entry_calc = self.calculate_custom_entry(
-                symbol=symbol or "UNKNOWN",
-                current_price=prices[-1],
-                action=action,
-                df=df
-            )
-            
-            result = {
-                'action': action,
-                'score': score,
-                'current_price': prices[-1],
-                'momentum': momentum,
-                'volatility': volatility,
-                'momentum_sharpe': momentum_sharpe,
-                'symbol': symbol or "UNKNOWN",
-                'strategy_type': 'momentum',
-                'confidence': min(abs(momentum) / 10.0, 1.0),
-                'momentum_period': self.momentum_period
-            }
-            
-            result.update(entry_calc)
-            
-            logger.info(f"📊 {symbol}: Momentum {action} (Momentum: {momentum:.1f}%, Sharpe: {momentum_sharpe:.2f})")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in MomentumStrategy analysis: {e}")
-            return self._get_default_analysis(symbol)
-
-class VolatilityStrategy(TradingStrategy):
-    """Volatility Strategy dari awesome-systematic repo"""
-    
-    def __init__(self, market_type="crypto", volatility_period=20, 
-                 target_volatility=0.20, **kwargs):
-        super().__init__(market_type=market_type, **kwargs)
-        self.volatility_period = volatility_period
-        self.target_volatility = target_volatility
-        
-        if AWESOME_SYSTEMATIC_AVAILABLE:
-            self.systematic_strategy = VolatilityStrategy(period=volatility_period)
-        else:
-            self.systematic_strategy = None
-        
-        logger.info(f"📈 VolatilityStrategy initialized (Vol Period: {volatility_period}, Target: {target_volatility*100:.1f}%)")
-    
-    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Implementasi volatility strategy"""
-        try:
-            if df is None or len(df) < self.volatility_period:
-                return self._get_default_analysis(symbol)
-            
-            prices = df['close'].values
-            
-            # Calculate volatility
-            returns = np.diff(prices[-self.volatility_period:]) / prices[-self.volatility_period:-1]
-            current_volatility = np.std(returns) * np.sqrt(252) if len(returns) > 1 else 0.02
-            
-            # Calculate volatility regime
-            vol_ratio = current_volatility / self.target_volatility
-            
-            # Determine signal berdasarkan regime volatility
-            score = 0
-            current_price = prices[-1]
-            
-            if vol_ratio < 0.5:
-                # Low volatility regime - mean reversion
-                sma = np.mean(prices[-self.volatility_period:])
-                if current_price < sma * 0.98:
-                    score = 2
-                    action = "LONG"
-                elif current_price > sma * 1.02:
-                    score = -2
-                    action = "SHORT"
-                else:
-                    score = 0
-                    action = "NEUTRAL"
-                    
-            elif vol_ratio > 1.5:
-                # High volatility regime - breakout
-                recent_high = np.max(prices[-self.volatility_period//2:])
-                recent_low = np.min(prices[-self.volatility_period//2:])
-                
-                if current_price > recent_high:
-                    score = 3
-                    action = "LONG"
-                elif current_price < recent_low:
-                    score = -3
-                    action = "SHORT"
-                else:
-                    score = 0
-                    action = "NEUTRAL"
-                    
-            else:
-                # Normal volatility - trend following
-                fast_ma = np.mean(prices[-10:]) if len(prices) >= 10 else current_price
-                slow_ma = np.mean(prices[-30:]) if len(prices) >= 30 else current_price
-                
-                if fast_ma > slow_ma and current_price > fast_ma:
-                    score = 2
-                    action = "LONG"
-                elif fast_ma < slow_ma and current_price < fast_ma:
-                    score = -2
-                    action = "SHORT"
-                else:
-                    score = 0
-                    action = "NEUTRAL"
-            
-            # Apply systematic strategy
-            if self.systematic_strategy:
-                try:
-                    systematic_signal = self.systematic_strategy.get_signal(prices)
-                    if systematic_signal != 0:
-                        score += systematic_signal
-                except:
-                    pass
-            
-            # Calculate entry levels
-            entry_calc = self.calculate_custom_entry(
-                symbol=symbol or "UNKNOWN",
-                current_price=current_price,
-                action=action,
-                df=df
-            )
-            
-            result = {
-                'action': action,
-                'score': score,
-                'current_price': current_price,
-                'current_volatility': current_volatility,
-                'vol_ratio': vol_ratio,
-                'volatility_regime': 'LOW' if vol_ratio < 0.5 else 'HIGH' if vol_ratio > 1.5 else 'NORMAL',
-                'symbol': symbol or "UNKNOWN",
-                'strategy_type': 'volatility',
-                'confidence': min(1.0 - abs(vol_ratio - 1.0), 1.0),
-                'volatility_period': self.volatility_period,
-                'target_volatility': self.target_volatility
-            }
-            
-            result.update(entry_calc)
-            
-            logger.info(f"📊 {symbol}: Volatility {action} (Vol: {current_volatility:.1%}, Regime: {result['volatility_regime']})")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in VolatilityStrategy analysis: {e}")
-            return self._get_default_analysis(symbol)
-
-# =============================================
-# ENSEMBLE STRATEGY (MULTI-STRATEGY COMBINATION)
-# =============================================
-
-class EnsembleStrategy(TradingStrategy):
-    """Ensemble strategy yang menggabungkan multiple strategies"""
-    
-    def __init__(self, market_type="crypto", strategies_config=None, **kwargs):
-        super().__init__(market_type=market_type, **kwargs)
-        
-        # Default strategies jika tidak ada config
-        if strategies_config is None:
-            strategies_config = [
-                {'type': 'technical', 'weight': 0.4},
-                {'type': 'mean_reversion', 'weight': 0.2},
-                {'type': 'trend_following', 'weight': 0.2},
-                {'type': 'breakout', 'weight': 0.1},
-                {'type': 'momentum', 'weight': 0.1}
-            ]
-        
-        self.strategies = []
-        self.weights = []
-        
-        for config in strategies_config:
-            strategy_type = config['type']
-            weight = config['weight']
-            
-            if strategy_type == 'technical':
-                strategy = EnhancedTechnicalAnalysisStrategy(market_type=market_type, **kwargs)
-            elif strategy_type == 'mean_reversion':
-                strategy = MeanReversionStrategy(market_type=market_type, **kwargs)
-            elif strategy_type == 'trend_following':
-                strategy = TrendFollowingStrategy(market_type=market_type, **kwargs)
-            elif strategy_type == 'breakout':
-                strategy = BreakoutStrategy(market_type=market_type, **kwargs)
-            elif strategy_type == 'momentum':
-                strategy = MomentumStrategy(market_type=market_type, **kwargs)
-            elif strategy_type == 'volatility':
-                strategy = VolatilityStrategy(market_type=market_type, **kwargs)
-            else:
-                continue
-            
-            self.strategies.append(strategy)
-            self.weights.append(weight)
-        
-        # Normalize weights
-        total_weight = sum(self.weights)
-        self.weights = [w / total_weight for w in self.weights]
-        
-        logger.info(f"📈 EnsembleStrategy initialized with {len(self.strategies)} strategies")
-    
-    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
-        """Combine signals from multiple strategies"""
-        try:
-            if df is None or len(df) < 20:
-                return self._get_default_analysis(symbol)
-            
-            all_signals = []
-            weighted_score = 0
-            
-            for strategy, weight in zip(self.strategies, self.weights):
-                try:
-                    signal = strategy.analyze(df, symbol)
-                    
-                    # Convert action to score
-                    if signal['action'] == 'LONG':
-                        action_score = 1
-                    elif signal['action'] == 'SHORT':
-                        action_score = -1
-                    else:
-                        action_score = 0
-                    
-                    # Weighted score
-                    weighted_score += action_score * weight * abs(signal.get('score', 1))
-                    
-                    all_signals.append({
-                        'type': strategy.__class__.__name__,
-                        'action': signal['action'],
-                        'score': signal.get('score', 0),
-                        'weight': weight,
-                        'confidence': signal.get('confidence', 0.5)
-                    })
-                    
-                except Exception as e:
-                    logger.error(f"Error in sub-strategy {strategy.__class__.__name__}: {e}")
-                    continue
-            
-            # Determine final action
-            if weighted_score > 0.5:
-                action = "LONG"
-                final_score = weighted_score
-            elif weighted_score < -0.5:
-                action = "SHORT"
-                final_score = weighted_score
-            else:
-                action = "NEUTRAL"
-                final_score = 0
-            
-            # Calculate entry levels
-            current_price = df['close'].iloc[-1]
-            entry_calc = self.calculate_custom_entry(
-                symbol=symbol or "UNKNOWN",
-                current_price=current_price,
-                action=action,
-                df=df
-            )
-            
-            # Calculate consensus confidence
-            long_votes = sum(1 for s in all_signals if s['action'] == 'LONG')
-            short_votes = sum(1 for s in all_signals if s['action'] == 'SHORT')
-            neutral_votes = sum(1 for s in all_signals if s['action'] == 'NEUTRAL')
-            
-            total_votes = len(all_signals)
-            confidence = max(long_votes, short_votes) / total_votes if total_votes > 0 else 0.5
-            
-            result = {
-                'action': action,
-                'score': final_score,
-                'current_price': current_price,
-                'symbol': symbol or "UNKNOWN",
-                'strategy_type': 'ensemble',
-                'confidence': confidence,
-                'consensus': {
-                    'long_votes': long_votes,
-                    'short_votes': short_votes,
-                    'neutral_votes': neutral_votes,
-                    'total_votes': total_votes
-                },
-                'all_signals': all_signals,
-                'weighted_score': weighted_score
-            }
-            
-            result.update(entry_calc)
-            
-            logger.info(f"📊 {symbol}: Ensemble {action} (Score: {final_score:.2f}, Confidence: {confidence:.1%}, Consensus: {long_votes}/{short_votes}/{neutral_votes})")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in EnsembleStrategy analysis: {e}")
-            return self._get_default_analysis(symbol)
-
-# =============================================
 # BASE STRATEGY CLASS DENGAN BACKTEST METHOD
 # =============================================
 
@@ -1345,7 +397,7 @@ class TradingStrategy(ABC):
             logger.info(f"⚡ SCALPING MODE: Bias={long_bias}, Min Score={min_score_threshold}")
     
     @abstractmethod
-    def analyze(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
         """Analyze market data and return trading signals"""
         pass
     
@@ -1505,8 +557,6 @@ class TradingStrategy(ABC):
             'param_grid': param_grid,
             'total_tested': total_combinations
         }
-    
-    # ... [semua method lainnya dari base class tetap sama] ...
     
     def _preprocess_and_validate(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """Preprocess data dan validasi kualitas"""
@@ -2046,6 +1096,1063 @@ class TradingStrategy(ABC):
 """
         
         return output
+
+# =============================================
+# BACKTESTING STRATEGY CLASSES
+# =============================================
+
+class BacktestingWrapper:
+    """Wrapper untuk menjalankan backtesting dengan berbagai library"""
+    
+    def __init__(self, strategy, initial_cash=10000, commission=0.001):
+        self.strategy = strategy
+        self.initial_cash = initial_cash
+        self.commission = commission
+        self.results = {}
+        
+    def run_backtest(self, df, symbol=None, use_library='backtesting'):
+        """
+        Run backtest dengan library yang dipilih
+        
+        Args:
+            df: DataFrame dengan data OHLCV
+            symbol: Nama simbol (optional)
+            use_library: 'backtesting', 'backtrader', atau 'custom'
+        """
+        logger.info(f"📊 Running backtest for {symbol or 'unknown'} using {use_library}")
+        
+        if use_library == 'backtesting' and BACKTESTING_AVAILABLE:
+            return self._run_backtesting_py(df, symbol)
+        elif use_library == 'backtrader' and BACKTRADER_AVAILABLE:
+            return self._run_backtrader(df, symbol)
+        else:
+            return self._run_custom_backtest(df, symbol)
+    
+    def _run_backtesting_py(self, df, symbol):
+        """Run backtest menggunakan backtesting.py"""
+        try:
+            class StrategyWrapper(BTStrategy):
+                def init(self):
+                    # Inisialisasi indikator
+                    self.rsi = self.I(talib.RSI, self.data.Close, timeperiod=14)
+                    self.macd, self.signal, self.hist = self.I(talib.MACD, self.data.Close)
+                    
+                def next(self):
+                    current_price = self.data.Close[-1]
+                    
+                    # Dapatkan sinyal dari strategi utama
+                    current_df = pd.DataFrame({
+                        'open': self.data.Open[-50:],
+                        'high': self.data.High[-50:],
+                        'low': self.data.Low[-50:],
+                        'close': self.data.Close[-50:],
+                        'volume': self.data.Volume[-50:]
+                    })
+                    
+                    signal = self.strategy.analyze(current_df, symbol)
+                    
+                    if signal['action'] == 'LONG' and not self.position:
+                        self.buy()
+                    elif signal['action'] == 'SHORT' and not self.position:
+                        self.sell()
+                    elif signal['action'] == 'NEUTRAL' and self.position:
+                        self.position.close()
+            
+            bt = Backtest(df, StrategyWrapper, 
+                         cash=self.initial_cash, 
+                         commission=self.commission)
+            
+            stats = bt.run()
+            return {
+                'library': 'backtesting.py',
+                'sharpe_ratio': stats['Sharpe Ratio'],
+                'max_drawdown': stats['Max. Drawdown [%]'],
+                'win_rate': stats['Win Rate [%]'],
+                'profit_factor': stats['Profit Factor'],
+                'total_return': stats['Return [%]'],
+                'total_trades': stats['# Trades'],
+                'details': stats
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in backtesting.py backtest: {e}")
+            return self._run_custom_backtest(df, symbol)
+    
+    def _run_backtrader(self, df, symbol):
+        """Run backtest menggunakan backtrader"""
+        try:
+            class BacktraderStrategy(bt.Strategy):
+                params = (
+                    ('initial_cash', self.initial_cash),
+                )
+                
+                def __init__(self):
+                    self.rsi = bt.indicators.RSI(self.data.close, period=14)
+                    self.macd = bt.indicators.MACD(self.data.close)
+                    
+                def next(self):
+                    current_price = self.data.close[0]
+                    
+                    current_df = pd.DataFrame({
+                        'open': self.data.open.get(size=50),
+                        'high': self.data.high.get(size=50),
+                        'low': self.data.low.get(size=50),
+                        'close': self.data.close.get(size=50),
+                        'volume': self.data.volume.get(size=50)
+                    })
+                    
+                    signal = self.strategy.analyze(current_df, symbol)
+                    
+                    if signal['action'] == 'LONG' and not self.position:
+                        self.buy()
+                    elif signal['action'] == 'SHORT' and not self.position:
+                        self.sell()
+                    elif signal['action'] == 'NEUTRAL' and self.position:
+                        self.close()
+            
+            cerebro = bt.Cerebro()
+            cerebro.broker.setcash(self.initial_cash)
+            cerebro.broker.setcommission(commission=self.commission)
+            
+            data = btfeeds.PandasData(dataname=df)
+            cerebro.adddata(data)
+            cerebro.addstrategy(BacktraderStrategy)
+            
+            cerebro.addanalyzer(btanalyzers.SharpeRatio, _name='sharpe')
+            cerebro.addanalyzer(btanalyzers.DrawDown, _name='drawdown')
+            cerebro.addanalyzer(btanalyzers.TradeAnalyzer, _name='trades')
+            cerebro.addanalyzer(btanalyzers.Returns, _name='returns')
+            
+            results = cerebro.run()
+            strat = results[0]
+            
+            return {
+                'library': 'backtrader',
+                'sharpe_ratio': strat.analyzers.sharpe.get_analysis()['sharperatio'],
+                'max_drawdown': strat.analyzers.drawdown.get_analysis()['max']['drawdown'],
+                'total_return': strat.analyzers.returns.get_analysis()['rtot'],
+                'details': {
+                    'sharpe': strat.analyzers.sharpe.get_analysis(),
+                    'drawdown': strat.analyzers.drawdown.get_analysis(),
+                    'trades': strat.analyzers.trades.get_analysis()
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in backtrader backtest: {e}")
+            return self._run_custom_backtest(df, symbol)
+    
+    def _run_custom_backtest(self, df, symbol):
+        """Run backtest custom sederhana"""
+        try:
+            cash = self.initial_cash
+            position = 0
+            trades = []
+            equity_curve = []
+            
+            for i in range(50, len(df)):
+                current_data = df.iloc[i-50:i]
+                signal = self.strategy.analyze(current_data, symbol)
+                
+                current_price = df['close'].iloc[i]
+                equity_curve.append(cash + (position * current_price))
+                
+                if signal['action'] == 'LONG' and position <= 0:
+                    if position < 0:  # Close short position
+                        cash -= position * current_price * (1 + self.commission)
+                        trades.append({
+                            'type': 'close_short',
+                            'price': current_price,
+                            'profit': (position * (current_price - trades[-1]['price']))
+                        })
+                        position = 0
+                    
+                    # Open long position
+                    shares = cash * 0.95 / current_price
+                    cash -= shares * current_price * (1 + self.commission)
+                    position = shares
+                    trades.append({
+                        'type': 'open_long',
+                        'price': current_price,
+                        'shares': shares
+                    })
+                    
+                elif signal['action'] == 'SHORT' and position >= 0:
+                    if position > 0:  # Close long position
+                        cash += position * current_price * (1 - self.commission)
+                        trades.append({
+                            'type': 'close_long',
+                            'price': current_price,
+                            'profit': (position * (current_price - trades[-1]['price']))
+                        })
+                        position = 0
+                    
+                    # Open short position
+                    shares = cash * 0.95 / current_price
+                    cash += shares * current_price * (1 - self.commission)
+                    position = -shares
+                    trades.append({
+                        'type': 'open_short',
+                        'price': current_price,
+                        'shares': shares
+                    })
+                
+                elif signal['action'] == 'NEUTRAL' and position != 0:
+                    if position > 0:  # Close long
+                        cash += position * current_price * (1 - self.commission)
+                        trades.append({
+                            'type': 'close_long_neutral',
+                            'price': current_price,
+                            'profit': (position * (current_price - trades[-1]['price']))
+                        })
+                    elif position < 0:  # Close short
+                        cash -= position * current_price * (1 + self.commission)
+                        trades.append({
+                            'type': 'close_short_neutral',
+                            'price': current_price,
+                            'profit': (position * (current_price - trades[-1]['price']))
+                        })
+                    position = 0
+            
+            # Close final position
+            final_price = df['close'].iloc[-1]
+            final_value = cash + (position * final_price)
+            total_return = (final_value / self.initial_cash - 1) * 100
+            
+            # Calculate metrics
+            winning_trades = [t for t in trades if 'profit' in t and t['profit'] > 0]
+            losing_trades = [t for t in trades if 'profit' in t and t['profit'] <= 0]
+            
+            win_rate = len(winning_trades) / len(trades) * 100 if trades else 0
+            profit_factor = abs(sum(t['profit'] for t in winning_trades)) / abs(sum(t['profit'] for t in losing_trades)) if losing_trades else float('inf')
+            
+            # Sharpe ratio (simplified)
+            equity_array = np.array(equity_curve)
+            returns = np.diff(equity_array) / equity_array[:-1]
+            sharpe = np.mean(returns) / np.std(returns) * np.sqrt(252) if len(returns) > 1 and np.std(returns) > 0 else 0
+            
+            # Max drawdown
+            rolling_max = np.maximum.accumulate(equity_array)
+            drawdowns = (equity_array - rolling_max) / rolling_max
+            max_drawdown = np.min(drawdowns) * 100 if len(drawdowns) > 0 else 0
+            
+            return {
+                'library': 'custom',
+                'sharpe_ratio': sharpe,
+                'max_drawdown': max_drawdown,
+                'win_rate': win_rate,
+                'profit_factor': profit_factor,
+                'total_return': total_return,
+                'total_trades': len(trades),
+                'winning_trades': len(winning_trades),
+                'losing_trades': len(losing_trades),
+                'final_value': final_value,
+                'details': {
+                    'equity_curve': equity_curve,
+                    'trades': trades
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in custom backtest: {e}")
+            return {
+                'library': 'error',
+                'error': str(e),
+                'sharpe_ratio': 0,
+                'max_drawdown': 0,
+                'win_rate': 0,
+                'total_return': 0
+            }
+
+# =============================================
+# QUANTITATIVE TRADING STRATEGIES
+# =============================================
+
+class MeanReversionStrategy(TradingStrategy):
+    """Mean Reversion Strategy dari quant-trading repo"""
+    
+    def __init__(self, market_type="crypto", lookback_period=20, 
+                 std_dev_threshold=2.0, **kwargs):
+        super().__init__(market_type=market_type, **kwargs)
+        self.lookback_period = lookback_period
+        self.std_dev_threshold = std_dev_threshold
+        
+        if QUANT_STRATEGIES_AVAILABLE:
+            self.quant_strategy = QMeanReversionStrategy(lookback=lookback_period)
+        else:
+            self.quant_strategy = None
+        
+        logger.info(f"📈 MeanReversionStrategy initialized (Lookback: {lookback_period}, Std Dev: {std_dev_threshold})")
+    
+    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
+        """Implementasi mean reversion strategy"""
+        try:
+            if df is None or len(df) < self.lookback_period:
+                return self._get_default_analysis(symbol)
+            
+            prices = df['close'].values
+            
+            # Calculate Bollinger Bands
+            sma = np.mean(prices[-self.lookback_period:])
+            std = np.std(prices[-self.lookback_period:])
+            
+            upper_band = sma + (std * self.std_dev_threshold)
+            lower_band = sma - (std * self.std_dev_threshold)
+            
+            current_price = prices[-1]
+            
+            # Calculate z-score
+            z_score = (current_price - sma) / std if std > 0 else 0
+            
+            # Determine signal
+            score = 0
+            if current_price < lower_band:
+                score = 3  # Strong buy signal (oversold)
+                action = "LONG"
+            elif current_price > upper_band:
+                score = -3  # Strong sell signal (overbought)
+                action = "SHORT"
+            elif z_score < -1:
+                score = 2
+                action = "LONG"
+            elif z_score > 1:
+                score = -2
+                action = "SHORT"
+            else:
+                score = 0
+                action = "NEUTRAL"
+            
+            # Apply external quant strategy jika tersedia
+            if self.quant_strategy:
+                try:
+                    quant_signal = self.quant_strategy.get_signal(prices)
+                    if quant_signal != 0:
+                        score += quant_signal * 2
+                        logger.debug(f"Quant strategy signal: {quant_signal}")
+                except:
+                    pass
+            
+            # Calculate entry levels
+            entry_calc = self.calculate_custom_entry(
+                symbol=symbol or "UNKNOWN",
+                current_price=current_price,
+                action=action,
+                df=df
+            )
+            
+            result = {
+                'action': action,
+                'score': score,
+                'current_price': current_price,
+                'sma': sma,
+                'std': std,
+                'upper_band': upper_band,
+                'lower_band': lower_band,
+                'z_score': z_score,
+                'symbol': symbol or "UNKNOWN",
+                'strategy_type': 'mean_reversion',
+                'confidence': min(abs(z_score) / 3.0, 1.0),
+                'lookback_period': self.lookback_period,
+                'std_dev_threshold': self.std_dev_threshold
+            }
+            
+            result.update(entry_calc)
+            
+            logger.info(f"📊 {symbol}: MeanReversion {action} (Z-score: {z_score:.2f}, Score: {score:.1f})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in MeanReversionStrategy analysis: {e}")
+            return self._get_default_analysis(symbol)
+
+    def _get_default_analysis(self, symbol: str = None) -> Dict[str, Any]:
+        """Get default analysis result"""
+        if symbol is None:
+            symbol = "UNKNOWN"
+            
+        default_price = self._estimate_realistic_price(symbol)
+        default_entry = self.calculate_custom_entry(symbol, default_price, "NEUTRAL")
+        
+        return {
+            'action': 'NEUTRAL',
+            'score': 0,
+            'current_price': default_price,
+            'symbol': symbol or "UNKNOWN",
+            'strategy_type': 'mean_reversion',
+            'confidence': 0.0,
+            **default_entry
+        }
+
+class TrendFollowingStrategy(TradingStrategy):
+    """Trend Following Strategy dari quant-trading repo"""
+    
+    def __init__(self, market_type="crypto", fast_period=10, 
+                 slow_period=30, **kwargs):
+        super().__init__(market_type=market_type, **kwargs)
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+        
+        if QUANT_STRATEGIES_AVAILABLE:
+            self.quant_strategy = QTrendFollowingStrategy(fast=fast_period, slow=slow_period)
+        else:
+            self.quant_strategy = None
+        
+        logger.info(f"📈 TrendFollowingStrategy initialized (Fast: {fast_period}, Slow: {slow_period})")
+    
+    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
+        """Implementasi trend following strategy"""
+        try:
+            if df is None or len(df) < self.slow_period:
+                return self._get_default_analysis(symbol)
+            
+            prices = df['close'].values
+            
+            # Calculate moving averages
+            fast_ma = np.mean(prices[-self.fast_period:]) if len(prices) >= self.fast_period else prices[-1]
+            slow_ma = np.mean(prices[-self.slow_period:]) if len(prices) >= self.slow_period else prices[-1]
+            
+            current_price = prices[-1]
+            
+            # Calculate ADX untuk konfirmasi trend
+            if len(df) >= 14:
+                high = df['high'].values[-14:]
+                low = df['low'].values[-14:]
+                close = prices[-14:]
+                
+                try:
+                    adx = talib.ADX(high, low, close, timeperiod=14)[-1]
+                except:
+                    adx = 20
+            else:
+                adx = 20
+            
+            # Determine trend direction
+            ma_diff = fast_ma - slow_ma
+            price_above_fast = current_price > fast_ma
+            price_above_slow = current_price > slow_ma
+            
+            # Calculate score
+            score = 0
+            
+            # Uptrend conditions
+            if ma_diff > 0 and price_above_fast and price_above_slow:
+                score = 3
+                if adx > 25:
+                    score += 1
+                action = "LONG"
+            
+            # Downtrend conditions
+            elif ma_diff < 0 and not price_above_fast and not price_above_slow:
+                score = -3
+                if adx > 25:
+                    score -= 1
+                action = "SHORT"
+            
+            # Weak signals
+            elif ma_diff > 0 and price_above_slow:
+                score = 1
+                action = "LONG"
+            elif ma_diff < 0 and not price_above_slow:
+                score = -1
+                action = "SHORT"
+            else:
+                score = 0
+                action = "NEUTRAL"
+            
+            # Apply external quant strategy
+            if self.quant_strategy:
+                try:
+                    quant_signal = self.quant_strategy.get_signal(prices)
+                    if quant_signal != 0:
+                        score += quant_signal
+                except:
+                    pass
+            
+            # Calculate entry levels
+            entry_calc = self.calculate_custom_entry(
+                symbol=symbol or "UNKNOWN",
+                current_price=current_price,
+                action=action,
+                df=df
+            )
+            
+            result = {
+                'action': action,
+                'score': score,
+                'current_price': current_price,
+                'fast_ma': fast_ma,
+                'slow_ma': slow_ma,
+                'ma_diff': ma_diff,
+                'adx': adx,
+                'symbol': symbol or "UNKNOWN",
+                'strategy_type': 'trend_following',
+                'confidence': min(adx / 50.0, 1.0),
+                'fast_period': self.fast_period,
+                'slow_period': self.slow_period
+            }
+            
+            result.update(entry_calc)
+            
+            logger.info(f"📊 {symbol}: TrendFollowing {action} (MA Diff: {ma_diff:.4f}, ADX: {adx:.1f}, Score: {score:.1f})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in TrendFollowingStrategy analysis: {e}")
+            return self._get_default_analysis(symbol)
+
+    def _get_default_analysis(self, symbol: str = None) -> Dict[str, Any]:
+        """Get default analysis result"""
+        if symbol is None:
+            symbol = "UNKNOWN"
+            
+        default_price = self._estimate_realistic_price(symbol)
+        default_entry = self.calculate_custom_entry(symbol, default_price, "NEUTRAL")
+        
+        return {
+            'action': 'NEUTRAL',
+            'score': 0,
+            'current_price': default_price,
+            'symbol': symbol or "UNKNOWN",
+            'strategy_type': 'trend_following',
+            'confidence': 0.0,
+            **default_entry
+        }
+
+class BreakoutStrategy(TradingStrategy):
+    """Breakout Strategy dari quant-trading repo"""
+    
+    def __init__(self, market_type="crypto", lookback_period=20, 
+                 breakout_threshold=0.02, **kwargs):
+        super().__init__(market_type=market_type, **kwargs)
+        self.lookback_period = lookback_period
+        self.breakout_threshold = breakout_threshold
+        
+        if QUANT_STRATEGIES_AVAILABLE:
+            self.quant_strategy = QBreakoutStrategy(lookback=lookback_period)
+        else:
+            self.quant_strategy = None
+        
+        logger.info(f"📈 BreakoutStrategy initialized (Lookback: {lookback_period}, Threshold: {breakout_threshold*100:.1f}%)")
+    
+    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
+        """Implementasi breakout strategy"""
+        try:
+            if df is None or len(df) < self.lookback_period:
+                return self._get_default_analysis(symbol)
+            
+            prices = df['close'].values
+            highs = df['high'].values
+            lows = df['low'].values
+            
+            current_price = prices[-1]
+            
+            # Calculate recent high and low
+            recent_high = np.max(highs[-self.lookback_period:-1])
+            recent_low = np.min(lows[-self.lookback_period:-1])
+            
+            # Calculate breakout levels
+            resistance = recent_high * (1 + self.breakout_threshold)
+            support = recent_low * (1 - self.breakout_threshold)
+            
+            # Determine breakout
+            score = 0
+            if current_price > resistance:
+                score = 4  # Strong breakout long
+                action = "LONG"
+                breakout_type = "RESISTANCE"
+            elif current_price < support:
+                score = -4  # Strong breakout short
+                action = "SHORT"
+                breakout_type = "SUPPORT"
+            elif current_price > recent_high:
+                score = 2
+                action = "LONG"
+                breakout_type = "MINOR_BREAKOUT"
+            elif current_price < recent_low:
+                score = -2
+                action = "SHORT"
+                breakout_type = "MINOR_BREAKOUT"
+            else:
+                score = 0
+                action = "NEUTRAL"
+                breakout_type = "NO_BREAKOUT"
+            
+            # Volume confirmation
+            if 'volume' in df.columns:
+                volumes = df['volume'].values
+                avg_volume = np.mean(volumes[-self.lookback_period:-1])
+                current_volume = volumes[-1]
+                volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
+                
+                if volume_ratio > 1.5 and action != "NEUTRAL":
+                    score *= 1.5  # Boost dengan volume confirmation
+            
+            # Apply external quant strategy
+            if self.quant_strategy:
+                try:
+                    quant_signal = self.quant_strategy.get_signal(prices)
+                    if quant_signal != 0:
+                        score += quant_signal
+                except:
+                    pass
+            
+            # Calculate entry levels
+            entry_calc = self.calculate_custom_entry(
+                symbol=symbol or "UNKNOWN",
+                current_price=current_price,
+                action=action,
+                df=df
+            )
+            
+            result = {
+                'action': action,
+                'score': score,
+                'current_price': current_price,
+                'recent_high': recent_high,
+                'recent_low': recent_low,
+                'resistance': resistance,
+                'support': support,
+                'breakout_type': breakout_type,
+                'symbol': symbol or "UNKNOWN",
+                'strategy_type': 'breakout',
+                'confidence': min(abs(score) / 4.0, 1.0),
+                'lookback_period': self.lookback_period,
+                'breakout_threshold': self.breakout_threshold
+            }
+            
+            result.update(entry_calc)
+            
+            logger.info(f"📊 {symbol}: Breakout {action} (Type: {breakout_type}, Score: {score:.1f})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in BreakoutStrategy analysis: {e}")
+            return self._get_default_analysis(symbol)
+
+    def _get_default_analysis(self, symbol: str = None) -> Dict[str, Any]:
+        """Get default analysis result"""
+        if symbol is None:
+            symbol = "UNKNOWN"
+            
+        default_price = self._estimate_realistic_price(symbol)
+        default_entry = self.calculate_custom_entry(symbol, default_price, "NEUTRAL")
+        
+        return {
+            'action': 'NEUTRAL',
+            'score': 0,
+            'current_price': default_price,
+            'symbol': symbol or "UNKNOWN",
+            'strategy_type': 'breakout',
+            'confidence': 0.0,
+            **default_entry
+        }
+
+# =============================================
+# AWESOME SYSTEMATIC STRATEGIES
+# =============================================
+
+class MomentumStrategy(TradingStrategy):
+    """Momentum Strategy dari awesome-systematic repo"""
+    
+    def __init__(self, market_type="crypto", momentum_period=20, 
+                 ranking_period=30, **kwargs):
+        super().__init__(market_type=market_type, **kwargs)
+        self.momentum_period = momentum_period
+        self.ranking_period = ranking_period
+        
+        if AWESOME_SYSTEMATIC_AVAILABLE:
+            self.systematic_strategy = MomentumStrategy(period=momentum_period)
+        else:
+            self.systematic_strategy = None
+        
+        logger.info(f"📈 MomentumStrategy initialized (Momentum: {momentum_period}, Ranking: {ranking_period})")
+    
+    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
+        """Implementasi momentum strategy"""
+        try:
+            if df is None or len(df) < self.momentum_period:
+                return self._get_default_analysis(symbol)
+            
+            prices = df['close'].values
+            
+            # Calculate momentum
+            momentum = (prices[-1] / prices[-self.momentum_period] - 1) * 100
+            
+            # Calculate volatility-adjusted momentum
+            returns = np.diff(prices[-self.momentum_period:]) / prices[-self.momentum_period:-1]
+            volatility = np.std(returns) * np.sqrt(252) if len(returns) > 1 else 0.02
+            
+            momentum_sharpe = momentum / volatility if volatility > 0 else 0
+            
+            # Determine signal
+            score = 0
+            if momentum > 5 and momentum_sharpe > 0.5:
+                score = 4  # Strong momentum long
+                action = "LONG"
+            elif momentum < -5 and momentum_sharpe < -0.5:
+                score = -4  # Strong momentum short
+                action = "SHORT"
+            elif momentum > 2:
+                score = 2
+                action = "LONG"
+            elif momentum < -2:
+                score = -2
+                action = "SHORT"
+            else:
+                score = 0
+                action = "NEUTRAL"
+            
+            # Apply systematic strategy
+            if self.systematic_strategy:
+                try:
+                    systematic_signal = self.systematic_strategy.get_signal(prices)
+                    if systematic_signal != 0:
+                        score += systematic_signal * 2
+                except:
+                    pass
+            
+            # Calculate entry levels
+            entry_calc = self.calculate_custom_entry(
+                symbol=symbol or "UNKNOWN",
+                current_price=prices[-1],
+                action=action,
+                df=df
+            )
+            
+            result = {
+                'action': action,
+                'score': score,
+                'current_price': prices[-1],
+                'momentum': momentum,
+                'volatility': volatility,
+                'momentum_sharpe': momentum_sharpe,
+                'symbol': symbol or "UNKNOWN",
+                'strategy_type': 'momentum',
+                'confidence': min(abs(momentum) / 10.0, 1.0),
+                'momentum_period': self.momentum_period
+            }
+            
+            result.update(entry_calc)
+            
+            logger.info(f"📊 {symbol}: Momentum {action} (Momentum: {momentum:.1f}%, Sharpe: {momentum_sharpe:.2f})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in MomentumStrategy analysis: {e}")
+            return self._get_default_analysis(symbol)
+
+    def _get_default_analysis(self, symbol: str = None) -> Dict[str, Any]:
+        """Get default analysis result"""
+        if symbol is None:
+            symbol = "UNKNOWN"
+            
+        default_price = self._estimate_realistic_price(symbol)
+        default_entry = self.calculate_custom_entry(symbol, default_price, "NEUTRAL")
+        
+        return {
+            'action': 'NEUTRAL',
+            'score': 0,
+            'current_price': default_price,
+            'symbol': symbol or "UNKNOWN",
+            'strategy_type': 'momentum',
+            'confidence': 0.0,
+            **default_entry
+        }
+
+class VolatilityStrategy(TradingStrategy):
+    """Volatility Strategy dari awesome-systematic repo"""
+    
+    def __init__(self, market_type="crypto", volatility_period=20, 
+                 target_volatility=0.20, **kwargs):
+        super().__init__(market_type=market_type, **kwargs)
+        self.volatility_period = volatility_period
+        self.target_volatility = target_volatility
+        
+        if AWESOME_SYSTEMATIC_AVAILABLE:
+            self.systematic_strategy = VolatilityStrategy(period=volatility_period)
+        else:
+            self.systematic_strategy = None
+        
+        logger.info(f"📈 VolatilityStrategy initialized (Vol Period: {volatility_period}, Target: {target_volatility*100:.1f}%)")
+    
+    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
+        """Implementasi volatility strategy"""
+        try:
+            if df is None or len(df) < self.volatility_period:
+                return self._get_default_analysis(symbol)
+            
+            prices = df['close'].values
+            
+            # Calculate volatility
+            returns = np.diff(prices[-self.volatility_period:]) / prices[-self.volatility_period:-1]
+            current_volatility = np.std(returns) * np.sqrt(252) if len(returns) > 1 else 0.02
+            
+            # Calculate volatility regime
+            vol_ratio = current_volatility / self.target_volatility
+            
+            # Determine signal berdasarkan regime volatility
+            score = 0
+            current_price = prices[-1]
+            
+            if vol_ratio < 0.5:
+                # Low volatility regime - mean reversion
+                sma = np.mean(prices[-self.volatility_period:])
+                if current_price < sma * 0.98:
+                    score = 2
+                    action = "LONG"
+                elif current_price > sma * 1.02:
+                    score = -2
+                    action = "SHORT"
+                else:
+                    score = 0
+                    action = "NEUTRAL"
+                    
+            elif vol_ratio > 1.5:
+                # High volatility regime - breakout
+                recent_high = np.max(prices[-self.volatility_period//2:])
+                recent_low = np.min(prices[-self.volatility_period//2:])
+                
+                if current_price > recent_high:
+                    score = 3
+                    action = "LONG"
+                elif current_price < recent_low:
+                    score = -3
+                    action = "SHORT"
+                else:
+                    score = 0
+                    action = "NEUTRAL"
+                    
+            else:
+                # Normal volatility - trend following
+                fast_ma = np.mean(prices[-10:]) if len(prices) >= 10 else current_price
+                slow_ma = np.mean(prices[-30:]) if len(prices) >= 30 else current_price
+                
+                if fast_ma > slow_ma and current_price > fast_ma:
+                    score = 2
+                    action = "LONG"
+                elif fast_ma < slow_ma and current_price < fast_ma:
+                    score = -2
+                    action = "SHORT"
+                else:
+                    score = 0
+                    action = "NEUTRAL"
+            
+            # Apply systematic strategy
+            if self.systematic_strategy:
+                try:
+                    systematic_signal = self.systematic_strategy.get_signal(prices)
+                    if systematic_signal != 0:
+                        score += systematic_signal
+                except:
+                    pass
+            
+            # Calculate entry levels
+            entry_calc = self.calculate_custom_entry(
+                symbol=symbol or "UNKNOWN",
+                current_price=current_price,
+                action=action,
+                df=df
+            )
+            
+            result = {
+                'action': action,
+                'score': score,
+                'current_price': current_price,
+                'current_volatility': current_volatility,
+                'vol_ratio': vol_ratio,
+                'volatility_regime': 'LOW' if vol_ratio < 0.5 else 'HIGH' if vol_ratio > 1.5 else 'NORMAL',
+                'symbol': symbol or "UNKNOWN",
+                'strategy_type': 'volatility',
+                'confidence': min(1.0 - abs(vol_ratio - 1.0), 1.0),
+                'volatility_period': self.volatility_period,
+                'target_volatility': self.target_volatility
+            }
+            
+            result.update(entry_calc)
+            
+            logger.info(f"📊 {symbol}: Volatility {action} (Vol: {current_volatility:.1%}, Regime: {result['volatility_regime']})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in VolatilityStrategy analysis: {e}")
+            return self._get_default_analysis(symbol)
+
+    def _get_default_analysis(self, symbol: str = None) -> Dict[str, Any]:
+        """Get default analysis result"""
+        if symbol is None:
+            symbol = "UNKNOWN"
+            
+        default_price = self._estimate_realistic_price(symbol)
+        default_entry = self.calculate_custom_entry(symbol, default_price, "NEUTRAL")
+        
+        return {
+            'action': 'NEUTRAL',
+            'score': 0,
+            'current_price': default_price,
+            'symbol': symbol or "UNKNOWN",
+            'strategy_type': 'volatility',
+            'confidence': 0.0,
+            **default_entry
+        }
+
+# =============================================
+# ENSEMBLE STRATEGY (MULTI-STRATEGY COMBINATION)
+# =============================================
+
+class EnsembleStrategy(TradingStrategy):
+    """Ensemble strategy yang menggabungkan multiple strategies"""
+    
+    def __init__(self, market_type="crypto", strategies_config=None, **kwargs):
+        super().__init__(market_type=market_type, **kwargs)
+        
+        # Default strategies jika tidak ada config
+        if strategies_config is None:
+            strategies_config = [
+                {'type': 'technical', 'weight': 0.4},
+                {'type': 'mean_reversion', 'weight': 0.2},
+                {'type': 'trend_following', 'weight': 0.2},
+                {'type': 'breakout', 'weight': 0.1},
+                {'type': 'momentum', 'weight': 0.1}
+            ]
+        
+        self.strategies = []
+        self.weights = []
+        
+        for config in strategies_config:
+            strategy_type = config['type']
+            weight = config['weight']
+            
+            if strategy_type == 'technical':
+                strategy = EnhancedTechnicalAnalysisStrategy(market_type=market_type, **kwargs)
+            elif strategy_type == 'mean_reversion':
+                strategy = MeanReversionStrategy(market_type=market_type, **kwargs)
+            elif strategy_type == 'trend_following':
+                strategy = TrendFollowingStrategy(market_type=market_type, **kwargs)
+            elif strategy_type == 'breakout':
+                strategy = BreakoutStrategy(market_type=market_type, **kwargs)
+            elif strategy_type == 'momentum':
+                strategy = MomentumStrategy(market_type=market_type, **kwargs)
+            elif strategy_type == 'volatility':
+                strategy = VolatilityStrategy(market_type=market_type, **kwargs)
+            else:
+                continue
+            
+            self.strategies.append(strategy)
+            self.weights.append(weight)
+        
+        # Normalize weights
+        total_weight = sum(self.weights)
+        self.weights = [w / total_weight for w in self.weights]
+        
+        logger.info(f"📈 EnsembleStrategy initialized with {len(self.strategies)} strategies")
+    
+    def analyze(self, df: pd.DataFrame, symbol: str = None) -> Dict[str, Any]:
+        """Combine signals from multiple strategies"""
+        try:
+            if df is None or len(df) < 20:
+                return self._get_default_analysis(symbol)
+            
+            all_signals = []
+            weighted_score = 0
+            
+            for strategy, weight in zip(self.strategies, self.weights):
+                try:
+                    signal = strategy.analyze(df, symbol)
+                    
+                    # Convert action to score
+                    if signal['action'] == 'LONG':
+                        action_score = 1
+                    elif signal['action'] == 'SHORT':
+                        action_score = -1
+                    else:
+                        action_score = 0
+                    
+                    # Weighted score
+                    weighted_score += action_score * weight * abs(signal.get('score', 1))
+                    
+                    all_signals.append({
+                        'type': strategy.__class__.__name__,
+                        'action': signal['action'],
+                        'score': signal.get('score', 0),
+                        'weight': weight,
+                        'confidence': signal.get('confidence', 0.5)
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Error in sub-strategy {strategy.__class__.__name__}: {e}")
+                    continue
+            
+            # Determine final action
+            if weighted_score > 0.5:
+                action = "LONG"
+                final_score = weighted_score
+            elif weighted_score < -0.5:
+                action = "SHORT"
+                final_score = weighted_score
+            else:
+                action = "NEUTRAL"
+                final_score = 0
+            
+            # Calculate entry levels
+            current_price = df['close'].iloc[-1]
+            entry_calc = self.calculate_custom_entry(
+                symbol=symbol or "UNKNOWN",
+                current_price=current_price,
+                action=action,
+                df=df
+            )
+            
+            # Calculate consensus confidence
+            long_votes = sum(1 for s in all_signals if s['action'] == 'LONG')
+            short_votes = sum(1 for s in all_signals if s['action'] == 'SHORT')
+            neutral_votes = sum(1 for s in all_signals if s['action'] == 'NEUTRAL')
+            
+            total_votes = len(all_signals)
+            confidence = max(long_votes, short_votes) / total_votes if total_votes > 0 else 0.5
+            
+            result = {
+                'action': action,
+                'score': final_score,
+                'current_price': current_price,
+                'symbol': symbol or "UNKNOWN",
+                'strategy_type': 'ensemble',
+                'confidence': confidence,
+                'consensus': {
+                    'long_votes': long_votes,
+                    'short_votes': short_votes,
+                    'neutral_votes': neutral_votes,
+                    'total_votes': total_votes
+                },
+                'all_signals': all_signals,
+                'weighted_score': weighted_score
+            }
+            
+            result.update(entry_calc)
+            
+            logger.info(f"📊 {symbol}: Ensemble {action} (Score: {final_score:.2f}, Confidence: {confidence:.1%}, Consensus: {long_votes}/{short_votes}/{neutral_votes})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in EnsembleStrategy analysis: {e}")
+            return self._get_default_analysis(symbol)
+
+    def _get_default_analysis(self, symbol: str = None) -> Dict[str, Any]:
+        """Get default analysis result"""
+        if symbol is None:
+            symbol = "UNKNOWN"
+            
+        default_price = self._estimate_realistic_price(symbol)
+        default_entry = self.calculate_custom_entry(symbol, default_price, "NEUTRAL")
+        
+        return {
+            'action': 'NEUTRAL',
+            'score': 0,
+            'current_price': default_price,
+            'symbol': symbol or "UNKNOWN",
+            'strategy_type': 'ensemble',
+            'confidence': 0.0,
+            **default_entry
+        }
 
 # =============================================
 # ENHANCED DATA STRUCTURES
