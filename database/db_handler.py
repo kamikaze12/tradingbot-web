@@ -722,6 +722,10 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
+                # ✅ FIX: Konversi symbol ke string jika bukan string
+                if not isinstance(symbol, str):
+                    symbol = str(symbol)
+                
                 # Konversi semua nilai float ke Python native float
                 entry_price = float(entry_price) if entry_price is not None else None
                 tp1 = float(tp1) if tp1 is not None else None
@@ -1002,6 +1006,11 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
+                # ✅ FIX: Konversi symbol ke string jika bukan string
+                if not isinstance(symbol, str):
+                    logger.warning(f"Converting symbol {symbol} from {type(symbol)} to string")
+                    symbol = str(symbol)
+                
                 # Konversi current_price ke float
                 current_price = float(current_price) if current_price is not None else None
                 
@@ -1118,6 +1127,10 @@ class DatabaseHandler:
                         
                         # Fallback: coba update dengan symbol jika ID tidak ditemukan
                         if not success and symbol:
+                            # ✅ FIX: Konversi symbol ke string jika bukan string
+                            if not isinstance(symbol, str):
+                                symbol = str(symbol)
+                                
                             cursor.execute("""
                                 UPDATE positions 
                                 SET current_price = %s, updated_at = CURRENT_TIMESTAMP
