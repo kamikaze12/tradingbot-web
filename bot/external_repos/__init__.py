@@ -1,15 +1,27 @@
-"""
-External repositories as submodules
-"""
-import os
+# bot/external_repos/__init__.py
 import sys
+import os
 
-# Add all subdirectories to path
+# Tambahkan current directory ke Python path
 current_dir = os.path.dirname(__file__)
-for item in os.listdir(current_dir):
-    item_path = os.path.join(current_dir, item)
-    if os.path.isdir(item_path) and item_path not in sys.path:
-        sys.path.insert(0, item_path)
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
 
-__all__ = [name for name in os.listdir(current_dir) 
-           if os.path.isdir(os.path.join(current_dir, name))]
+# Setup untuk semua submodules
+submodules = [
+    'Crypto_History_Scraper_BinanceApi',
+    'cryptocurrency_scraper',
+    'indonesia_stocks_scraper',
+    'ForexScraper',
+    'ForexTrackerpro',
+    'Forex_analyzer_X_scrapper',
+    'Investing_com_Scraper',
+    'quant_trading'
+]
+
+for submodule in submodules:
+    submodule_path = os.path.join(current_dir, submodule)
+    if os.path.exists(submodule_path) and submodule_path not in sys.path:
+        sys.path.insert(0, submodule_path)
+
+print(f"✅ external_repos initialized with {len(submodules)} submodules")
