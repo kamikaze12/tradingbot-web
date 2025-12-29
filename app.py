@@ -110,7 +110,7 @@ def import_trading_bot():
                     
                     # Try to import multi-scraper
                     try:
-                        from scrapers.multi_scraper import MultiScraper
+                        from multi_scraper import MultiScraper
                         self.scraper_manager = MultiScraper()
                         print("✅ MultiScraper loaded")
                     except:
