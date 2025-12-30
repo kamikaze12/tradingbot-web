@@ -1,0 +1,52 @@
+name: Fetch Coin Data
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'  
+  workflow_dispatch:        # Allows manual run from the GitHub Actions UI
+  push:
+    branches:
+      - main                # Runs on pushes to the main branch
+
+jobs:
+  fetch_coin_data:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0       # Needed for git history operations
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '16'  
+
+    - name: Install dependencies
+      run: npm install axios
+
+    - name: Run Coin Data Fetch Script
+      run: node coins.cjs 
+      
+    - name: Reset Progress File
+      if: success()
+      run: |
+        echo '{"lastProcessedIndex":-1}' > progress.json
+
+    - name: Save JSON to Artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: customCoinData
+        path: customCoinData.json
+        retention-days: 5
+
+    - name: Commit and Push Changes
+      uses: stefanzweifel/git-auto-commit-action@v4
+      with:
+        commit_message: "Update Coin Data [bot]"
+        branch: main
+        commit_user_name: "github-actions[bot]"
+        commit_user_email: "github-actions[bot]@users.noreply.github.com"
+        commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"

@@ -1,0 +1,4 @@
+{
+    "editor.formatOnSave": true,
+    "python.defaultInterpreterPath": "${env:HOME}/miniconda3/bin/python",
+}
