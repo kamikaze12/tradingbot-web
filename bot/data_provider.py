@@ -11,71 +11,42 @@ import time
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# =============================================
-# IMPORT SCRAPER MODULES (TRY-EXCEPT)
-# =============================================
-
+# Import wrapper
 try:
-    # Crypto scraper modules
-    from bot.external_repos.Crypto_History_Scraper_BinanceApi.scraper import BinanceScraper
-    BINANCE_SCRAPER_AVAILABLE = True
-    logger.info("✅ BinanceScraper module imported successfully")
-except ImportError as e:
-    BINANCE_SCRAPER_AVAILABLE = False
-    logger.warning(f"⚠️ BinanceScraper module not available: {e}")
-
-try:
-    # General crypto scraper
-    from bot.external_repos.cryptocurrency_scraper.scraper import CryptoScraper
-    CRYPTO_SCRAPER_AVAILABLE = True
-    logger.info("✅ CryptoScraper module imported successfully")
-except ImportError as e:
-    CRYPTO_SCRAPER_AVAILABLE = False
-    logger.warning(f"⚠️ CryptoScraper module not available: {e}")
-
-try:
-    # Indonesia stocks scraper
-    from bot.external_repos.indonesia_stocks_scraper.scraper import IndonesiaStocksScraper
-    ID_STOCKS_SCRAPER_AVAILABLE = True
-    logger.info("✅ IndonesiaStocksScraper module imported successfully")
-except ImportError as e:
-    ID_STOCKS_SCRAPER_AVAILABLE = False
-    logger.warning(f"⚠️ IndonesiaStocksScraper module not available: {e}")
-
-try:
-    # Forex scraper modules
-    from bot.external_repos.ForexTrackerpro.tracker import ForexTracker
-    FOREX_TRACKER_AVAILABLE = True
-    logger.info("✅ ForexTracker module imported successfully")
-except ImportError as e:
+    from import_wrapper import (
+        import_binance_scraper,
+        import_indonesia_stocks_scraper,
+        import_investing_scraper,
+        import_forex_scraper
+    )
+    
+    # Import scrapers
+    BinanceScraper = import_binance_scraper()
+    BINANCE_SCRAPER_AVAILABLE = BinanceScraper is not None
+    
+    IndonesiaStocksScraper = import_indonesia_stocks_scraper()
+    ID_STOCKS_SCRAPER_AVAILABLE = IndonesiaStocksScraper is not None
+    
+    InvestingScraper = import_investing_scraper()
+    INVESTING_SCRAPER_AVAILABLE = InvestingScraper is not None
+    
+    ForexGeneralScraper = import_forex_scraper()
+    FOREX_GENERAL_AVAILABLE = ForexGeneralScraper is not None
+    
+    # Untuk scraper lain yang mungkin belum ada wrapper
     FOREX_TRACKER_AVAILABLE = False
-    logger.warning(f"⚠️ ForexTracker module not available: {e}")
-
-try:
-    from bot.external_repos.Forex_analyzer_X_scrapper.analyzer import ForexXScraper
-    FOREX_X_SCRAPER_AVAILABLE = True
-    logger.info("✅ ForexXScraper module imported successfully")
-except ImportError as e:
     FOREX_X_SCRAPER_AVAILABLE = False
-    logger.warning(f"⚠️ ForexXScraper module not available: {e}")
-
-try:
-    from bot.external_repos.ForexScraper.scraper import ForexGeneralScraper
-    FOREX_GENERAL_AVAILABLE = True
-    logger.info("✅ ForexGeneralScraper module imported successfully")
-except ImportError as e:
-    FOREX_GENERAL_AVAILABLE = False
-    logger.warning(f"⚠️ ForexGeneralScraper module not available: {e}")
-
-try:
-    # Investing.com scraper
-    from bot.external_repos.Investing_com_Scraper.scraper import InvestingScraper
-    INVESTING_SCRAPER_AVAILABLE = True
-    logger.info("✅ InvestingScraper module imported successfully")
-except ImportError as e:
+    CRYPTO_SCRAPER_AVAILABLE = False
+    
+except Exception as e:
+    logger.warning(f"Failed to import scrapers: {e}")
+    BINANCE_SCRAPER_AVAILABLE = False
+    ID_STOCKS_SCRAPER_AVAILABLE = False
     INVESTING_SCRAPER_AVAILABLE = False
-    logger.warning(f"⚠️ InvestingScraper module not available: {e}")
-
+    FOREX_GENERAL_AVAILABLE = False
+    FOREX_TRACKER_AVAILABLE = False
+    FOREX_X_SCRAPER_AVAILABLE = False
+    CRYPTO_SCRAPER_AVAILABLE = False
 # =============================================
 # BASE DATA PROVIDER
 # =============================================
