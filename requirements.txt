@@ -97,4 +97,4 @@ selenium>=4.0.0  # Jika ada web scraping
 backtrader>=1.9.0
 backtesting>=0.3.0
 tweepy>=4.0.0  # Untuk X-scraper (Twitter)
-webdriver-manager
+webdriver-manager>=4.0.2
