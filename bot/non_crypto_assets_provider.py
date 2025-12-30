@@ -16,31 +16,34 @@ from threading import Lock
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Cache file path
-CACHE_FILE = 'assets_cache.json'
-CACHE_TTL_DAYS = 3  # Update setiap 3 hari
-
-# Import scraper dari external repos
+# Import wrapper baru
 try:
-    from bot.external_repos.indonesia_stocks_scraper.scraper import IndonesiaStocksScraper
-    INDONESIA_SCRAPER_AVAILABLE = True
-except ImportError:
-    logger.warning("IndonesiaStocksScraper tidak tersedia, menggunakan metode alternatif")
+    from import_wrapper import (
+        import_indonesia_stocks_scraper,
+        import_investing_scraper,
+        import_forex_scraper,
+        import_binance_scraper
+    )
+    
+    # Import scrapers
+    IndonesiaStocksScraper = import_indonesia_stocks_scraper()
+    INDONESIA_SCRAPER_AVAILABLE = IndonesiaStocksScraper is not None
+    
+    InvestingScraper = import_investing_scraper()
+    INVESTING_SCRAPER_AVAILABLE = InvestingScraper is not None
+    
+    ForexGeneralScraper = import_forex_scraper()
+    FOREX_SCRAPER_AVAILABLE = ForexGeneralScraper is not None
+    
+    BinanceScraper = import_binance_scraper()
+    BINANCE_SCRAPER_AVAILABLE = BinanceScraper is not None
+    
+except Exception as e:
+    logger.warning(f"Failed to import scrapers: {e}")
     INDONESIA_SCRAPER_AVAILABLE = False
-
-try:
-    from bot.external_repos.Investing_com_Scraper.scraper import InvestingScraper
-    INVESTING_SCRAPER_AVAILABLE = True
-except ImportError:
-    logger.warning("InvestingScraper tidak tersedia, menggunakan metode alternatif")
     INVESTING_SCRAPER_AVAILABLE = False
-
-try:
-    from bot.external_repos.ForexScraper.scraper import ForexGeneralScraper
-    FOREX_SCRAPER_AVAILABLE = True
-except ImportError:
-    logger.warning("ForexGeneralScraper tidak tersedia, menggunakan metode alternatif")
     FOREX_SCRAPER_AVAILABLE = False
+    BINANCE_SCRAPER_AVAILABLE = False
 
 class NonCryptoAssetsProvider:
     """
