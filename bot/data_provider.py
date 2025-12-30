@@ -39,7 +39,13 @@ def safe_import():
         # Method 3: File-based import
         lambda: exec(open('bot/direct_imports.py').read())
     ]
-    
+    # Mock Scrapers dan db_table global
+sys.modules['Scrapers'] = MockScrapers()
+sys.modules['Scrapers.RTI'] = MockScrapers.RTI
+sys.modules['Scrapers.RTI.RTI_Downloader'] = MockRTIDownloader
+sys.modules['db_table'] = MockDBTable()
+
+# Lalu import seperti biasa
     for method in import_methods:
         try:
             if method == import_methods[2]:  # File-based
