@@ -20,36 +20,50 @@ logger = logging.getLogger(__name__)
 CACHE_FILE = 'assets_cache.json'
 CACHE_TTL_DAYS = 3  # Update setiap 3 hari
 
-
-# Import wrapper baru
 try:
-    from import_wrapper import (
-        import_indonesia_stocks_scraper,
-        import_investing_scraper,
-        import_forex_scraper,
-        import_binance_scraper
+    from .direct_imports import (
+        get_forex_scraper,
+        get_indonesia_stocks_scraper,
+        get_investing_scraper
     )
     
-    # Import scrapers
-    IndonesiaStocksScraper = import_indonesia_stocks_scraper()
-    INDONESIA_SCRAPER_AVAILABLE = IndonesiaStocksScraper is not None
+    # Get classes
+    ForexGeneralScraper_class = get_forex_scraper()
+    FOREX_SCRAPER_AVAILABLE = ForexGeneralScraper_class is not None
     
-    InvestingScraper = import_investing_scraper()
-    INVESTING_SCRAPER_AVAILABLE = InvestingScraper is not None
+    IndonesiaStocksScraper_class = get_indonesia_stocks_scraper()
+    INDONESIA_SCRAPER_AVAILABLE = IndonesiaStocksScraper_class is not None
     
-    ForexGeneralScraper = import_forex_scraper()
-    FOREX_SCRAPER_AVAILABLE = ForexGeneralScraper is not None
+    InvestingScraper_class = get_investing_scraper()
+    INVESTING_SCRAPER_AVAILABLE = InvestingScraper_class is not None
     
-    BinanceScraper = import_binance_scraper()
-    BINANCE_SCRAPER_AVAILABLE = BinanceScraper is not None
+    # Create instances
+    if FOREX_SCRAPER_AVAILABLE:
+        ForexGeneralScraper = ForexGeneralScraper_class()
+    else:
+        ForexGeneralScraper = None
+    
+    if INDONESIA_SCRAPER_AVAILABLE:
+        IndonesiaStocksScraper = IndonesiaStocksScraper_class()
+    else:
+        IndonesiaStocksScraper = None
+    
+    if INVESTING_SCRAPER_AVAILABLE:
+        InvestingScraper = InvestingScraper_class()
+    else:
+        InvestingScraper = None
+    
+    logger.info(f"✅ Non-crypto scrapers: "
+                f"Forex={FOREX_SCRAPER_AVAILABLE}, "
+                f"ID={INDONESIA_SCRAPER_AVAILABLE}, "
+                f"Investing={INVESTING_SCRAPER_AVAILABLE}")
     
 except Exception as e:
-    logger.warning(f"Failed to import scrapers: {e}")
+    logger.warning(f"⚠️ Failed to import scrapers: {e}")
+    FOREX_SCRAPER_AVAILABLE = False
     INDONESIA_SCRAPER_AVAILABLE = False
     INVESTING_SCRAPER_AVAILABLE = False
-    FOREX_SCRAPER_AVAILABLE = False
-    BINANCE_SCRAPER_AVAILABLE = False
-
+    
 class NonCryptoAssetsProvider:
     """
     Provider untuk list aset non-crypto (saham Indo, forex, saham US).
