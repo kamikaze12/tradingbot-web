@@ -5,12 +5,14 @@ import logging
 import yfinance as yf
 import ccxt
 import pandas as pd
+import numpy as np
 from typing import List, Dict, Optional, Set
 import requests
 from bs4 import BeautifulSoup
 import time
 import concurrent.futures
 from threading import Lock
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +28,7 @@ class NonCryptoAssetsProvider:
     - Update otomatis setiap 3 hari (optional via force_update).
     - Fallback ke list statis jika fetch gagal.
     - Kategori: 'indonesia_stocks', 'forex', 'us_stocks'.
+    - NEW: Built-in screener untuk cari aset aktif/rame.
     """
     
     def __init__(self):
@@ -89,6 +92,232 @@ class NonCryptoAssetsProvider:
             # Filter invalid symbols dari static list juga
             static_assets = [s for s in static_assets if s not in self.invalid_symbols]
             return static_assets[:limit]
+
+    # =============================================
+    # 🎯 NEW: FUNGSI SCREENER UNTUK ASET AKTIF
+    # =============================================
+    
+    def get_active_assets(self, category: str = 'indonesia_stocks',
+                         min_volume: float = 1_000_000,
+                         min_volatility: float = 0.025,
+                         min_price_change: float = 0.05,
+                         limit: int = 50) -> List[str]:
+        """
+        🚨 PENTING: Ambil HANYA aset yang aktif/rame untuk analisa!
+        Jangan analisa semua aset, waste of time!
+        
+        Args:
+            category: 'indonesia_stocks', 'forex', 'us_stocks'
+            min_volume: Volume minimal per hari (default 1 juta)
+            min_volatility: Volatilitas minimal (2.5% = 0.025)
+            min_price_change: Perubahan harga minimal dalam periode
+            limit: Jumlah aset teraktif yang diambil
+            
+        Returns:
+            List[str]: Simbol aset paling aktif untuk dianalisa
+        """
+        print(f"\n🔥 SCREENING ASET AKTIF ({category})")
+        print("=" * 60)
+        
+        # 1. Ambil semua aset dulu
+        all_assets = self.get_assets(category, limit=800 if category == 'indonesia_stocks' else 200)
+        print(f"📊 Total aset: {len(all_assets)}")
+        
+        # 2. Filter yang aktif
+        print(f"🔍 Screening untuk aset aktif (vol > {min_volume:,})...")
+        
+        # Untuk Indonesia stocks, screening lebih detail
+        if category == 'indonesia_stocks':
+            active_assets = self._screen_indonesia_stocks(
+                all_assets, min_volume, min_volatility, min_price_change, limit
+            )
+        else:
+            # Untuk forex/US stocks, pakai list statis yang sudah aktif
+            active_assets = self._get_predefined_active(category, limit)
+        
+        print(f"✅ Ditemukan {len(active_assets)} aset aktif")
+        print(f"🎯 Analisa ini saja: {active_assets[:10]}...")
+        
+        return active_assets
+    
+    def _screen_indonesia_stocks(self, symbols: List[str],
+                               min_volume: float,
+                               min_volatility: float,
+                               min_price_change: float,
+                               limit: int) -> List[str]:
+        """Screening khusus saham Indonesia."""
+        if not symbols:
+            return []
+        
+        # Ambil 300 teratas dulu (yang biasanya lebih liquid)
+        symbols_to_check = symbols[:300]
+        
+        results = []
+        print(f"📈 Analisis {len(symbols_to_check)} saham teratas...")
+        
+        # Pakai threadpool untuk lebih cepat
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_symbol = {
+                executor.submit(self._check_asset_activity, s): s 
+                for s in symbols_to_check
+            }
+            
+            completed = 0
+            for future in as_completed(future_to_symbol):
+                completed += 1
+                if completed % 50 == 0:
+                    print(f"   Progress: {completed}/{len(symbols_to_check)}")
+                
+                symbol = future_to_symbol[future]
+                try:
+                    metrics = future.result(timeout=5)
+                    if metrics and metrics['active']:
+                        results.append({
+                            'symbol': symbol,
+                            'score': metrics['score'],
+                            'volume': metrics['avg_volume'],
+                            'volatility': metrics['volatility'],
+                            'change': metrics['price_change']
+                        })
+                except:
+                    continue
+        
+        # Sort by score
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Filter tambahan
+        filtered = []
+        for r in results:
+            if (r['volume'] >= min_volume and
+                r['volatility'] >= min_volatility and
+                abs(r['change']) >= min_price_change):
+                filtered.append(r['symbol'])
+        
+        return filtered[:limit]
+    
+    def _check_asset_activity(self, symbol: str) -> Dict:
+        """Cek aktivitas 1 aset."""
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="15d", interval="1d")
+            
+            if hist.empty or len(hist) < 5:
+                return {'active': False}
+            
+            # Metrics dasar
+            avg_volume = hist['Volume'].mean()
+            if avg_volume < 100_000:  # Skip yang sepi banget
+                return {'active': False}
+            
+            # Volatilitas
+            returns = hist['Close'].pct_change().dropna()
+            volatility = returns.std() if len(returns) > 1 else 0
+            
+            # Price movement
+            price_change = (hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0]
+            
+            # Volume spike hari ini (jika ada)
+            volume_spike = False
+            if len(hist) > 5:
+                avg_prev_volume = hist['Volume'][:-1].mean()
+                last_volume = hist['Volume'].iloc[-1]
+                volume_spike = last_volume > avg_prev_volume * 1.5
+            
+            # Hitung score
+            score = (
+                (np.log10(avg_volume + 1) * 0.4) +          # Volume (40%)
+                (min(volatility * 100, 10) * 0.3) +         # Volatility (30%)
+                (abs(price_change) * 100 * 0.2) +           # Price change (20%)
+                (10 if volume_spike else 0) * 0.1           # Volume spike (10%)
+            )
+            
+            return {
+                'active': True,
+                'score': score,
+                'avg_volume': avg_volume,
+                'volatility': volatility,
+                'price_change': price_change,
+                'volume_spike': volume_spike
+            }
+            
+        except Exception as e:
+            return {'active': False}
+    
+    def _get_predefined_active(self, category: str, limit: int) -> List[str]:
+        """Untuk forex/US stocks, pakai list yang sudah diketahui aktif."""
+        if category == 'forex':
+            return [
+                'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X',
+                'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
+                'AUDJPY=X', 'EURCHF=X', 'GBPCHF=X', 'AUDNZD=X', 'NZDJPY=X'
+            ][:limit]
+        elif category == 'us_stocks':
+            # S&P 500 top movers
+            return [
+                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'AMD', 'NFLX',
+                'JPM', 'V', 'MA', 'JNJ', 'WMT', 'PG', 'UNH', 'HD', 'BAC', 'DIS', 'ADBE',
+                'INTC', 'CSCO', 'PEP', 'CMCSA', 'T', 'XOM', 'CVX', 'ABT', 'KO', 'AVGO',
+                'MRK', 'COST', 'ABBV', 'TMO', 'DHR', 'MCD', 'NKE', 'ACN', 'ADP', 'BMY'
+            ][:limit]
+        return []
+    
+    def get_hot_sectors(self) -> Dict[str, List[str]]:
+        """
+        Cari sektor yang lagi hot di Indonesia.
+        Returns: {'BANK': ['BBCA.JK', 'BBRI.JK'], ...}
+        """
+        sector_map = {
+            'BANK': ['BBCA', 'BBRI', 'BMRI', 'BNGA', 'BBNI', 'BCA'],
+            'MINING': ['ANTM', 'ADRO', 'INCO', 'BRPT', 'PTBA', 'MDKA'],
+            'CONSUMER': ['UNVR', 'ICBP', 'INDF', 'MYOR', 'ULTJ', 'STAR'],
+            'TECH': ['GOTO', 'BRIS', 'DMMX', 'ARTO', 'TCID', 'DNET'],
+            'PROPERTY': ['BSDE', 'CTRA', 'ASRI', 'SMRA', 'LWSA', 'PWON'],
+            'INFRASTRUCTURE': ['WIKA', 'PTPP', 'ADHI', 'WEGE', 'JSMR', 'SRIL'],
+            'ENERGY': ['PGAS', 'AKRA', 'MEDC', 'ENRG', 'AKRA', 'PGAS']
+        }
+        
+        hot_sectors = {}
+        all_active = self.get_active_assets(limit=100)
+        
+        for sector, tickers in sector_map.items():
+            sector_stocks = [f"{t}.JK" for t in tickers if f"{t}.JK" in all_active]
+            if len(sector_stocks) >= 2:  # Minimal 2 saham aktif di sektor itu
+                hot_sectors[sector] = sector_stocks
+        
+        # Urutkan berdasarkan jumlah saham aktif
+        return dict(sorted(hot_sectors.items(), key=lambda x: len(x[1]), reverse=True))
+    
+    def find_volume_spikes(self, threshold: float = 2.0) -> List[str]:
+        """
+        Cari aset dengan volume spike hari ini (> threshold x rata-rata)
+        """
+        print(f"\n🔍 Mencari volume spike (> {threshold}x rata-rata)...")
+        
+        active_symbols = self.get_active_assets(limit=100)
+        spiked = []
+        
+        for symbol in active_symbols[:50]:  # Cek 50 teraktif dulu
+            try:
+                ticker = yf.Ticker(symbol)
+                hist = ticker.history(period="5d")
+                
+                if len(hist) < 3:
+                    continue
+                
+                avg_volume = hist['Volume'][:-1].mean()
+                last_volume = hist['Volume'].iloc[-1]
+                
+                if avg_volume > 0 and (last_volume / avg_volume) > threshold:
+                    spiked.append(f"{symbol} ({last_volume/avg_volume:.1f}x)")
+                    
+            except:
+                continue
+        
+        return spiked
+
+    # =============================================
+    # FUNGSI LAMA (tetap dipertahankan)
+    # =============================================
     
     def _fetch_all_indonesia_stocks(self, limit: int = 800) -> List[str]:
         """
@@ -451,23 +680,51 @@ class NonCryptoAssetsProvider:
             json.dump(self.cache, f)
         logger.debug("💾 Cache saved.")
 
-# Contoh penggunaan jika run sebagai script
+# =============================================
+# CONTOH PENGGUNAAN
+# =============================================
 if __name__ == "__main__":
     provider = NonCryptoAssetsProvider()
     
-    # Test SEMUA saham Indonesia
-    indo_stocks = provider.get_assets('indonesia_stocks', limit=800, force_update=True)
-    print(f"🎯 SEMUA Saham Indonesia ({len(indo_stocks)}):")
-    print(f"First 20: {indo_stocks[:20]}")
-    print(f"Last 20: {indo_stocks[-20:]}")
+    print("🚀 NON-CRYPTO ASSETS PROVIDER + SCREENER")
+    print("=" * 60)
     
-    # Test forex
-    forex = provider.get_assets('forex', limit=100)
-    print(f"\n📊 Forex Pairs ({len(forex)}): {forex[:10]}...")
+    # 1. Ambil aset aktif untuk analisa (INI YANG PENTING!)
+    print("\n1️⃣ Ambil aset aktif Indonesia (untuk analisa):")
+    active_assets = provider.get_active_assets(
+        category='indonesia_stocks',
+        min_volume=500_000,      # Minimal volume 500k
+        min_volatility=0.03,     # Minimal volatilitas 3%
+        limit=30                 # Ambil 30 teraktif
+    )
+    print(f"   ✅ {len(active_assets)} aset aktif: {active_assets[:10]}...")
     
-    # Test US stocks
-    us_stocks = provider.get_assets('us_stocks', limit=200)
-    print(f"\n🇺🇸 US Stocks ({len(us_stocks)}): {us_stocks[:10]}...")
+    # 2. Cari volume spike
+    print("\n2️⃣ Cari volume spike hari ini:")
+    spikes = provider.find_volume_spikes(threshold=2.0)
+    if spikes:
+        for spike in spikes[:5]:
+            print(f"   📈 {spike}")
+    else:
+        print("   📉 Tidak ada volume spike signifikan")
+    
+    # 3. Cari sektor hot
+    print("\n3️⃣ Sektor yang lagi hot:")
+    hot_sectors = provider.get_hot_sectors()
+    for sector, stocks in list(hot_sectors.items())[:3]:
+        print(f"   🔥 {sector}: {', '.join(stocks[:3])}")
+    
+    # 4. Contoh analisa teknikal (cuma untuk aset aktif)
+    print("\n4️⃣ Mulai analisa teknikal untuk aset aktif:")
+    for symbol in active_assets[:5]:  # Analisa 5 pertama dulu
+        print(f"   📊 Analisa {symbol}...")
+        # Tambahkan kode analisa teknikal kamu di sini
+        # misal: RSI, MACD, Support/Resistance, dll
+    
+    print("\n🎯 SIMPULAN: Analisa cuma aset aktif, jangan semua!")
+    print(f"   Total aset: {len(provider.get_assets('indonesia_stocks', limit=800))}")
+    print(f"   Aset aktif: {len(active_assets)}")
+    print(f"   Efisiensi: {len(active_assets)/800*100:.1f}% lebih cepat!")
     
     # Simpan cache
     provider._save_cache()
