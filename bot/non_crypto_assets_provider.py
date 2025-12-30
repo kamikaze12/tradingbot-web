@@ -16,53 +16,77 @@ from threading import Lock
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ✅ DEFINE CACHE_FILE DI SINI (di level module)
+# ✅ FIX: CACHE_FILE sudah benar
 CACHE_FILE = 'assets_cache.json'
-CACHE_TTL_DAYS = 3  # Update setiap 3 hari
+CACHE_TTL_DAYS = 3
 
-try:
-    from .direct_imports import (
-        get_forex_scraper,
-        get_indonesia_stocks_scraper,
-        get_investing_scraper
-    )
-    
-    # Get classes
-    ForexGeneralScraper_class = get_forex_scraper()
-    FOREX_SCRAPER_AVAILABLE = ForexGeneralScraper_class is not None
-    
-    IndonesiaStocksScraper_class = get_indonesia_stocks_scraper()
-    INDONESIA_SCRAPER_AVAILABLE = IndonesiaStocksScraper_class is not None
-    
-    InvestingScraper_class = get_investing_scraper()
-    INVESTING_SCRAPER_AVAILABLE = InvestingScraper_class is not None
-    
-    # Create instances
-    if FOREX_SCRAPER_AVAILABLE:
-        ForexGeneralScraper = ForexGeneralScraper_class()
-    else:
-        ForexGeneralScraper = None
-    
-    if INDONESIA_SCRAPER_AVAILABLE:
-        IndonesiaStocksScraper = IndonesiaStocksScraper_class()
-    else:
-        IndonesiaStocksScraper = None
-    
-    if INVESTING_SCRAPER_AVAILABLE:
-        InvestingScraper = InvestingScraper_class()
-    else:
-        InvestingScraper = None
-    
-    logger.info(f"✅ Non-crypto scrapers: "
-                f"Forex={FOREX_SCRAPER_AVAILABLE}, "
-                f"ID={INDONESIA_SCRAPER_AVAILABLE}, "
-                f"Investing={INVESTING_SCRAPER_AVAILABLE}")
-    
-except Exception as e:
-    logger.warning(f"⚠️ Failed to import scrapers: {e}")
-    FOREX_SCRAPER_AVAILABLE = False
-    INDONESIA_SCRAPER_AVAILABLE = False
-    INVESTING_SCRAPER_AVAILABLE = False
+# SIMPLE IMPORT - PAKAI ABSOLUTE PATH
+def import_scrapers_simple():
+    """Import scrapers dengan cara simple"""
+    try:
+        # Coba import langsung dari file
+        import sys
+        import os
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        
+        # Try to import
+        try:
+            from direct_imports import (
+                get_forex_scraper,
+                get_indonesia_stocks_scraper,
+                get_investing_scraper
+            )
+        except ImportError:
+            # Try absolute import
+            exec(open('bot/direct_imports.py').read())
+            from direct_imports import (
+                get_forex_scraper,
+                get_indonesia_stocks_scraper,
+                get_investing_scraper
+            )
+        
+        # Get classes
+        ForexGeneralScraper_class = get_forex_scraper()
+        IndonesiaStocksScraper_class = get_indonesia_stocks_scraper()
+        InvestingScraper_class = get_investing_scraper()
+        
+        return (
+            ForexGeneralScraper_class,
+            IndonesiaStocksScraper_class,
+            InvestingScraper_class
+        )
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Simple import failed: {e}")
+        return None, None, None
+
+# Import scrapers
+ForexGeneralScraper_class, IndonesiaStocksScraper_class, InvestingScraper_class = import_scrapers_simple()
+
+# Set availability
+FOREX_SCRAPER_AVAILABLE = ForexGeneralScraper_class is not None
+INDONESIA_SCRAPER_AVAILABLE = IndonesiaStocksScraper_class is not None
+INVESTING_SCRAPER_AVAILABLE = InvestingScraper_class is not None
+
+# Create instances
+if FOREX_SCRAPER_AVAILABLE:
+    ForexGeneralScraper = ForexGeneralScraper_class()
+else:
+    ForexGeneralScraper = None
+
+if INDONESIA_SCRAPER_AVAILABLE:
+    IndonesiaStocksScraper = IndonesiaStocksScraper_class()
+else:
+    IndonesiaStocksScraper = None
+
+if INVESTING_SCRAPER_AVAILABLE:
+    InvestingScraper = InvestingScraper_class()
+else:
+    InvestingScraper = None
+
+logger.info(f"✅ Scrapers: Forex={FOREX_SCRAPER_AVAILABLE}, "
+            f"ID={INDONESIA_SCRAPER_AVAILABLE}, "
+            f"Investing={INVESTING_SCRAPER_AVAILABLE}")
     
 class NonCryptoAssetsProvider:
     """
