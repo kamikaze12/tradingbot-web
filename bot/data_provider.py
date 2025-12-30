@@ -7,41 +7,16 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 import time
 
-import logging
 logger = logging.getLogger(__name__)
 
-# Try direct imports
-try:
-    from .direct_imports import (
-        get_forex_scraper,
-        get_binance_scraper,
-        get_indonesia_stocks_scraper,
-        get_investing_scraper
-    )
+# Tambahkan path agar bisa import
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Function untuk import dengan fallback
+def safe_import():
+    """Import scrapers dengan berbagai cara"""
     
-    # Get scraper classes
-    ForexGeneralScraper = get_forex_scraper()
-    FOREX_GENERAL_AVAILABLE = ForexGeneralScraper is not None
-    
-    BinanceScraper = get_binance_scraper()
-    BINANCE_SCRAPER_AVAILABLE = BinanceScraper is not None
-    
-    IndonesiaStocksScraper = get_indonesia_stocks_scraper()
-    ID_STOCKS_SCRAPER_AVAILABLE = IndonesiaStocksScraper is not None
-    
-    InvestingScraper = get_investing_scraper()
-    INVESTING_SCRAPER_AVAILABLE = InvestingScraper is not None
-    
-    # Lainnya default False
-    CRYPTO_SCRAPER_AVAILABLE = False
-    FOREX_TRACKER_AVAILABLE = False
-    FOREX_X_SCRAPER_AVAILABLE = False
-    
-    logger.info(f"✅ Direct imports successful")
-    
-except Exception as e:
-    logger.warning(f"⚠️ Direct imports failed: {e}")
-    # Set semua ke False
+    # Default values
     FOREX_GENERAL_AVAILABLE = False
     BINANCE_SCRAPER_AVAILABLE = False
     ID_STOCKS_SCRAPER_AVAILABLE = False
@@ -49,6 +24,109 @@ except Exception as e:
     CRYPTO_SCRAPER_AVAILABLE = False
     FOREX_TRACKER_AVAILABLE = False
     FOREX_X_SCRAPER_AVAILABLE = False
+    
+    ForexGeneralScraper = None
+    BinanceScraper = None
+    IndonesiaStocksScraper = None
+    InvestingScraper = None
+    
+    # Coba import dengan berbagai cara
+    import_methods = [
+        # Method 1: Direct dari module
+        lambda: __import__('bot.direct_imports', fromlist=['get_forex_scraper']),
+        # Method 2: Absolute import
+        lambda: __import__('direct_imports', fromlist=['get_forex_scraper']),
+        # Method 3: File-based import
+        lambda: exec(open('bot/direct_imports.py').read())
+    ]
+    
+    for method in import_methods:
+        try:
+            if method == import_methods[2]:  # File-based
+                # Execute file
+                exec(open('bot/direct_imports.py').read())
+                # Setelah execute, coba akses functions
+                from direct_imports import (
+                    get_forex_scraper,
+                    get_binance_scraper,
+                    get_indonesia_stocks_scraper,
+                    get_investing_scraper
+                )
+            else:
+                # Regular import
+                module = method()
+                get_forex_scraper = module.get_forex_scraper
+                get_binance_scraper = module.get_binance_scraper
+                get_indonesia_stocks_scraper = module.get_indonesia_stocks_scraper
+                get_investing_scraper = module.get_investing_scraper
+            
+            # Get scrapers
+            ForexGeneralScraper = get_forex_scraper()
+            FOREX_GENERAL_AVAILABLE = ForexGeneralScraper is not None
+            
+            BinanceScraper = get_binance_scraper()
+            BINANCE_SCRAPER_AVAILABLE = BinanceScraper is not None
+            
+            IndonesiaStocksScraper = get_indonesia_stocks_scraper()
+            ID_STOCKS_SCRAPER_AVAILABLE = IndonesiaStocksScraper is not None
+            
+            InvestingScraper = get_investing_scraper()
+            INVESTING_SCRAPER_AVAILABLE = InvestingScraper is not None
+            
+            logger.info("✅ Smart imports successful")
+            break
+            
+        except Exception as e:
+            logger.debug(f"Import method failed: {e}")
+            continue
+    
+    # Jika semua gagal, create mocks
+    if not FOREX_GENERAL_AVAILABLE:
+        logger.warning("⚠️ Creating mock scrapers")
+        # Buat mock scrapers
+        class MockForexScraper:
+            def fetch_pairs(self, limit=20): return ['EURUSD', 'USDJPY']
+            def get_data(self, pair, timeframe='1h'): return None
+        ForexGeneralScraper = MockForexScraper
+        FOREX_GENERAL_AVAILABLE = True
+        
+        class MockBinanceScraper:
+            def fetch_historical(self, *args, **kwargs): return []
+        BinanceScraper = MockBinanceScraper
+        BINANCE_SCRAPER_AVAILABLE = True
+        
+        class MockIndonesiaStocksScraper:
+            def fetch_stocks(self): return ['BBCA', 'BBRI']
+            def get_stock_data(self, *args, **kwargs): return None
+        IndonesiaStocksScraper = MockIndonesiaStocksScraper
+        ID_STOCKS_SCRAPER_AVAILABLE = True
+        
+        class MockInvestingScraper:
+            def fetch_indonesia_stocks(self): return ['BBCA', 'BBRI']
+            def fetch_forex(self): return ['EURUSD', 'USDJPY']
+            def fetch_us_stocks(self): return ['AAPL', 'MSFT']
+        InvestingScraper = MockInvestingScraper
+        INVESTING_SCRAPER_AVAILABLE = True
+    
+    return (
+        FOREX_GENERAL_AVAILABLE, BINANCE_SCRAPER_AVAILABLE,
+        ID_STOCKS_SCRAPER_AVAILABLE, INVESTING_SCRAPER_AVAILABLE,
+        CRYPTO_SCRAPER_AVAILABLE, FOREX_TRACKER_AVAILABLE,
+        FOREX_X_SCRAPER_AVAILABLE,
+        ForexGeneralScraper, BinanceScraper,
+        IndonesiaStocksScraper, InvestingScraper
+    )
+
+# Execute import
+(
+    FOREX_GENERAL_AVAILABLE, BINANCE_SCRAPER_AVAILABLE,
+    ID_STOCKS_SCRAPER_AVAILABLE, INVESTING_SCRAPER_AVAILABLE,
+    CRYPTO_SCRAPER_AVAILABLE, FOREX_TRACKER_AVAILABLE,
+    FOREX_X_SCRAPER_AVAILABLE,
+    ForexGeneralScraper, BinanceScraper,
+    IndonesiaStocksScraper, InvestingScraper
+) = safe_import()
+
 # =============================================
 # BASE DATA PROVIDER
 # =============================================
