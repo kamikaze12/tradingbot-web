@@ -67,7 +67,13 @@ ForexGeneralScraper_class, IndonesiaStocksScraper_class, InvestingScraper_class 
 FOREX_SCRAPER_AVAILABLE = ForexGeneralScraper_class is not None
 INDONESIA_SCRAPER_AVAILABLE = IndonesiaStocksScraper_class is not None
 INVESTING_SCRAPER_AVAILABLE = InvestingScraper_class is not None
+# Mock Scrapers dan db_table global
+sys.modules['Scrapers'] = MockScrapers()
+sys.modules['Scrapers.RTI'] = MockScrapers.RTI
+sys.modules['Scrapers.RTI.RTI_Downloader'] = MockRTIDownloader
+sys.modules['db_table'] = MockDBTable()
 
+# Lalu import seperti biasa
 # Create instances
 if FOREX_SCRAPER_AVAILABLE:
     ForexGeneralScraper = ForexGeneralScraper_class()
