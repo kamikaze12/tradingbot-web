@@ -43,15 +43,7 @@ except ImportError as e:
     logger.warning(f"Backtrader not available: {e}")
 
 
-try:
-    # Coba import dari awesome-systematic
-    sys.path.append('bot/external_repos/awesome-systematic')
-    from systematic_trading import MomentumStrategy, VolatilityStrategy
-    AWESOME_SYSTEMATIC_AVAILABLE = True
-    logger.info("✅ Awesome-systematic strategies loaded successfully")
-except ImportError as e:
-    AWESOME_SYSTEMATIC_AVAILABLE = False
-    logger.warning(f"Awesome-systematic not available: {e}")
+
 
 warnings.filterwarnings('ignore')
 
