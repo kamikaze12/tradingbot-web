@@ -42,17 +42,6 @@ except ImportError as e:
     BACKTRADER_AVAILABLE = False
     logger.warning(f"Backtrader not available: {e}")
 
-try:
-    # Coba import strategi dari quant-trading
-    sys.path.append('bot/external_repos/quant-trading')
-    from strategies import MeanReversionStrategy as QMeanReversionStrategy
-    from strategies import TrendFollowingStrategy as QTrendFollowingStrategy
-    from strategies import BreakoutStrategy as QBreakoutStrategy
-    QUANT_STRATEGIES_AVAILABLE = True
-    logger.info("✅ Quant trading strategies loaded successfully")
-except ImportError as e:
-    QUANT_STRATEGIES_AVAILABLE = False
-    logger.warning(f"Quant strategies not available: {e}")
 
 try:
     # Coba import dari awesome-systematic
