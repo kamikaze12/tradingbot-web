@@ -2845,12 +2845,8 @@ class EnhancedTradingBot:
             # **PERBAIKAN: Minta lebih banyak aset (500-600) untuk memastikan cukup**
             requested_limit = min(600, limit * 2)  # Minta 2x limit yang diinginkan
             
-            # **PERBAIKAN: Force update jika ingin data segar**
-            force_update = True
-            
-            # Get assets dari provider
-            # Get ACTIVE assets dari provider (PERBAIKAN UTAMA)
-# Hanya ambil aset aktif dengan volume dan volatilitas yang memadai
+            # **PERBAIKAN UTAMA: Gunakan get_active_assets() bukan get_assets()**
+            # Hanya ambil aset aktif dengan volume dan volatilitas yang memadai
             min_volume = 1_000_000  # Minimal volume 1 juta lembar/unit
             min_volatility = 0.025   # Minimal volatilitas 2.5%
             
@@ -2867,9 +2863,9 @@ class EnhancedTradingBot:
                 symbols = self.non_crypto_provider.get_assets(
                     category=category, 
                     limit=requested_limit, 
-                    force_update=force_update
+                    force_update=True
                 )
-    logger.warning(f"⚠️ Menggunakan get_assets() (fallback) untuk {self.mode}")
+                logger.warning(f"⚠️ Menggunakan get_assets() (fallback) untuk {self.mode}")
             
             if not symbols:
                 logger.warning(f"No symbols found for {self.mode} from NonCryptoAssetsProvider")
@@ -3010,34 +3006,34 @@ class EnhancedTradingBot:
                 'PLIN.JK', 'PMJS.JK', 'PNBN.JK', 'PNBS.JK', 'PNIN.JK',
                 'PNLF.JK', 'POLA.JK', 'POLU.JK', 'POWR.JK', 'PPRE.JK',
                 'PRAS.JK', 'PRDA.JK', 'PSAB.JK', 'PSDN.JK', 'PSGO.JK',
-                'PTBA.JK', 'PTIS.JK', 'PTPP.JK', 'PTPW.JK', 'PTRO.JK',
-                'PURI.JK', 'PWON.JK', 'PYFA.JK', 'RAJA.JK', 'RALS.JK',
-                'RANC.JK', 'RBMS.JK', 'RDTX.JK', 'REAL.JK', 'RICY.JK',
-                'RIGS.JK', 'RIMO.JK', 'RODA.JK', 'RONY.JK', 'ROTI.JK',
-                'RSGK.JK', 'RUIS.JK', 'SAFE.JK', 'SAME.JK', 'SAMF.JK',
-                'SAPX.JK', 'SATU.JK', 'SBAT.JK', 'SCCO.JK', 'SCMA.JK',
-                'SCNP.JK', 'SDMU.JK', 'SDPC.JK', 'SFAN.JK', 'SGER.JK',
-                'SGRO.JK', 'SHID.JK', 'SIDO.JK', 'SILO.JK', 'SIMA.JK',
-                'SIMP.JK', 'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK',
-                'SKYB.JK', 'SLIS.JK', 'SMBR.JK', 'SMCB.JK', 'SMGR.JK',
-                'SMMA.JK', 'SMMT.JK', 'SMRA.JK', 'SMSM.JK', 'SNLK.JK',
-                'SOCI.JK', 'SOSS.JK', 'SOTS.JK', 'SPTO.JK', 'SQMI.JK',
-                'SRIL.JK', 'SRSN.JK', 'SRTG.JK', 'SSIA.JK', 'SSMS.JK',
-                'SSTM.JK', 'STAR.JK', 'STTP.JK', 'SUGI.JK', 'SULI.JK',
-                'SUPR.JK', 'SURY.JK', 'SWAT.JK', 'TALF.JK', 'TAMA.JK',
-                'TAPG.JK', 'TARA.JK', 'TAXI.JK', 'TBIG.JK', 'TBLA.JK',
-                'TCID.JK', 'TCPI.JK', 'TDPM.JK', 'TEBE.JK', 'TELE.JK',
-                'TFAS.JK', 'TFCO.JK', 'TGKA.JK', 'TGRA.JK', 'TIFA.JK',
-                'TINS.JK', 'TIRT.JK', 'TKIM.JK', 'TLDN.JK', 'TLKM.JK',
-                'TMAS.JK', 'TMPO.JK', 'TOTO.JK', 'TOWR.JK', 'TOYS.JK',
-                'TPIA.JK', 'TPMA.JK', 'TRIO.JK', 'TRIS.JK', 'TRST.JK',
-                'TRUB.JK', 'TSPC.JK', 'TUGU.JK', 'TUNA.JK', 'UCID.JK',
-                'UFOE.JK', 'ULTJ.JK', 'UNIC.JK', 'UNIT.JK', 'UNSP.JK',
-                'UNTR.JK', 'UNVR.JK', 'URBN.JK', 'VICI.JK', 'VINS.JK',
-                'VIVA.JK', 'VOKS.JK', 'VRNA.JK', 'WAPO.JK', 'WEGE.JK',
-                'WEHA.JK', 'WICO.JK', 'WIFI.JK', 'WIKA.JK', 'WINS.JK',
-                'WMPP.JK', 'WOOD.JK', 'WOWS.JK', 'WSBP.JK', 'WSKT.JK',
-                'WTON.JK', 'YELO.JK', 'YPAS.JK', 'ZBRA.JK', 'ZONE.JK',
+                'PTBA.JK', 'PTIS.JK', 'PTPP.JK', 'PTRO.JK', 'PURI.JK',
+                'PWON.JK', 'PYFA.JK', 'RAJA.JK', 'RALS.JK', 'RANC.JK',
+                'RBMS.JK', 'RDTX.JK', 'REAL.JK', 'RICY.JK', 'RIGS.JK',
+                'RIMO.JK', 'RODA.JK', 'RONY.JK', 'ROTI.JK', 'RSGK.JK',
+                'RUIS.JK', 'SAFE.JK', 'SAME.JK', 'SAMF.JK', 'SAPX.JK',
+                'SATU.JK', 'SBAT.JK', 'SCCO.JK', 'SCMA.JK', 'SCNP.JK',
+                'SDMU.JK', 'SDPC.JK', 'SFAN.JK', 'SGER.JK', 'SGRO.JK',
+                'SHID.JK', 'SIDO.JK', 'SILO.JK', 'SIMA.JK', 'SIMP.JK',
+                'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK', 'SKYB.JK',
+                'SLIS.JK', 'SMBR.JK', 'SMCB.JK', 'SMGR.JK', 'SMMA.JK',
+                'SMMT.JK', 'SMRA.JK', 'SMSM.JK', 'SNLK.JK', 'SOCI.JK',
+                'SOSS.JK', 'SOTS.JK', 'SPTO.JK', 'SQMI.JK', 'SRIL.JK',
+                'SRSN.JK', 'SRTG.JK', 'SSIA.JK', 'SSMS.JK', 'SSTM.JK',
+                'STAR.JK', 'STTP.JK', 'SUGI.JK', 'SULI.JK', 'SUPR.JK',
+                'SURY.JK', 'SWAT.JK', 'TALF.JK', 'TAMA.JK', 'TAPG.JK',
+                'TARA.JK', 'TAXI.JK', 'TBIG.JK', 'TBLA.JK', 'TCID.JK',
+                'TCPI.JK', 'TDPM.JK', 'TEBE.JK', 'TELE.JK', 'TFAS.JK',
+                'TFCO.JK', 'TGKA.JK', 'TGRA.JK', 'TIFA.JK', 'TINS.JK',
+                'TIRT.JK', 'TKIM.JK', 'TLDN.JK', 'TLKM.JK', 'TMAS.JK',
+                'TMPO.JK', 'TOTO.JK', 'TOWR.JK', 'TOYS.JK', 'TPIA.JK',
+                'TPMA.JK', 'TRIO.JK', 'TRIS.JK', 'TRST.JK', 'TRUB.JK',
+                'TSPC.JK', 'TUGU.JK', 'TUNA.JK', 'UCID.JK', 'UFOE.JK',
+                'ULTJ.JK', 'UNIC.JK', 'UNIT.JK', 'UNSP.JK', 'UNTR.JK',
+                'UNVR.JK', 'URBN.JK', 'VICI.JK', 'VINS.JK', 'VIVA.JK',
+                'VOKS.JK', 'VRNA.JK', 'WAPO.JK', 'WEGE.JK', 'WEHA.JK',
+                'WICO.JK', 'WIFI.JK', 'WIKA.JK', 'WINS.JK', 'WMPP.JK',
+                'WOOD.JK', 'WOWS.JK', 'WSBP.JK', 'WSKT.JK', 'WTON.JK',
+                'YELO.JK', 'YPAS.JK', 'ZBRA.JK', 'ZONE.JK',
                 'BALI.JK', 'BAND.JK', 'BANG.JK', 'BATA.JK', 'BEEF.JK',
                 'BIMA.JK', 'BIPI.JK', 'BIRD.JK', 'BJTM.JK', 'BJBR.JK',
                 'BKDP.JK', 'BKSL.JK', 'BKSW.JK', 'BLTA.JK', 'BLTZ.JK',
@@ -4587,4 +4583,8 @@ if __name__ == "__main__":
     print("   - Max workers: 10 thread paralel")
     print("   - Timeout: 30 detik per aset")
     print("   - Processing: 500 aset per scanning cycle")
+    print("🎯 PERBAIKAN UTAMA: Menggunakan get_active_assets() untuk efisiensi scanning")
+    print("   - Hanya analisa aset aktif dengan volume > 1 juta")
+    print("   - Minimal volatilitas 2.5% untuk filter aset liquid")
+    print("   - Fallback ke get_assets() jika method tidak tersedia")
     print("="*60)
