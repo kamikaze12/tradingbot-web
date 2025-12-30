@@ -16,6 +16,11 @@ from threading import Lock
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ✅ DEFINE CACHE_FILE DI SINI (di level module)
+CACHE_FILE = 'assets_cache.json'
+CACHE_TTL_DAYS = 3  # Update setiap 3 hari
+
+
 # Import wrapper baru
 try:
     from import_wrapper import (
