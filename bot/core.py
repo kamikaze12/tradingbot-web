@@ -2849,11 +2849,27 @@ class EnhancedTradingBot:
             force_update = True
             
             # Get assets dari provider
-            symbols = self.non_crypto_provider.get_assets(
-                category=category, 
-                limit=requested_limit, 
-                force_update=force_update
-            )
+            # Get ACTIVE assets dari provider (PERBAIKAN UTAMA)
+# Hanya ambil aset aktif dengan volume dan volatilitas yang memadai
+            min_volume = 1_000_000  # Minimal volume 1 juta lembar/unit
+            min_volatility = 0.025   # Minimal volatilitas 2.5%
+            
+            if hasattr(self.non_crypto_provider, 'get_active_assets'):
+                symbols = self.non_crypto_provider.get_active_assets(
+                    category=category,
+                    min_volume=min_volume,
+                    min_volatility=min_volatility,
+                    limit=requested_limit
+                )
+                logger.info(f"📊 Menggunakan get_active_assets() untuk {self.mode} - {len(symbols)} aset aktif")
+            else:
+                # Fallback ke get_assets() jika method get_active_assets tidak ada
+                symbols = self.non_crypto_provider.get_assets(
+                    category=category, 
+                    limit=requested_limit, 
+                    force_update=force_update
+                )
+    logger.warning(f"⚠️ Menggunakan get_assets() (fallback) untuk {self.mode}")
             
             if not symbols:
                 logger.warning(f"No symbols found for {self.mode} from NonCryptoAssetsProvider")
