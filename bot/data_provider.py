@@ -7,46 +7,48 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 import time
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+import logging
 logger = logging.getLogger(__name__)
 
-# Import wrapper
+# Try direct imports
 try:
-    from import_wrapper import (
-        import_binance_scraper,
-        import_indonesia_stocks_scraper,
-        import_investing_scraper,
-        import_forex_scraper
+    from .direct_imports import (
+        get_forex_scraper,
+        get_binance_scraper,
+        get_indonesia_stocks_scraper,
+        get_investing_scraper
     )
     
-    # Import scrapers
-    BinanceScraper = import_binance_scraper()
-    BINANCE_SCRAPER_AVAILABLE = BinanceScraper is not None
-    
-    IndonesiaStocksScraper = import_indonesia_stocks_scraper()
-    ID_STOCKS_SCRAPER_AVAILABLE = IndonesiaStocksScraper is not None
-    
-    InvestingScraper = import_investing_scraper()
-    INVESTING_SCRAPER_AVAILABLE = InvestingScraper is not None
-    
-    ForexGeneralScraper = import_forex_scraper()
+    # Get scraper classes
+    ForexGeneralScraper = get_forex_scraper()
     FOREX_GENERAL_AVAILABLE = ForexGeneralScraper is not None
     
-    # Untuk scraper lain yang mungkin belum ada wrapper
+    BinanceScraper = get_binance_scraper()
+    BINANCE_SCRAPER_AVAILABLE = BinanceScraper is not None
+    
+    IndonesiaStocksScraper = get_indonesia_stocks_scraper()
+    ID_STOCKS_SCRAPER_AVAILABLE = IndonesiaStocksScraper is not None
+    
+    InvestingScraper = get_investing_scraper()
+    INVESTING_SCRAPER_AVAILABLE = InvestingScraper is not None
+    
+    # Lainnya default False
+    CRYPTO_SCRAPER_AVAILABLE = False
     FOREX_TRACKER_AVAILABLE = False
     FOREX_X_SCRAPER_AVAILABLE = False
-    CRYPTO_SCRAPER_AVAILABLE = False
+    
+    logger.info(f"✅ Direct imports successful")
     
 except Exception as e:
-    logger.warning(f"Failed to import scrapers: {e}")
+    logger.warning(f"⚠️ Direct imports failed: {e}")
+    # Set semua ke False
+    FOREX_GENERAL_AVAILABLE = False
     BINANCE_SCRAPER_AVAILABLE = False
     ID_STOCKS_SCRAPER_AVAILABLE = False
     INVESTING_SCRAPER_AVAILABLE = False
-    FOREX_GENERAL_AVAILABLE = False
+    CRYPTO_SCRAPER_AVAILABLE = False
     FOREX_TRACKER_AVAILABLE = False
     FOREX_X_SCRAPER_AVAILABLE = False
-    CRYPTO_SCRAPER_AVAILABLE = False
 # =============================================
 # BASE DATA PROVIDER
 # =============================================
