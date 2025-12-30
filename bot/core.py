@@ -25,9 +25,6 @@ from dataclasses import dataclass
 from enum import Enum
 import concurrent.futures
 from scipy import stats
-import subprocess
-import backtrader as bt
-from backtesting import Backtest
 
 # =============================================
 # SCALPING CONFIGURATION - DITINGKATKAN
@@ -248,242 +245,6 @@ class ScalpingStrategy:
             return max(atr_value, df['close'].iloc[-1] * 0.001)
         except:
             return df['close'].iloc[-1] * 0.02
-
-# =============================================
-# EXTERNAL SCRAPERS INTEGRATION - DARI REPOSITORI EKSTERNAL
-# =============================================
-
-class BinanceHistoryScraper:
-    """Scraper untuk data historis Binance"""
-    def __init__(self):
-        try:
-            # Coba import python-binance
-            from binance.client import Client
-            self.client = Client()
-            self.available = True
-        except ImportError:
-            self.available = False
-            logger.warning("python-binance not installed, using fallback")
-        except Exception as e:
-            self.available = False
-            logger.warning(f"Binance scraper init failed: {e}")
-    
-    def fetch_historical(self, symbol, interval='1m', limit=1000):
-        """Fetch historical klines dari Binance"""
-        if not self.available:
-            return pd.DataFrame()
-        
-        try:
-            # Konversi simbol ke format Binance
-            if '/USDT' in symbol:
-                symbol = symbol.replace('/USDT', 'USDT')
-            elif '/BTC' in symbol:
-                symbol = symbol.replace('/BTC', 'BTC')
-            
-            # Fetch klines
-            klines = self.client.get_klines(
-                symbol=symbol,
-                interval=interval,
-                limit=limit
-            )
-            
-            # Convert ke DataFrame
-            df = pd.DataFrame(klines, columns=[
-                'timestamp', 'open', 'high', 'low', 'close', 'volume',
-                'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-                'taker_buy_quote', 'ignore'
-            ])
-            
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            for col in ['open', 'high', 'low', 'close', 'volume']:
-                df[col] = pd.to_numeric(df[col])
-            
-            return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-            
-        except Exception as e:
-            logger.error(f"Error fetching Binance data for {symbol}: {e}")
-            return pd.DataFrame()
-
-class CoinGeckoScraper:
-    """Scraper untuk data CoinGecko (menggunakan subprocess untuk Node.js)"""
-    def __init__(self):
-        self.available = self._check_node_available()
-    
-    def _check_node_available(self):
-        try:
-            subprocess.run(['node', '--version'], capture_output=True, check=True)
-            return True
-        except:
-            logger.warning("Node.js not available for CoinGecko scraper")
-            return False
-    
-    def fetch_market_data(self, symbol):
-        """Fetch market data dari CoinGecko via Node.js script"""
-        if not self.available:
-            return None
-        
-        try:
-            # Cari file script Node.js
-            script_path = "external_repos/cryptocurrency-scraper/coins.cjs"
-            if not os.path.exists(script_path):
-                # Coba alternatif
-                script_path = "external_repos/cryptocurrency-scraper/coins.js"
-            
-            if os.path.exists(script_path):
-                result = subprocess.run(
-                    ['node', script_path, symbol],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                if result.returncode == 0:
-                    return json.loads(result.stdout)
-                else:
-                    logger.error(f"CoinGecko script error: {result.stderr}")
-            else:
-                logger.warning(f"CoinGecko script not found at {script_path}")
-                
-        except Exception as e:
-            logger.error(f"Error running CoinGecko scraper: {e}")
-        
-        return None
-
-class IndonesiaStocksScraper:
-    """Scraper untuk data saham Indonesia"""
-    def __init__(self):
-        self.available = True  # Selalu tersedia sebagai fallback
-    
-    def fetch_stocks(self, symbol=None, limit=100):
-        """Fetch data saham Indonesia"""
-        try:
-            # Format simbol untuk IDX
-            if symbol and '.JK' not in symbol:
-                symbol = f"{symbol}.JK"
-            
-            # Fallback data statis untuk saham Indonesia
-            stocks = [
-                {'symbol': 'BBCA.JK', 'name': 'Bank Central Asia', 'price': 9000},
-                {'symbol': 'BBRI.JK', 'name': 'Bank Rakyat Indonesia', 'price': 4800},
-                {'symbol': 'BMRI.JK', 'name': 'Bank Mandiri', 'price': 6200},
-                {'symbol': 'TLKM.JK', 'name': 'Telkom Indonesia', 'price': 3200},
-                {'symbol': 'ASII.JK', 'name': 'Astra International', 'price': 5200},
-            ]
-            
-            if symbol:
-                return [s for s in stocks if s['symbol'] == symbol]
-            else:
-                return stocks[:limit]
-                
-        except Exception as e:
-            logger.error(f"Error fetching Indonesia stocks: {e}")
-            return []
-
-class ForexTrackerPro:
-    """Forex tracker menggunakan Selenium"""
-    def __init__(self):
-        self.available = False
-        try:
-            from selenium import webdriver
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-            
-            options = webdriver.ChromeOptions()
-            options.add_argument('--headless')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            
-            self.driver = webdriver.Chrome(options=options)
-            self.available = True
-        except Exception as e:
-            logger.warning(f"Selenium not available for Forex tracker: {e}")
-    
-    def fetch_rates(self, pair='EURUSD'):
-        """Fetch forex rates"""
-        if not self.available:
-            return None
-        
-        try:
-            self.driver.get(f"https://www.investing.com/currencies/{pair.lower()}")
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "text-2xl"))
-            )
-            
-            price_element = self.driver.find_element(By.CLASS_NAME, "text-2xl")
-            price = float(price_element.text)
-            
-            return {'pair': pair, 'price': price, 'timestamp': datetime.now()}
-            
-        except Exception as e:
-            logger.error(f"Error fetching forex rate for {pair}: {e}")
-            return None
-
-class ForexSentimentAnalyzer:
-    """Analisis sentimen Forex dari X (Twitter)"""
-    def __init__(self):
-        self.available = True  # Placeholder untuk implementasi nyata
-    
-    def analyze_sentiment(self, pair='EURUSD'):
-        """Analisis sentimen untuk pair forex"""
-        try:
-            # Simulasi analisis sentimen
-            sentiment_score = random.uniform(-1, 1)
-            
-            return {
-                'pair': pair,
-                'sentiment_score': sentiment_score,
-                'sentiment': 'BULLISH' if sentiment_score > 0.2 else 'BEARISH' if sentiment_score < -0.2 else 'NEUTRAL',
-                'sources': ['Twitter']
-            }
-        except Exception as e:
-            logger.error(f"Error analyzing forex sentiment: {e}")
-            return None
-
-class InvestingComScraper:
-    """Scraper untuk Investing.com"""
-    def __init__(self):
-        self.available = True
-    
-    def fetch_data(self, symbol, asset_type='forex'):
-        """Fetch data dari Investing.com"""
-        try:
-            # Simulasi data
-            return {
-                'symbol': symbol,
-                'price': random.uniform(1.0, 1.5) if 'EUR' in symbol else random.uniform(100, 200),
-                'change': random.uniform(-0.5, 0.5),
-                'volume': random.randint(1000000, 50000000)
-            }
-        except Exception as e:
-            logger.error(f"Error fetching Investing.com data: {e}")
-            return None
-
-class ForexGeneralScraper:
-    """Scraper forex umum"""
-    def __init__(self):
-        self.available = True
-    
-    def fetch_forex_data(self):
-        """Fetch data forex umum"""
-        try:
-            # Data forex utama
-            pairs = ['EURUSD', 'USDJPY', 'GBPUSD', 'AUDUSD', 'USDCAD']
-            data = []
-            
-            for pair in pairs:
-                data.append({
-                    'pair': pair,
-                    'bid': random.uniform(1.0, 1.5),
-                    'ask': random.uniform(1.0, 1.5),
-                    'high': random.uniform(1.05, 1.55),
-                    'low': random.uniform(0.95, 1.45)
-                })
-            
-            return data
-        except Exception as e:
-            logger.error(f"Error fetching general forex data: {e}")
-            return []
 
 # =============================================
 # EMERGENCY IMPORT FIX - UNTUK STRUKTUR FOLDER BOT
@@ -781,252 +542,114 @@ def convert_symbol_for_provider(symbol: str, provider_type: str) -> str:
         return symbol.replace('-', '/').replace('_', '/')
 
 # =============================================
-# ENHANCED BACKTEST ENGINE DENGAN INTEGRASI BACKTRADER
+# ENHANCED BACKTEST ENGINE
 # =============================================
 
 class BacktestEngine:
-    """Enhanced backtesting engine dengan advanced features dan integrasi backtrader"""
+    """Enhanced backtesting engine dengan advanced features"""
     
     def __init__(self, initial_balance=10000):
         self.initial_balance = initial_balance
         self.results = {}
         self.parameter_results = []
-        self.backtrader_engine = None
-        self.backtesting_py = None
         
     def run_backtest(self, df, strategy, **kwargs):
-        """Run comprehensive backtest dengan multiple features dan integrasi backtrader"""
+        """Run comprehensive backtest dengan multiple features"""
         try:
-            # Coba gunakan backtrader jika tersedia
-            if kwargs.get('use_backtrader', False) and self._init_backtrader():
-                return self._run_backtrader_backtest(df, strategy, **kwargs)
+            # Extract parameters
+            atr_multiplier = kwargs.get('atr_multiplier', 1.0)
+            entry_range_pct = kwargs.get('entry_range_pct', 0.02)
+            commission = kwargs.get('commission', 0.001)
             
-            # Fallback ke metode asli
-            return self._run_original_backtest(df, strategy, **kwargs)
+            balance = self.initial_balance
+            position = 0
+            trades = []
+            equity_curve = [balance]
+            max_balance = balance
+            max_drawdown = 0
+            
+            if df is None or df.empty or len(df) < 100:
+                return self._get_empty_results()
+            
+            logger.info(f"🔄 Running backtest on {len(df)} bars...")
+            
+            for i in range(50, len(df)):
+                current_data = df.iloc[:i+1]
+                current_price = df['close'].iloc[i]
+                current_time = df.index[i] if hasattr(df.index, 'iloc') else i
+                
+                # Get strategy analysis
+                analysis = strategy.analyze(current_data)
+                
+                if analysis and analysis['action'] in ['LONG', 'SHORT']:
+                    current_trade = None
+                    
+                    # Check if we should enter a trade
+                    if position == 0 and self._should_enter_trade(analysis, current_price):
+                        position = 1 if analysis['action'] == 'LONG' else -1
+                        
+                        # Calculate position size with risk management
+                        position_size = self._calculate_position_size(balance, current_price, analysis.get('atr', 0))
+                        
+                        entry_trade = {
+                            'entry_time': current_time,
+                            'entry_price': current_price,
+                            'action': analysis['action'],
+                            'size': position_size,
+                            'commission_paid': position_size * current_price * commission
+                        }
+                        trades.append(entry_trade)
+                        current_trade = entry_trade
+                    
+                    # Check if we should exit a trade
+                    elif position != 0 and len(trades) > 0:
+                        current_trade = trades[-1]
+                        if current_trade.get('exit_time') is None:  # Still open
+                            if self._should_exit_trade(current_trade, current_price, analysis, position):
+                                # Calculate P&L
+                                exit_price = current_price
+                                price_change = exit_price - current_trade['entry_price']
+                                pnl = price_change * current_trade['size'] * position
+                                
+                                # Apply commission on exit
+                                exit_commission = current_trade['size'] * exit_price * commission
+                                balance += pnl - exit_commission
+                                
+                                current_trade.update({
+                                    'exit_time': current_time,
+                                    'exit_price': exit_price,
+                                    'pnl': pnl,
+                                    'exit_commission': exit_commission,
+                                    'total_commission': current_trade['commission_paid'] + exit_commission,
+                                    'net_pnl': pnl - (current_trade['commission_paid'] + exit_commission)
+                                })
+                                position = 0
+                                
+                                # Update max drawdown
+                                if balance > max_balance:
+                                    max_balance = balance
+                                current_drawdown = (max_balance - balance) / max_balance
+                                max_drawdown = max(max_drawdown, current_drawdown)
+                
+                # Update equity curve
+                if position != 0 and len(trades) > 0:
+                    current_trade = trades[-1]
+                    if current_trade.get('exit_time') is None:
+                        unrealized_pnl = (current_price - current_trade['entry_price']) * current_trade['size'] * position
+                        current_equity = balance + unrealized_pnl
+                    else:
+                        current_equity = balance
+                else:
+                    current_equity = balance
+                    
+                equity_curve.append(current_equity)
+            
+            self.results = self._calculate_comprehensive_performance_metrics(trades, equity_curve)
+            return self.results
             
         except Exception as e:
             logger.error(f"Error in backtest: {e}")
             return self._get_empty_results()
-    
-    def _run_backtrader_backtest(self, df, strategy, **kwargs):
-        """Run backtest menggunakan backtrader"""
-        try:
-            # Convert DataFrame ke format backtrader
-            df = df.copy()
-            df['datetime'] = df.index if 'datetime' not in df.columns else df['datetime']
-            
-            # Create data feed
-            data = bt.feeds.PandasData(
-                dataname=df,
-                datetime='datetime',
-                open='open',
-                high='high',
-                low='low',
-                close='close',
-                volume='volume',
-                openinterest=-1
-            )
-            
-            # Setup cerebro
-            cerebro = bt.Cerebro()
-            cerebro.adddata(data)
-            
-            # Add strategy
-            class BacktraderStrategy(bt.Strategy):
-                params = (
-                    ('atr_multiplier', kwargs.get('atr_multiplier', 1.0)),
-                    ('entry_range_pct', kwargs.get('entry_range_pct', 0.02)),
-                )
-                
-                def __init__(self):
-                    self.order = None
-                    self.buyprice = None
-                    self.buycomm = None
-                    self.atr = bt.indicators.ATR(self.data, period=14)
-                
-                def next(self):
-                    if self.order:
-                        return
-                    
-                    # Gunakan analisis dari strategy asli
-                    current_idx = len(self.data)
-                    if current_idx < 50:
-                        return
-                    
-                    # Analisis dengan strategy
-                    analysis = strategy.analyze(df.iloc[:current_idx])
-                    
-                    if not analysis:
-                        return
-                    
-                    if analysis['action'] == 'LONG' and not self.position:
-                        size = self.broker.getvalue() * 0.1 / self.data.close[0]
-                        self.order = self.buy(size=size)
-                        
-                    elif analysis['action'] == 'SHORT' and not self.position:
-                        size = self.broker.getvalue() * 0.1 / self.data.close[0]
-                        self.order = self.sell(size=size)
-            
-            cerebro.addstrategy(BacktraderStrategy)
-            
-            # Set initial cash
-            cerebro.broker.setcash(self.initial_balance)
-            cerebro.broker.setcommission(commission=kwargs.get('commission', 0.001))
-            
-            # Run backtest
-            results = cerebro.run()
-            strat = results[0]
-            
-            # Calculate metrics
-            final_value = cerebro.broker.getvalue()
-            total_return = (final_value - self.initial_balance) / self.initial_balance
-            
-            return {
-                'final_balance': final_value,
-                'total_return': total_return,
-                'total_trades': len(strat),
-                'engine': 'backtrader',
-                'initial_balance': self.initial_balance
-            }
-            
-        except Exception as e:
-            logger.error(f"Backtrader backtest error: {e}")
-            return self._run_original_backtest(df, strategy, **kwargs)
-    
-    def _run_original_backtest(self, df, strategy, **kwargs):
-        """Run backtest dengan metode original"""
-        # Extract parameters
-        atr_multiplier = kwargs.get('atr_multiplier', 1.0)
-        entry_range_pct = kwargs.get('entry_range_pct', 0.02)
-        commission = kwargs.get('commission', 0.001)
-        
-        balance = self.initial_balance
-        position = 0
-        trades = []
-        equity_curve = [balance]
-        max_balance = balance
-        max_drawdown = 0
-        
-        if df is None or df.empty or len(df) < 100:
-            return self._get_empty_results()
-        
-        logger.info(f"🔄 Running backtest on {len(df)} bars...")
-        
-        for i in range(50, len(df)):
-            current_data = df.iloc[:i+1]
-            current_price = df['close'].iloc[i]
-            current_time = df.index[i] if hasattr(df.index, 'iloc') else i
-            
-            # Get strategy analysis
-            analysis = strategy.analyze(current_data)
-            
-            if analysis and analysis['action'] in ['LONG', 'SHORT']:
-                current_trade = None
-                
-                # Check if we should enter a trade
-                if position == 0 and self._should_enter_trade(analysis, current_price):
-                    position = 1 if analysis['action'] == 'LONG' else -1
-                    
-                    # Calculate position size with risk management
-                    position_size = self._calculate_position_size(balance, current_price, analysis.get('atr', 0))
-                    
-                    entry_trade = {
-                        'entry_time': current_time,
-                        'entry_price': current_price,
-                        'action': analysis['action'],
-                        'size': position_size,
-                        'commission_paid': position_size * current_price * commission
-                    }
-                    trades.append(entry_trade)
-                    current_trade = entry_trade
-                
-                # Check if we should exit a trade
-                elif position != 0 and len(trades) > 0:
-                    current_trade = trades[-1]
-                    if current_trade.get('exit_time') is None:  # Still open
-                        if self._should_exit_trade(current_trade, current_price, analysis, position):
-                            # Calculate P&L
-                            exit_price = current_price
-                            price_change = exit_price - current_trade['entry_price']
-                            pnl = price_change * current_trade['size'] * position
-                            
-                            # Apply commission on exit
-                            exit_commission = current_trade['size'] * exit_price * commission
-                            balance += pnl - exit_commission
-                            
-                            current_trade.update({
-                                'exit_time': current_time,
-                                'exit_price': exit_price,
-                                'pnl': pnl,
-                                'exit_commission': exit_commission,
-                                'total_commission': current_trade['commission_paid'] + exit_commission,
-                                'net_pnl': pnl - (current_trade['commission_paid'] + exit_commission)
-                            })
-                            position = 0
-                            
-                            # Update max drawdown
-                            if balance > max_balance:
-                                max_balance = balance
-                            current_drawdown = (max_balance - balance) / max_balance
-                            max_drawdown = max(max_drawdown, current_drawdown)
-            
-            # Update equity curve
-            if position != 0 and len(trades) > 0:
-                current_trade = trades[-1]
-                if current_trade.get('exit_time') is None:
-                    unrealized_pnl = (current_price - current_trade['entry_price']) * current_trade['size'] * position
-                    current_equity = balance + unrealized_pnl
-                else:
-                    current_equity = balance
-            else:
-                current_equity = balance
-                
-            equity_curve.append(current_equity)
-        
-        self.results = self._calculate_comprehensive_performance_metrics(trades, equity_curve)
-        return self.results
-    
-    def _init_backtrader(self):
-        """Initialize backtrader engine"""
-        try:
-            import backtrader as bt
-            self.backtrader_engine = bt
-            return True
-        except ImportError:
-            logger.warning("Backtrader not available, using fallback")
-            return False
-    
-    def run_backtesting_py(self, df, strategy_class, cash=10000, commission=0.001):
-        """Run backtest menggunakan backtesting.py"""
-        try:
-            from backtesting import Backtest
-            
-            # Buat strategy untuk backtesting.py
-            class BacktestingPyStrategy(strategy_class):
-                def init(self):
-                    pass
-                
-                def next(self):
-                    pass
-            
-            bt = Backtest(df, BacktestingPyStrategy, cash=cash, commission=commission)
-            stats = bt.run()
-            
-            return {
-                'final_equity': stats['Equity Final [$]'],
-                'total_return': stats['Return [%]'],
-                'sharpe_ratio': stats['Sharpe Ratio'],
-                'max_drawdown': stats['Max. Drawdown [%]'],
-                'trades': stats['# Trades'],
-                'engine': 'backtesting.py'
-            }
-            
-        except ImportError:
-            logger.warning("backtesting.py not available")
-            return None
-        except Exception as e:
-            logger.error(f"Error in backtesting.py: {e}")
-            return None
     
     def run_walk_forward_analysis(self, df, strategy_class, periods=5, **kwargs):
         """Walk-forward analysis for strategy validation"""
@@ -2604,11 +2227,11 @@ class MLEnhancedBot:
             return 0
 
 # =============================================
-# ENHANCED TRADING BOT CORE - UNIVERSAL PROVIDER DENGAN INTEGRASI SCRAPERS
+# ENHANCED TRADING BOT CORE - UNIVERSAL PROVIDER
 # =============================================
 
 class EnhancedTradingBot:
-    """Enhanced trading bot dengan UNIVERSAL provider dan integrasi semua scrapers"""
+    """Enhanced trading bot dengan UNIVERSAL provider"""
     
     def __init__(self, config=None):
         # PERBAIKAN: Inisialisasi semua atribut di awal
@@ -2634,9 +2257,6 @@ class EnhancedTradingBot:
         # **TAMBAHAN: Setup NonCryptoAssetsProvider**
         self.non_crypto_provider = None
         self._setup_non_crypto_provider()
-        
-        # **INTEGRASI SCRAPERS DARI REPOSITORI EKSTERNAL**
-        self._initialize_external_scrapers()
         
         # Initialize components
         self.strategy = None
@@ -2676,177 +2296,8 @@ class EnhancedTradingBot:
         self.ml_predictions_cache = {}
         self.last_ml_update = 0
         
-        logger.info("✅ Enhanced TradingBot initialized dengan Universal Provider dan semua scrapers")
+        logger.info("✅ Enhanced TradingBot initialized dengan Universal Provider")
 
-    # =============================================
-    # INTEGRASI SCRAPERS EKSTERNAL
-    # =============================================
-    
-    def _initialize_external_scrapers(self):
-        """Initialize semua scrapers dari repositori eksternal"""
-        logger.info("🔄 Initializing external scrapers...")
-        
-        # Binance History Scraper
-        try:
-            self.binance_scraper = BinanceHistoryScraper()
-            logger.info("  ✅ BinanceHistoryScraper initialized")
-        except Exception as e:
-            logger.warning(f"  ⚠️ BinanceHistoryScraper failed: {e}")
-            self.binance_scraper = None
-        
-        # CoinGecko Scraper (Node.js based)
-        try:
-            self.coingecko_scraper = CoinGeckoScraper()
-            logger.info("  ✅ CoinGeckoScraper initialized")
-        except Exception as e:
-            logger.warning(f"  ⚠️ CoinGeckoScraper failed: {e}")
-            self.coingecko_scraper = None
-        
-        # Indonesia Stocks Scraper
-        try:
-            self.indonesia_stocks_scraper = IndonesiaStocksScraper()
-            logger.info("  ✅ IndonesiaStocksScraper initialized")
-        except Exception as e:
-            logger.warning(f"  ⚠️ IndonesiaStocksScraper failed: {e}")
-            self.indonesia_stocks_scraper = None
-        
-        # Forex Trackers
-        try:
-            self.forex_tracker = ForexTrackerPro()
-            logger.info("  ✅ ForexTrackerPro initialized")
-        except Exception as e:
-            logger.warning(f"  ⚠️ ForexTrackerPro failed: {e}")
-            self.forex_tracker = None
-        
-        try:
-            self.forex_x_analyzer = ForexSentimentAnalyzer()
-            logger.info("  ✅ ForexSentimentAnalyzer initialized")
-        except Exception as e:
-            logger.warning(f"  ⚠️ ForexSentimentAnalyzer failed: {e}")
-            self.forex_x_analyzer = None
-        
-        try:
-            self.investing_scraper = InvestingComScraper()
-            logger.info("  ✅ InvestingComScraper initialized")
-        except Exception as e:
-            logger.warning(f"  ⚠️ InvestingComScraper failed: {e}")
-            self.investing_scraper = None
-        
-        try:
-            self.general_forex_scraper = ForexGeneralScraper()
-            logger.info("  ✅ ForexGeneralScraper initialized")
-        except Exception as e:
-            logger.warning(f"  ⚠️ ForexGeneralScraper failed: {e}")
-            self.general_forex_scraper = None
-        
-        # Backtesting engines (lazy init)
-        self.backtrader_engine = None
-        self.backtesting_py = None
-        
-        logger.info("✅ All external scrapers initialized")
-
-    # =============================================
-    # METODE BACKTESTING BARU DENGAN INTEGRASI BACKTRADER
-    # =============================================
-    
-    def run_backtest(self, symbol: str, data: pd.DataFrame = None, strategy_class=None, 
-                    use_backtrader: bool = True, use_backtesting_py: bool = True) -> Dict:
-        """
-        Run backtest dengan integrasi backtrader dan backtesting.py
-        
-        Args:
-            symbol: Symbol untuk di-backtest
-            data: DataFrame dengan data OHLCV (jika None, akan fetch dari provider)
-            strategy_class: Class strategy (jika None, gunakan strategy default)
-            use_backtrader: Gunakan backtrader engine
-            use_backtesting_py: Gunakan backtesting.py engine
-        
-        Returns:
-            Dictionary dengan hasil backtest dari semua engine
-        """
-        try:
-            logger.info(f"🧪 Running backtest for {symbol}...")
-            
-            # Fetch data jika tidak disediakan
-            if data is None or data.empty:
-                logger.info(f"  🔍 Fetching data for {symbol}...")
-                if get_trading_data is not None:
-                    data = get_trading_data(symbol, self.data_provider)
-                elif hasattr(self.data_provider, 'get_ohlcv'):
-                    data = self.data_provider.get_ohlcv(symbol, '1h', 1000)
-                else:
-                    return {"error": "No data available for backtest"}
-            
-            if data is None or data.empty or len(data) < 100:
-                return {"error": f"Insufficient data: {len(data) if data is not None else 0} bars"}
-            
-            # Gunakan strategy class yang disediakan atau default
-            if strategy_class is None:
-                # Deteksi tipe trading
-                detected_type, _ = auto_detect_trading_type(symbol)
-                
-                if detected_type == "futures":
-                    strategy_class = self._create_futures_strategy()
-                else:
-                    strategy_class = self._create_spot_strategy()
-            
-            results = {}
-            
-            # Run dengan backtrader
-            if use_backtrader:
-                try:
-                    bt_result = self.backtest_engine.run_backtest(
-                        data, strategy_class, use_backtrader=True
-                    )
-                    results['backtrader'] = bt_result
-                    logger.info(f"  ✅ Backtrader backtest completed")
-                except Exception as e:
-                    logger.error(f"  ❌ Backtrader backtest failed: {e}")
-            
-            # Run dengan backtesting.py
-            if use_backtesting_py:
-                try:
-                    btpy_result = self.backtest_engine.run_backtesting_py(
-                        data, strategy_class
-                    )
-                    if btpy_result:
-                        results['backtesting_py'] = btpy_result
-                        logger.info(f"  ✅ Backtesting.py backtest completed")
-                except Exception as e:
-                    logger.error(f"  ❌ Backtesting.py backtest failed: {e}")
-            
-            # Run dengan engine original
-            original_result = self.backtest_engine.run_backtest(
-                data, strategy_class, use_backtrader=False
-            )
-            results['original'] = original_result
-            
-            # Aggregate results
-            aggregated = {
-                'symbol': symbol,
-                'data_points': len(data),
-                'engines_used': list(results.keys()),
-                'results': results
-            }
-            
-            # Calculate combined metrics
-            if 'backtrader' in results and 'backtesting_py' in results:
-                aggregated['combined_sharpe'] = (
-                    results['backtrader'].get('sharpe_ratio', 0) + 
-                    results['backtesting_py'].get('sharpe_ratio', 0)
-                ) / 2
-                aggregated['combined_return'] = (
-                    results['backtrader'].get('total_return', 0) + 
-                    results['backtesting_py'].get('total_return', 0)
-                ) / 2
-            
-            logger.info(f"✅ Backtest completed for {symbol}")
-            return aggregated
-            
-        except Exception as e:
-            logger.error(f"❌ Backtest error for {symbol}: {e}")
-            return {"error": str(e)}
-    
     # =============================================
     # HELPER METHODS FOR MINIMUM BARS BY MARKET TYPE
     # =============================================
@@ -3225,10 +2676,7 @@ class EnhancedTradingBot:
             "leverage": 1,
             # Tambahan untuk SmartChainDataProvider
             "provider_priority": "smart_chain",
-            "primary_mirror": "binanceus",
-            # Backtesting config
-            "use_backtrader": True,
-            "use_backtesting_py": True
+            "primary_mirror": "binanceus"
         }
     
     def save_config(self):
@@ -3266,10 +2714,6 @@ class EnhancedTradingBot:
             leverage=1
         )
 
-    # =============================================
-    # SCAN POTENTIAL ASSETS DENGAN INTEGRASI SCRAPERS
-    # =============================================
-    
     def get_popular_assets(self, limit=500):
         """Get popular assets berdasarkan market mode - DITINGKATKAN UNTUK 500+ ASET"""
         if not self.data_provider:
@@ -3283,66 +2727,29 @@ class EnhancedTradingBot:
             if self.mode in ['saham_id', 'forex', 'us_stocks'] and self.non_crypto_provider:
                 return self._get_non_crypto_assets_from_provider(limit)
             
-            # **INTEGRASI SCRAPERS: Tambahkan assets dari scrapers eksternal**
-            scraper_assets = []
-            
-            # CoinGecko scraper untuk crypto
-            if self.mode == 'crypto' and self.coingecko_scraper and self.coingecko_scraper.available:
-                try:
-                    # Fetch dari CoinGecko (simulasi)
-                    cg_data = self.coingecko_scraper.fetch_market_data('')
-                    if cg_data and isinstance(cg_data, list):
-                        for coin in cg_data[:100]:  # Batasi 100 dari CoinGecko
-                            if isinstance(coin, dict) and 'symbol' in coin:
-                                scraper_assets.append({
-                                    'symbol': f"{coin['symbol'].upper()}/USDT",
-                                    'name': coin.get('name', coin['symbol']),
-                                    'source': 'coingecko'
-                                })
-                except Exception as e:
-                    logger.warning(f"CoinGecko scraper error: {e}")
-            
-            # Indonesia stocks scraper
-            if self.mode == 'saham_id' and self.indonesia_stocks_scraper:
-                try:
-                    stocks = self.indonesia_stocks_scraper.fetch_stocks(limit=100)
-                    for stock in stocks:
-                        scraper_assets.append({
-                            'symbol': stock['symbol'],
-                            'name': stock['name'],
-                            'source': 'indonesia_stocks_scraper'
-                        })
-                except Exception as e:
-                    logger.warning(f"Indonesia stocks scraper error: {e}")
-            
-            # Get assets dari provider utama
+            # Get assets dari provider untuk crypto
             assets = []
             if hasattr(self.data_provider, 'get_popular_assets'):
                 assets = self.data_provider.get_popular_assets(limit=limit * 2)  # Get more untuk difilter
             else:
                 logger.warning("Provider tidak memiliki get_popular_assets method")
-                assets = []
+                return []
             
-            # Gabungkan assets dari provider utama dan scrapers
-            all_assets = assets + scraper_assets
-            
-            if not all_assets:
+            if not assets:
                 return []
             
             # Filter dan proses berdasarkan mode
             processed_assets = []
             
-            for asset in all_assets:
+            for asset in assets:
                 try:
                     # Handle format asset
                     if isinstance(asset, dict):
                         symbol = asset.get('symbol', '')
                         name = asset.get('name', symbol)
-                        source = asset.get('source', 'main_provider')
                     else:
                         symbol = str(asset)
                         name = symbol
-                        source = 'main_provider'
                     
                     if not symbol:
                         continue
@@ -3358,8 +2765,7 @@ class EnhancedTradingBot:
                                 'symbol': symbol,
                                 'name': name,
                                 'detected_type': trading_type,
-                                'formatted_symbol': formatted_symbol,
-                                'source': source
+                                'formatted_symbol': formatted_symbol
                             })
                     
                     elif self.mode == "forex":
@@ -3370,8 +2776,7 @@ class EnhancedTradingBot:
                                 'symbol': symbol,
                                 'name': name,
                                 'detected_type': "spot",
-                                'formatted_symbol': formatted_symbol,
-                                'source': source
+                                'formatted_symbol': formatted_symbol
                             })
                     
                     elif self.mode == "saham_id":
@@ -3381,8 +2786,7 @@ class EnhancedTradingBot:
                                 'symbol': symbol,
                                 'name': name,
                                 'detected_type': "spot",
-                                'formatted_symbol': formatted_symbol,
-                                'source': source
+                                'formatted_symbol': formatted_symbol
                             })
                     
                     elif self.mode == "us_stocks":
@@ -3392,8 +2796,7 @@ class EnhancedTradingBot:
                                 'symbol': symbol,
                                 'name': name,
                                 'detected_type': "spot",
-                                'formatted_symbol': formatted_symbol,
-                                'source': source
+                                'formatted_symbol': formatted_symbol
                             })
                     
                     else:
@@ -3402,8 +2805,7 @@ class EnhancedTradingBot:
                             'symbol': symbol,
                             'name': name,
                             'detected_type': trading_type,
-                            'formatted_symbol': formatted_symbol,
-                            'source': source
+                            'formatted_symbol': formatted_symbol
                         })
                     
                 except Exception as e:
@@ -3415,7 +2817,7 @@ class EnhancedTradingBot:
             
             # Limit hasil
             result = processed_assets[:limit]
-            logger.info(f"✅ Found {len(result)} assets for {self.mode} market (sources: {set([a.get('source', 'unknown') for a in result])})")
+            logger.info(f"✅ Found {len(result)} assets for {self.mode} market")
             return result
             
         except Exception as e:
@@ -3916,27 +3318,26 @@ class EnhancedTradingBot:
                 'MTB', 'MTD', 'MU', 'MXIM', 'NCLH', 'NDAQ', 'NEE', 'NEM',
                 'NFLX', 'NI', 'NKE', 'NLOK', 'NLSN', 'NOC', 'NOV', 'NOW',
                 'NRG', 'NSC', 'NTAP', 'NTRS', 'NUE', 'NVDA', 'NVR', 'NWL',
-                'NWL', 'NWS', 'NWSA', 'O', 'ODFL', 'OKE', 'OMC', 'ORCL',
-                'ORLY', 'OTIS', 'OXY', 'PAYC', 'PAYX', 'PBCT', 'PCAR',
-                'PEAK', 'PEG', 'PEP', 'PFE', 'PFG', 'PG', 'PGR', 'PH',
-                'PHM', 'PKG', 'PKI', 'PLD', 'PM', 'PNC', 'PNR', 'PNW',
-                'PPG', 'PPL', 'PRU', 'PSA', 'PSX', 'PTC', 'PVH', 'PWR',
-                'PXD', 'PYPL', 'QCOM', 'QRVO', 'RCL', 'RE', 'REG', 'REGN',
-                'RF', 'RHI', 'RJF', 'RL', 'RMD', 'ROK', 'ROL', 'ROP',
-                'ROST', 'RSG', 'RTX', 'SBAC', 'SBUX', 'SCHW', 'SEE',
-                'SHW', 'SIVB', 'SJM', 'SLB', 'SLG', 'SNA', 'SNPS', 'SO',
-                'SPG', 'SPGI', 'SRE', 'STE', 'STT', 'STX', 'STZ', 'SWK',
-                'SWKS', 'SYF', 'SYK', 'SYY', 'T', 'TAP', 'TDG', 'TDY',
-                'TEL', 'TER', 'TFC', 'TFX', 'TGT', 'TIF', 'TJX', 'TMO',
-                'TMUS', 'TPR', 'TRIP', 'TROW', 'TRV', 'TSCO', 'TSLA',
-                'TSN', 'TT', 'TTWO', 'TWTR', 'TXN', 'TXT', 'TYL', 'UA',
-                'UAA', 'UAL', 'UDR', 'UHS', 'ULTA', 'UNH', 'UNP', 'UPS',
-                'URI', 'USB', 'V', 'VFC', 'VIAC', 'VLO', 'VMC', 'VNO',
-                'VRSK', 'VRSN', 'VRTX', 'VTR', 'VZ', 'WAB', 'WAT', 'WBA',
-                'WDC', 'WEC', 'WELL', 'WFC', 'WHR', 'WLTW', 'WM', 'WMB',
-                'WMT', 'WRB', 'WRK', 'WST', 'WU', 'WY', 'WYNN', 'XEL',
-                'XLNX', 'XOM', 'XRAY', 'XYL', 'YUM', 'ZBH', 'ZBRA',
-                'ZION', 'ZTS'
+                'NWS', 'NWSA', 'O', 'ODFL', 'OKE', 'OMC', 'ORCL', 'ORLY',
+                'OTIS', 'OXY', 'PAYC', 'PAYX', 'PBCT', 'PCAR', 'PEAK',
+                'PEG', 'PEP', 'PFE', 'PFG', 'PG', 'PGR', 'PH', 'PHM',
+                'PKG', 'PKI', 'PLD', 'PM', 'PNC', 'PNR', 'PNW', 'PPG',
+                'PPL', 'PRU', 'PSA', 'PSX', 'PTC', 'PVH', 'PWR', 'PXD',
+                'PYPL', 'QCOM', 'QRVO', 'RCL', 'RE', 'REG', 'REGN', 'RF',
+                'RHI', 'RJF', 'RL', 'RMD', 'ROK', 'ROL', 'ROP', 'ROST',
+                'RSG', 'RTX', 'SBAC', 'SBUX', 'SCHW', 'SEE', 'SHW', 'SIVB',
+                'SJM', 'SLB', 'SLG', 'SNA', 'SNPS', 'SO', 'SPG', 'SPGI',
+                'SRE', 'STE', 'STT', 'STX', 'STZ', 'SWK', 'SWKS', 'SYF',
+                'SYK', 'SYY', 'T', 'TAP', 'TDG', 'TDY', 'TEL', 'TER',
+                'TFC', 'TFX', 'TGT', 'TIF', 'TJX', 'TMO', 'TMUS', 'TPR',
+                'TRIP', 'TROW', 'TRV', 'TSCO', 'TSLA', 'TSN', 'TT', 'TTWO',
+                'TWTR', 'TXN', 'TXT', 'TYL', 'UA', 'UAA', 'UAL', 'UDR',
+                'UHS', 'ULTA', 'UNH', 'UNP', 'UPS', 'URI', 'USB', 'V',
+                'VFC', 'VIAC', 'VLO', 'VMC', 'VNO', 'VRSK', 'VRSN', 'VRTX',
+                'VTR', 'VZ', 'WAB', 'WAT', 'WBA', 'WDC', 'WEC', 'WELL',
+                'WFC', 'WHR', 'WLTW', 'WM', 'WMB', 'WMT', 'WRB', 'WRK',
+                'WST', 'WU', 'WY', 'WYNN', 'XEL', 'XLNX', 'XOM', 'XRAY',
+                'XYL', 'YUM', 'ZBH', 'ZBRA', 'ZION', 'ZTS'
             ][:500]  # Ambil 500 pertama
         else:
             return []
@@ -3952,12 +3353,8 @@ class EnhancedTradingBot:
         
         return fallback_assets[:500]  # Batasi 500 aset
 
-    # =============================================
-    # SCAN POTENTIAL ASSETS DENGAN INTEGRASI SCRAPERS
-    # =============================================
-    
     def scan_potential_assets(self, limit=25, search_query: str = None):
-        """Scan sederhana dengan provider universal dan integrasi scrapers - DIPERBAIKI UNTUK 500+ ASET"""
+        """Scan sederhana dengan provider universal - DIPERBAIKI UNTUK 500+ ASET"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -3996,7 +3393,7 @@ class EnhancedTradingBot:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit semua tasks
                 future_to_asset = {
-                    executor.submit(self._analyze_single_asset_with_scrapers, asset, i, len(assets_to_process)): asset 
+                    executor.submit(self._analyze_single_asset, asset, i, len(assets_to_process)): asset 
                     for i, asset in enumerate(assets_to_process)
                 }
                 
@@ -4024,7 +3421,7 @@ class EnhancedTradingBot:
                 signals.sort(key=lambda x: abs(x['score']), reverse=True)
                 logger.info("🏆 Top signals:")
                 for i, signal in enumerate(signals[:min(10, len(signals))]):
-                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']} | Source: {signal.get('data_sources', ['main'])}")
+                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']}")
             else:
                 logger.info("ℹ️ No signals found with current criteria")
             
@@ -4038,16 +3435,15 @@ class EnhancedTradingBot:
             self.scanning_in_progress = False
             self.current_scan_task = None
 
-    def _analyze_single_asset_with_scrapers(self, asset, index, total):
-        """Helper method untuk menganalisis single asset dengan integrasi scrapers (untuk threading)"""
+    def _analyze_single_asset(self, asset, index, total):
+        """Helper method untuk menganalisis single asset (untuk threading)"""
         try:
             symbol = asset.get('symbol')
             asset_name = asset.get('name', symbol)
             detected_type = asset.get('detected_type', 'spot')
             formatted_symbol = asset.get('formatted_symbol', symbol)
-            source = asset.get('source', 'main')
             
-            logger.info(f"  [{index+1}/{total}] Analyzing: {symbol} (Type: {detected_type}, Source: {source})")
+            logger.info(f"  [{index+1}/{total}] Analyzing: {symbol} (Type: {detected_type})")
             
             # **SCALPING MODE FILTERS**
             if self.scalping_mode:
@@ -4058,9 +3454,33 @@ class EnhancedTradingBot:
                 logger.info(f"    ⚡ Scalping mode: {timeframe} timeframe, {limit} bars")
                 df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
                 
-                # **INTEGRASI SCRAPERS: Tambahkan data dari scrapers eksternal**
-                df = self._enrich_data_with_scrapers(df, symbol, timeframe, limit)
+                # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
+                # Gunakan minimum bars yang sesuai dengan market type
+                min_bars = self._get_min_bars()
+                if df is None or df.empty or len(df) < min_bars:
+                    logger.info(f"    ⚠️ Insufficient data for {symbol}: {len(df) if df is not None and not df.empty else 0} bars (minimum {min_bars} required)")
+                    return None
                 
+                # Filter harga untuk scalping
+                current_price = df['close'].iloc[-1]
+                price_filter = self.scalping_config["price_filter"]
+                if current_price < price_filter["min"] or current_price > price_filter["max"]:
+                    logger.info(f"    ⚠️ Price filter failed for {symbol}: {current_price}")
+                    return None
+                
+                # Filter volume untuk scalping
+                if 'volume' in df.columns and 'close' in df.columns:
+                    lookback = min(20, len(df))
+                    volume_usd = (df['volume'].iloc[-lookback:] * df['close'].iloc[-lookback:]).mean()
+                    if volume_usd < self.scalping_config["min_volume_usd"]:
+                        logger.info(f"    ⚠️ Volume filter failed for {symbol}: {volume_usd}")
+                        return None
+                
+                # Skip dummy data untuk scalping
+                if self.scalping_config.get("skip_dummy_data", True):
+                    if df['close'].std() < 0.001:
+                        logger.info(f"    ⚠️ Dummy data filter failed for {symbol}")
+                        return None
             else:
                 # **NORMAL MODE**
                 if get_trading_data is not None:
@@ -4069,9 +3489,6 @@ class EnhancedTradingBot:
                 else:
                     logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
                     df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
-                
-                # **INTEGRASI SCRAPERS: Tambahkan data dari scrapers eksternal**
-                df = self._enrich_data_with_scrapers(df, symbol, self.config.get("timeframe", "1h"), 100)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
@@ -4120,11 +3537,6 @@ class EnhancedTradingBot:
             
             # Check jika signal valid
             if abs(score) >= min_score and action != 'NEUTRAL':
-                # **INTEGRASI SENTIMEN: Tambahkan analisis sentimen jika tersedia**
-                sentiment_data = None
-                if self.mode == 'forex' and self.forex_x_analyzer:
-                    sentiment_data = self.forex_x_analyzer.analyze_sentiment(symbol)
-                
                 signal_data = {
                     'symbol': formatted_symbol,
                     'name': asset_name,
@@ -4145,9 +3557,7 @@ class EnhancedTradingBot:
                     'asset_type': detected_type,
                     'leverage': leverage,
                     'strategy': 'scalping' if self.scalping_mode else 'standard',
-                    'short_allowed': self._is_short_allowed(self.mode, symbol),
-                    'data_sources': ['main'] + (['sentiment'] if sentiment_data else []),
-                    'sentiment': sentiment_data
+                    'short_allowed': self._is_short_allowed(self.mode, symbol)
                 }
                 
                 logger.info(f"✅ Signal: {formatted_symbol} | {action} | Score: {score:.2f} | Type: {detected_type} | Strategy: {'SCALPING' if self.scalping_mode else 'STANDARD'} | Short Allowed: {self._is_short_allowed(self.mode, symbol)}")
@@ -4158,64 +3568,6 @@ class EnhancedTradingBot:
         except Exception as e:
             logger.error(f"❌ Error analyzing {asset.get('symbol', 'unknown')}: {str(e)[:100]}")
             return None
-    
-    def _enrich_data_with_scrapers(self, df, symbol, timeframe, limit):
-        """Enrich data dengan scrapers eksternal"""
-        try:
-            if df is None or df.empty:
-                return df
-            
-            historical_data = []
-            data_sources = ['main_provider']
-            
-            # **INTEGRASI BINANCE SCRAPER**
-            if self.binance_scraper and self.binance_scraper.available and self.mode == 'crypto':
-                try:
-                    binance_data = self.binance_scraper.fetch_historical(symbol, '1h', 100)
-                    if not binance_data.empty:
-                        historical_data.append(binance_data)
-                        data_sources.append('binance_scraper')
-                        logger.debug(f"    📊 Added {len(binance_data)} bars from Binance scraper")
-                except Exception as e:
-                    logger.debug(f"    ⚠️ Binance scraper failed: {e}")
-            
-            # **INTEGRASI FOREX TRACKER**
-            if self.mode == 'forex' and self.forex_tracker and self.forex_tracker.available:
-                try:
-                    forex_data = self.forex_tracker.fetch_rates(symbol)
-                    if forex_data:
-                        # Create a simple DataFrame from forex data
-                        forex_df = pd.DataFrame([{
-                            'timestamp': pd.Timestamp.now(),
-                            'open': forex_data['price'],
-                            'high': forex_data['price'] * 1.001,
-                            'low': forex_data['price'] * 0.999,
-                            'close': forex_data['price'],
-                            'volume': 1000000
-                        }])
-                        historical_data.append(forex_df)
-                        data_sources.append('forex_tracker')
-                except Exception as e:
-                    logger.debug(f"    ⚠️ Forex tracker failed: {e}")
-            
-            # Gabungkan semua data jika ada
-            if historical_data:
-                # Combine all data
-                all_data = pd.concat([df] + historical_data, ignore_index=True)
-                
-                # Remove duplicates based on timestamp
-                if 'timestamp' in all_data.columns:
-                    all_data = all_data.drop_duplicates(subset=['timestamp'])
-                    all_data = all_data.sort_values('timestamp')
-                
-                logger.debug(f"    📈 Enriched data: {len(df)} -> {len(all_data)} bars (sources: {data_sources})")
-                return all_data
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error enriching data with scrapers: {e}")
-            return df
 
     def _apply_market_constraints(self, analysis: dict, detected_type: str = "spot") -> dict:
         """Apply market constraints berdasarkan detected type - DIPERBAIKI UNTUK NON-CRYPTO"""
@@ -4248,9 +3600,6 @@ class EnhancedTradingBot:
             else:
                 logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
-            
-            # **INTEGRASI SCRAPERS: Enrich data dengan scrapers**
-            df = self._enrich_data_with_scrapers(df, symbol, self.config.get("timeframe", "1h"), 100)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
@@ -4308,9 +3657,6 @@ class EnhancedTradingBot:
                 logger.info(f"  🔧 Menggunakan provider {self.data_provider.__class__.__name__}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
             
-            # **INTEGRASI SCRAPERS: Enrich data dengan scrapers**
-            df = self._enrich_data_with_scrapers(df, symbol, timeframe, limit)
-            
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
             min_bars_backtest = self._get_min_bars_backtest()
@@ -4328,23 +3674,14 @@ class EnhancedTradingBot:
             else:
                 strategy = self._create_spot_strategy()
             
-            # Run backtest dengan integrasi backtrader
-            use_backtrader = self.config.get("use_backtrader", True)
-            use_backtesting_py = self.config.get("use_backtesting_py", True)
-            
-            backtest_result = self.run_backtest(
-                symbol=formatted_symbol,
-                data=df,
-                strategy_class=strategy.__class__,
-                use_backtrader=use_backtrader,
-                use_backtesting_py=use_backtesting_py
-            )
+            # Run backtest
+            basic_result = self.backtest_engine.run_backtest(df, strategy)
             
             return {
                 'symbol': formatted_symbol,
                 'detected_type': detected_type,
                 'timeframe': timeframe,
-                'backtest_results': backtest_result,
+                'basic_backtest': basic_result,
                 'data_points': len(df)
             }
             
@@ -4478,9 +3815,6 @@ class EnhancedTradingBot:
             else:
                 logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk {formatted_symbol}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 50)
-            
-            # **INTEGRASI SCRAPERS: Enrich data dengan scrapers**
-            df = self._enrich_data_with_scrapers(df, symbol, self.config.get("timeframe", "1h"), 50)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             if df is None or df.empty or len(df) < 20:
@@ -5022,15 +4356,15 @@ TradingBot = EnhancedTradingBot
 # TESTING FUNCTIONALITY - DIPERBAIKI
 # =============================================
 
-def test_universal_provider_with_scrapers():
-    """Test bot dengan universal provider dan scrapers"""
-    print("🧪 Testing TradingBot dengan UNIVERSAL PROVIDER dan SCRAPERS...")
+def test_universal_provider():
+    """Test bot dengan universal provider"""
+    print("🧪 Testing TradingBot dengan UNIVERSAL PROVIDER...")
     print("="*60)
     
     bot = EnhancedTradingBot()
     
-    # Test crypto market dengan scrapers
-    print("\n1. Testing CRYPTO market dengan scrapers...")
+    # Test crypto market
+    print("\n1. Testing CRYPTO market...")
     success = bot.set_mode("crypto")
     
     if success:
@@ -5040,34 +4374,21 @@ def test_universal_provider_with_scrapers():
         assets = bot.get_popular_assets(10)
         print(f"   Found {len(assets)} assets")
         for asset in assets[:5]:
-            print(f"   - {asset['symbol']} ({asset.get('detected_type', 'N/A')}) [Source: {asset.get('source', 'N/A')}]")
+            print(f"   - {asset['symbol']} ({asset.get('detected_type', 'N/A')})")
         
-        # Test scanning dengan scrapers
-        print("\n2. Testing scanning dengan scrapers...")
+        # Test scanning
+        print("\n2. Testing scanning...")
         signals = bot.scan_potential_assets(limit=10)
         print(f"   Found {len(signals)} signals")
         
         if signals:
             for i, signal in enumerate(signals[:10]):
-                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Data Sources: {signal.get('data_sources', ['main'])})")
+                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Type: {signal.get('trading_mode', 'N/A')}, Leverage: {signal.get('leverage', 1)}x)")
         else:
             print("   ℹ️ No signals found - this is normal with real data")
-        
-        # Test backtest dengan backtrader
-        print("\n3. Testing backtest dengan backtrader...")
-        if signals:
-            test_symbol = signals[0]['symbol']
-            backtest_result = bot.run_backtest(test_symbol)
-            print(f"   Backtest for {test_symbol}:")
-            if 'error' in backtest_result:
-                print(f"     ❌ Error: {backtest_result['error']}")
-            else:
-                print(f"     ✅ Engines used: {backtest_result.get('engines_used', [])}")
-                for engine, result in backtest_result.get('results', {}).items():
-                    print(f"     - {engine}: {result.get('final_balance', 0):.2f}")
     
     # Test saham_id dengan 500 aset
-    print("\n4. Testing SAHAM_ID market dengan 500+ aset...")
+    print("\n3. Testing SAHAM_ID market dengan 500+ aset...")
     success = bot.set_mode("saham_id")
     
     if success:
@@ -5080,7 +4401,7 @@ def test_universal_provider_with_scrapers():
             print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')}) (Source: {asset.get('source', 'N/A')})")
         
         # Test scanning saham_id
-        print("\n5. Testing scanning SAHAM_ID...")
+        print("\n4. Testing scanning SAHAM_ID...")
         signals = bot.scan_potential_assets(limit=10)
         print(f"   Found {len(signals)} Indonesian stock signals")
         
@@ -5094,14 +4415,14 @@ def test_universal_provider_with_scrapers():
             print("   ℹ️ No Indonesian stock signals found - this is normal with real data")
     
     # Test scalping mode
-    print("\n6. Testing SCALPING mode...")
+    print("\n5. Testing SCALPING mode...")
     success = bot.set_mode("scalping")
     
     if success:
         print("✅ Scalping mode set successfully")
         
         # Test scanning scalping
-        print("\n7. Testing SCALPING scanning...")
+        print("\n6. Testing SCALPING scanning...")
         signals = bot.scan_potential_assets(limit=5)
         print(f"   Found {len(signals)} scalping signals")
         
@@ -5112,77 +4433,109 @@ def test_universal_provider_with_scrapers():
             print("   ℹ️ No scalping signals found - this is normal with strict filters")
     
     print("\n" + "="*60)
-    print("✅ Test completed - Bot menggunakan Universal Provider dengan:")
-    print("   ✅ Auto-detect spot/futures dari simbol")
-    print("   ✅ Leverage auto-detection (1x spot, 5x futures)")
-    print("   ✅ Menggunakan get_trading_data untuk membersihkan data")
-    print("   ✅ TANPA BIAS untuk semua sinyal")
-    print("   ✅ SHORT diizinkan untuk crypto (spot & futures)")
-    print("   ✅ SHORT TIDAK diizinkan untuk Saham Indonesia (sesuai regulasi IDX)")
-    print("   ✅ SCALPING mode dengan filter ketat dan timeframe 5m")
-    print("   ✅ SUPPORT 500+ ASSETS untuk non-crypto markets")
-    print("   ✅ INTEGRASI SCRAPERS EKSTERNAL:")
-    print("      - BinanceHistoryScraper untuk data crypto")
-    print("      - CoinGeckoScraper untuk market data")
-    print("      - IndonesiaStocksScraper untuk saham Indonesia")
-    print("      - ForexTrackerPro untuk rates forex")
-    print("      - ForexSentimentAnalyzer untuk analisis sentimen")
-    print("   ✅ INTEGRASI BACKTESTING:")
-    print("      - Backtrader untuk backtesting advanced")
-    print("      - Backtesting.py untuk alternatif")
-    print("   ✅ MULTI-THREADING untuk scanning cepat")
+    print("✅ Test completed - Bot menggunakan Universal Provider dengan auto-detection")
+    print("   Auto-detect spot/futures dari simbol")
+    print("   Leverage auto-detection (1x spot, 5x futures)")
+    print("   Menggunakan get_trading_data untuk membersihkan data")
+    print("   TANPA BIAS untuk semua sinyal")
+    print("   SHORT diizinkan untuk crypto (spot & futures)")
+    print("   SHORT TIDAK diizinkan untuk Saham Indonesia (sesuai regulasi IDX)")
+    print("   SCALPING mode dengan filter ketat dan timeframe 5m")
+    print("   SUPPORT 500+ ASSETS untuk non-crypto markets")
 
-def test_backtesting_integration():
-    """Test khusus untuk integrasi backtesting"""
+def test_non_crypto_assets_500():
+    """Test khusus untuk 500+ aset non-crypto"""
     print("\n" + "="*60)
-    print("TESTING BACKTESTING INTEGRATION")
+    print("TESTING 500+ NON-CRYPTO ASSETS")
     print("="*60)
     
     bot = EnhancedTradingBot()
-    success = bot.set_mode("crypto")
+    
+    # Test Saham Indonesia
+    print("\n1. Testing SAHAM_ID dengan 500+ aset...")
+    success = bot.set_mode("saham_id")
     
     if success:
-        print("✅ Crypto mode set successfully")
+        print("✅ Saham ID mode set successfully")
         
-        # Test backtest untuk BTC/USDT
-        symbol = "BTC/USDT"
-        print(f"\n1. Testing backtest for {symbol}...")
+        # Test popular assets dengan limit 500
+        assets = bot.get_popular_assets(500)
+        print(f"   Found {len(assets)} Indonesian stocks")
         
-        result = bot.run_backtest(symbol)
+        # Hitung sumber aset
+        sources = {}
+        for asset in assets:
+            source = asset.get('source', 'unknown')
+            sources[source] = sources.get(source, 0) + 1
         
-        if 'error' in result:
-            print(f"❌ Backtest failed: {result['error']}")
-        else:
-            print(f"✅ Backtest completed")
-            print(f"   Engines used: {result.get('engines_used', [])}")
-            
-            for engine, engine_result in result.get('results', {}).items():
-                print(f"   {engine.upper()}:")
-                print(f"     Final Balance: ${engine_result.get('final_balance', 0):.2f}")
-                print(f"     Total Return: {engine_result.get('total_return', 0)*100:.2f}%")
-                if 'sharpe_ratio' in engine_result:
-                    print(f"     Sharpe Ratio: {engine_result.get('sharpe_ratio', 0):.2f}")
+        print(f"   Sources: {sources}")
         
-        # Test advanced backtest
-        print(f"\n2. Testing advanced backtest for {symbol}...")
-        advanced_result = bot.run_advanced_backtest(symbol)
+        # Tampilkan 20 aset pertama
+        print("\n   Top 20 assets:")
+        for i, asset in enumerate(assets[:20]):
+            print(f"   {i+1:3d}. {asset['symbol']} - {asset['name']} (Source: {asset.get('source', 'N/A')})")
+    
+    # Test US Stocks
+    print("\n2. Testing US_STOCKS dengan 500+ aset...")
+    success = bot.set_mode("us_stocks")
+    
+    if success:
+        print("✅ US Stocks mode set successfully")
         
-        if 'error' in advanced_result:
-            print(f"❌ Advanced backtest failed: {advanced_result['error']}")
-        else:
-            print(f"✅ Advanced backtest completed")
-            print(f"   Data points: {advanced_result.get('data_points', 0)}")
-            print(f"   Timeframe: {advanced_result.get('timeframe', 'N/A')}")
+        # Test popular assets dengan limit 500
+        assets = bot.get_popular_assets(500)
+        print(f"   Found {len(assets)} US stocks")
+        
+        # Hitung sumber aset
+        sources = {}
+        for asset in assets:
+            source = asset.get('source', 'unknown')
+            sources[source] = sources.get(source, 0) + 1
+        
+        print(f"   Sources: {sources}")
+        
+        # Tampilkan 20 aset pertama
+        print("\n   Top 20 assets:")
+        for i, asset in enumerate(assets[:20]):
+            print(f"   {i+1:3d}. {asset['symbol']} - {asset['name']} (Source: {asset.get('source', 'N/A')})")
+    
+    # Test Forex
+    print("\n3. Testing FOREX dengan 500+ aset...")
+    success = bot.set_mode("forex")
+    
+    if success:
+        print("✅ Forex mode set successfully")
+        
+        # Test popular assets dengan limit 500
+        assets = bot.get_popular_assets(500)
+        print(f"   Found {len(assets)} forex pairs")
+        
+        # Hitung sumber aset
+        sources = {}
+        for asset in assets:
+            source = asset.get('source', 'unknown')
+            sources[source] = sources.get(source, 0) + 1
+        
+        print(f"   Sources: {sources}")
+        
+        # Tampilkan 20 aset pertama
+        print("\n   Top 20 assets:")
+        for i, asset in enumerate(assets[:20]):
+            print(f"   {i+1:3d}. {asset['symbol']} - {asset['name']} (Source: {asset.get('source', 'N/A')})")
     
     print("\n" + "="*60)
-    print("✅ Backtesting integration test completed")
+    print("✅ 500+ assets test completed")
+    print("   NonCryptoAssetsProvider terintegrasi dengan baik")
+    print("   Cache 3 hari untuk mengurangi API calls")
+    print("   Fallback ke list statis jika provider gagal")
+    print("   Multi-threading untuk scanning cepat")
 
 if __name__ == "__main__":
-    test_universal_provider_with_scrapers()
-    test_backtesting_integration()
+    test_universal_provider()
+    test_non_crypto_assets_500()
     
     print("\n" + "="*60)
-    print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER AND SCRAPERS INTEGRATION")
+    print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER")
     print("🎯 Menggunakan get_trading_data untuk membersihkan data")
     print("🎯 Auto-detect spot/futures dari simbol")
     print("🎯 Leverage auto-detection (1x spot, 5x futures)")
@@ -5192,17 +4545,6 @@ if __name__ == "__main__":
     print("   - Saham Indonesia (.JK) - 500+ aset")
     print("   - US Stocks - 500+ aset") 
     print("   - Forex pairs - 500+ aset")
-    print("🎯 INTEGRASI SCRAPERS EKSTERNAL:")
-    print("   - BinanceHistoryScraper: Data historis crypto 1m klines")
-    print("   - CoinGeckoScraper: Market data 1500+ coins (Node.js)")
-    print("   - IndonesiaStocksScraper: Data saham Indonesia")
-    print("   - ForexTrackerPro: Real-time forex rates (Selenium)")
-    print("   - ForexSentimentAnalyzer: Analisis sentimen dari X/Twitter")
-    print("   - InvestingComScraper: Data dari Investing.com")
-    print("   - ForexGeneralScraper: Data forex umum")
-    print("🎯 INTEGRASI BACKTESTING:")
-    print("   - Backtrader: Backtesting engine komprehensif")
-    print("   - Backtesting.py: Alternatif backtesting")
     print("🎯 Menggunakan cache 3 hari untuk mengurangi API calls")
     print("🎯 Fallback ke list statis jika fetch gagal")
     print("🎯 Filter aset berdasarkan market mode (crypto, saham_id, forex, us_stocks)")
@@ -5229,10 +4571,4 @@ if __name__ == "__main__":
     print("   - Max workers: 10 thread paralel")
     print("   - Timeout: 30 detik per aset")
     print("   - Processing: 500 aset per scanning cycle")
-    print("🎯 ENRICHMENT: Data enrichment dengan scrapers eksternal")
-    print("   - Kombinasi data dari multiple sources")
-    print("   - Sentimen analysis untuk forex")
-    print("🎯 BACKTESTING: Integrasi backtrader dan backtesting.py")
-    print("   - Multiple backtesting engines")
-    print("   - Comprehensive metrics")
     print("="*60)
