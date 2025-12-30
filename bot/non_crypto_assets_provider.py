@@ -1,5 +1,7 @@
 import json
 import os
+import sys
+import types
 from datetime import datetime, timedelta
 import logging
 import yfinance as yf
@@ -15,6 +17,44 @@ from threading import Lock
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Define the mock class for RTI Downloader
+class MockRTIDownloader:
+    def __init__(self, *args, **kwargs):
+        logger.info("✅ Mock RTI Downloader initialized")
+    
+    def fetch_stocks(self):
+        return ['BBCA', 'BBRI', 'BMRI']  # Mock data
+    
+    def get_stock_data(self, stock_code, period='1y'):
+        try:
+            ticker = yf.Ticker(f"{stock_code}.JK")
+            df = ticker.history(period=period)
+            return df.to_dict('records')
+        except:
+            return None
+
+# Define mock class for db_table
+class MockDBTableClass:
+    def __init__(self, name, schema=None):
+        logger.info("✅ Mock db_table initialized")
+    
+    def insert(self, item):
+        logger.info("✅ Mock insert called")
+
+# Create module mocks
+MockScrapers = types.ModuleType('Scrapers')
+MockScrapers.RTI = types.ModuleType('RTI')
+MockScrapers.RTI.RTI_Downloader = MockRTIDownloader
+
+MockDBTable = types.ModuleType('db_table')
+MockDBTable.db_table = MockDBTableClass
+
+# Assign to sys.modules
+sys.modules['Scrapers'] = MockScrapers
+sys.modules['Scrapers.RTI'] = MockScrapers.RTI
+sys.modules['Scrapers.RTI.RTI_Downloader'] = MockRTIDownloader
+sys.modules['db_table'] = MockDBTable
 
 # ✅ FIX: CACHE_FILE sudah benar
 CACHE_FILE = 'assets_cache.json'
@@ -67,13 +107,7 @@ ForexGeneralScraper_class, IndonesiaStocksScraper_class, InvestingScraper_class 
 FOREX_SCRAPER_AVAILABLE = ForexGeneralScraper_class is not None
 INDONESIA_SCRAPER_AVAILABLE = IndonesiaStocksScraper_class is not None
 INVESTING_SCRAPER_AVAILABLE = InvestingScraper_class is not None
-# Mock Scrapers dan db_table global
-sys.modules['Scrapers'] = MockScrapers()
-sys.modules['Scrapers.RTI'] = MockScrapers.RTI
-sys.modules['Scrapers.RTI.RTI_Downloader'] = MockRTIDownloader
-sys.modules['db_table'] = MockDBTable()
 
-# Lalu import seperti biasa
 # Create instances
 if FOREX_SCRAPER_AVAILABLE:
     ForexGeneralScraper = ForexGeneralScraper_class()
