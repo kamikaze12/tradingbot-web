@@ -1,0 +1,25 @@
+# Untuk Chrome dan driver dasar
+chromium-browser
+chromium-chromedriver
+
+# Libraries tambahan untuk fix error 127 (dari common fixes)
+libnss3
+libgbm1
+libasound2
+fonts-liberation
+libnspr4
+xdg-utils
+libdbus-1-3
+libatk1.0-0
+libatk-bridge2.0-0
+libcups2
+libdrm2
+libxkbcommon0
+libxcomposite1
+libxdamage1
+libxfixes3
+libxrandr2
+libgtk-3-0
+libpango-1.0-0
+libcairo2
+libatspi2.0-0
