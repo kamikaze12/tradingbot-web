@@ -259,5 +259,10 @@ def test_all():
     return results
 
 if __name__ == "__main__":
+    # Jalankan sebagai script standalone
+    import logging
     logging.basicConfig(level=logging.INFO)
     test_all()
+else:
+    # Ketika di-import sebagai module
+    pass
