@@ -1,7 +1,5 @@
 import json
 import os
-import sys
-import types
 from datetime import datetime, timedelta
 import logging
 import yfinance as yf
@@ -18,116 +16,10 @@ from threading import Lock
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Define the mock class for RTI Downloader
-class MockRTIDownloader:
-    def __init__(self, *args, **kwargs):
-        logger.info("✅ Mock RTI Downloader initialized")
-    
-    def fetch_stocks(self):
-        return ['BBCA', 'BBRI', 'BMRI']  # Mock data
-    
-    def get_stock_data(self, stock_code, period='1y'):
-        try:
-            ticker = yf.Ticker(f"{stock_code}.JK")
-            df = ticker.history(period=period)
-            return df.to_dict('records')
-        except:
-            return None
-
-# Define mock class for db_table
-class MockDBTableClass:
-    def __init__(self, name, schema=None):
-        logger.info("✅ Mock db_table initialized")
-    
-    def insert(self, item):
-        logger.info("✅ Mock insert called")
-
-# Create module mocks
-MockScrapers = types.ModuleType('Scrapers')
-MockScrapers.RTI = types.ModuleType('RTI')
-MockScrapers.RTI.RTI_Downloader = MockRTIDownloader
-
-MockDBTable = types.ModuleType('db_table')
-MockDBTable.db_table = MockDBTableClass
-
-# Assign to sys.modules
-sys.modules['Scrapers'] = MockScrapers
-sys.modules['Scrapers.RTI'] = MockScrapers.RTI
-sys.modules['Scrapers.RTI.RTI_Downloader'] = MockRTIDownloader
-sys.modules['db_table'] = MockDBTable
-
-# ✅ FIX: CACHE_FILE sudah benar
+# Cache file path
 CACHE_FILE = 'assets_cache.json'
-CACHE_TTL_DAYS = 3
+CACHE_TTL_DAYS = 3  # Update setiap 3 hari
 
-# SIMPLE IMPORT - PAKAI ABSOLUTE PATH
-def import_scrapers_simple():
-    """Import scrapers dengan cara simple"""
-    try:
-        # Coba import langsung dari file
-        import sys
-        import os
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        
-        # Try to import
-        try:
-            from direct_imports import (
-                get_forex_scraper,
-                get_indonesia_stocks_scraper,
-                get_investing_scraper
-            )
-        except ImportError:
-            # Try absolute import
-            exec(open('bot/direct_imports.py').read())
-            from direct_imports import (
-                get_forex_scraper,
-                get_indonesia_stocks_scraper,
-                get_investing_scraper
-            )
-        
-        # Get classes
-        ForexGeneralScraper_class = get_forex_scraper()
-        IndonesiaStocksScraper_class = get_indonesia_stocks_scraper()
-        InvestingScraper_class = get_investing_scraper()
-        
-        return (
-            ForexGeneralScraper_class,
-            IndonesiaStocksScraper_class,
-            InvestingScraper_class
-        )
-        
-    except Exception as e:
-        logger.warning(f"⚠️ Simple import failed: {e}")
-        return None, None, None
-
-# Import scrapers
-ForexGeneralScraper_class, IndonesiaStocksScraper_class, InvestingScraper_class = import_scrapers_simple()
-
-# Set availability
-FOREX_SCRAPER_AVAILABLE = ForexGeneralScraper_class is not None
-INDONESIA_SCRAPER_AVAILABLE = IndonesiaStocksScraper_class is not None
-INVESTING_SCRAPER_AVAILABLE = InvestingScraper_class is not None
-
-# Create instances
-if FOREX_SCRAPER_AVAILABLE:
-    ForexGeneralScraper = ForexGeneralScraper_class()
-else:
-    ForexGeneralScraper = None
-
-if INDONESIA_SCRAPER_AVAILABLE:
-    IndonesiaStocksScraper = IndonesiaStocksScraper_class()
-else:
-    IndonesiaStocksScraper = None
-
-if INVESTING_SCRAPER_AVAILABLE:
-    InvestingScraper = InvestingScraper_class()
-else:
-    InvestingScraper = None
-
-logger.info(f"✅ Scrapers: Forex={FOREX_SCRAPER_AVAILABLE}, "
-            f"ID={INDONESIA_SCRAPER_AVAILABLE}, "
-            f"Investing={INVESTING_SCRAPER_AVAILABLE}")
-    
 class NonCryptoAssetsProvider:
     """
     Provider untuk list aset non-crypto (saham Indo, forex, saham US).
@@ -217,29 +109,7 @@ class NonCryptoAssetsProvider:
                     logger.warning(f"IDX API failed (attempt {attempt+1}): {e}")
                     time.sleep(2)  # Delay retry
             
-            # Source 2: IndonesiaStocksScraper (NEW)
-            if INDONESIA_SCRAPER_AVAILABLE:
-                for attempt in range(3):
-                    try:
-                        indo_scraper = IndonesiaStocksScraper()
-                        indo_symbols = indo_scraper.fetch_stocks()
-                        # Format symbols dengan .JK jika belum ada
-                        formatted_symbols = []
-                        for symbol in indo_symbols:
-                            if isinstance(symbol, str) and symbol.strip():
-                                symbol_clean = symbol.strip().upper()
-                                if not symbol_clean.endswith('.JK'):
-                                    symbol_clean += '.JK'
-                                formatted_symbols.append(symbol_clean)
-                        
-                        all_symbols.update(formatted_symbols)
-                        logger.info(f"✅ Fetched {len(formatted_symbols)} from IndonesiaStocksScraper")
-                        break
-                    except Exception as e:
-                        logger.warning(f"IndonesiaStocksScraper failed (attempt {attempt+1}): {e}")
-                        time.sleep(2)
-            
-            # Source 3: IDX Website scraping - Improve headers anti-block
+            # Source 2: IDX Website scraping - Improve headers anti-block
             for attempt in range(3):
                 try:
                     idx_web_symbols = self._fetch_from_idx_website()
@@ -250,7 +120,7 @@ class NonCryptoAssetsProvider:
                     logger.warning(f"IDX website failed (attempt {attempt+1}): {e}")
                     time.sleep(2)
             
-            # Source 4: Wikipedia (backup) - Sudah OK, tambah retry
+            # Source 3: Wikipedia (backup) - Sudah OK, tambah retry
             for attempt in range(3):
                 try:
                     wiki_symbols = self._fetch_from_wikipedia()
@@ -261,41 +131,22 @@ class NonCryptoAssetsProvider:
                     logger.warning(f"Wikipedia failed (attempt {attempt+1}): {e}")
                     time.sleep(2)
             
-            # Source 5: Investing.com Scraper (NEW)
-            if INVESTING_SCRAPER_AVAILABLE:
-                try:
-                    investing_scraper = InvestingScraper()
-                    investing_symbols = []
-                    
-                    # Coba fetch dari metode yang tersedia
-                    if hasattr(investing_scraper, 'fetch_indonesia_stocks'):
-                        indo_stocks = investing_scraper.fetch_indonesia_stocks()
-                        if indo_stocks:
-                            investing_symbols.extend([f"{s.strip().upper()}.JK" for s in indo_stocks if s])
-                    
-                    if hasattr(investing_scraper, 'fetch_all_stocks'):
-                        all_stocks = investing_scraper.fetch_all_stocks()
-                        if all_stocks:
-                            # Filter untuk saham Indonesia
-                            for stock in all_stocks:
-                                if isinstance(stock, dict) and 'symbol' in stock:
-                                    symbol = stock.get('symbol', '').strip().upper()
-                                    if symbol and len(symbol) <= 8:
-                                        investing_symbols.append(f"{symbol}.JK")
-                    
-                    all_symbols.update(investing_symbols)
-                    logger.info(f"✅ Fetched {len(investing_symbols)} symbols from Investing.com Scraper")
-                except Exception as e:
-                    logger.warning(f"Investing.com Scraper failed: {e}")
-            
-            # Source 6: TradingView (dinamis-kan dari statis)
+            # Source 4: Investing.com (NEW ALTERNATIVE) - Scrape untuk list saham ID lengkap
             try:
-                tv_symbols = self._fetch_from_tradingview_dynamic()
+                investing_symbols = self._fetch_from_investing_com()
+                all_symbols.update(investing_symbols)
+                logger.info(f"✅ Fetched {len(investing_symbols)} symbols from Investing.com")
+            except Exception as e:
+                logger.warning(f"Investing.com failed: {e}")
+            
+            # Source 5: TradingView (dinamis-kan dari statis) - Ubah jadi scrape jika possible
+            try:
+                tv_symbols = self._fetch_from_tradingview_dynamic()  # NEW: Dinamis scrape
                 all_symbols.update(tv_symbols)
                 logger.info(f"✅ Fetched {len(tv_symbols)} symbols from TradingView")
             except Exception as e:
                 logger.warning(f"TradingView dynamic failed: {e}, using static fallback")
-                tv_symbols = self._get_static_tradingview()
+                tv_symbols = self._get_static_tradingview()  # Fallback ke statis asli
                 all_symbols.update(tv_symbols)
             
             # Convert to list and format
@@ -548,99 +399,10 @@ class NonCryptoAssetsProvider:
     def _fetch_dynamic_assets(self, category: str, limit: int) -> List[str]:
         """Fetch dinamis untuk forex dan us_stocks."""
         if category == 'us_stocks':
-            return self._fetch_us_stocks_dynamic(limit)
+            return self._get_static_assets(category)
         elif category == 'forex':
-            return self._fetch_forex_dynamic(limit)
+            return self._get_static_assets(category)
         return []
-    
-    def _fetch_forex_dynamic(self, limit: int) -> List[str]:
-        """Fetch dinamis untuk forex pairs."""
-        forex_pairs = set()
-        
-        # Source 1: ForexGeneralScraper
-        if FOREX_SCRAPER_AVAILABLE:
-            try:
-                forex_scraper = ForexGeneralScraper()
-                if hasattr(forex_scraper, 'fetch_pairs'):
-                    pairs = forex_scraper.fetch_pairs(limit)
-                    # Format pairs untuk yfinance (tambahkan =X jika belum ada)
-                    formatted_pairs = []
-                    for pair in pairs:
-                        if isinstance(pair, str) and pair.strip():
-                            pair_clean = pair.strip().upper()
-                            if 'USD' in pair_clean and not pair_clean.endswith('=X'):
-                                pair_clean += '=X'
-                            formatted_pairs.append(pair_clean)
-                    
-                    forex_pairs.update(formatted_pairs)
-                    logger.info(f"✅ Fetched {len(formatted_pairs)} from ForexGeneralScraper")
-            except Exception as e:
-                logger.warning(f"ForexGeneralScraper failed: {e}")
-        
-        # Source 2: InvestingScraper untuk forex
-        if INVESTING_SCRAPER_AVAILABLE:
-            try:
-                investing_scraper = InvestingScraper()
-                if hasattr(investing_scraper, 'fetch_forex'):
-                    investing_forex = investing_scraper.fetch_forex()
-                    if investing_forex:
-                        # Format pairs
-                        formatted_investing = []
-                        for pair in investing_forex:
-                            if isinstance(pair, str) and pair.strip():
-                                pair_clean = pair.strip().upper()
-                                if 'USD' in pair_clean and not pair_clean.endswith('=X'):
-                                    pair_clean += '=X'
-                                formatted_investing.append(pair_clean)
-                        
-                        forex_pairs.update(formatted_investing)
-                        logger.info(f"✅ Fetched {len(formatted_investing)} from Investing.com forex")
-            except Exception as e:
-                logger.warning(f"Investing.com forex fetch failed: {e}")
-        
-        # Source 3: Static list sebagai fallback
-        if not forex_pairs:
-            static_forex = self._get_static_assets('forex')
-            forex_pairs.update(static_forex)
-            logger.info("📦 Using static forex list as fallback")
-        
-        return list(forex_pairs)[:limit]
-    
-    def _fetch_us_stocks_dynamic(self, limit: int) -> List[str]:
-        """Fetch dinamis untuk US stocks."""
-        us_stocks = set()
-        
-        # Source 1: InvestingScraper untuk US stocks
-        if INVESTING_SCRAPER_AVAILABLE:
-            try:
-                investing_scraper = InvestingScraper()
-                if hasattr(investing_scraper, 'fetch_us_stocks'):
-                    stocks = investing_scraper.fetch_us_stocks()
-                    if stocks:
-                        # Format symbols
-                        formatted_stocks = []
-                        for stock in stocks:
-                            if isinstance(stock, str) and stock.strip():
-                                formatted_stocks.append(stock.strip().upper())
-                            elif isinstance(stock, dict) and 'symbol' in stock:
-                                symbol = stock.get('symbol', '').strip().upper()
-                                if symbol:
-                                    formatted_stocks.append(symbol)
-                        
-                        us_stocks.update(formatted_stocks)
-                        logger.info(f"✅ Fetched {len(formatted_stocks)} from Investing.com US stocks")
-            except Exception as e:
-                logger.warning(f"Investing.com US stocks fetch failed: {e}")
-        
-        # Source 2: Static list sebagai base
-        static_us = self._get_static_assets('us_stocks')
-        us_stocks.update(static_us)
-        
-        # Validasi simbol (opsional, bisa di-comment jika terlalu lama)
-        # valid_stocks = self._validate_symbols_parallel(list(us_stocks)[:100])
-        # return valid_stocks[:limit]
-        
-        return list(us_stocks)[:limit]
     
     def _get_static_assets(self, category: str) -> List[str]:
         """List statis sebagai fallback."""
