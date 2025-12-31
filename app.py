@@ -328,6 +328,28 @@ SCALPING_CONFIG_APP = {
     "require_clear_signal": True  # 🔥 PERBAIKAN: Hanya sinyal jelas (LONG/SHORT)
 }
 
+# Regular configuration (non-scalping)
+REGULAR_CONFIG_APP = {
+    "timeframe": "15m",           # 15 menit untuk regular trading
+    "lookback": 100,              # ~25 jam data
+    "min_score": 2.0,             # Min score lebih rendah untuk regular
+    "long_bias": 0.0,             # No bias untuk regular juga
+    "max_signals": 15,            # Max signals regular
+    "min_volume_usd": 50000,      # Volume minimal lebih rendah
+    "price_filter": {
+        "min": 0.001,             # Harga minimal lebih rendah
+        "max": 500                # Harga maksimal lebih tinggi
+    },
+    "entry_range_pct": 0.02,      # 2% entry range untuk regular
+    "atr_multiplier": 1.0,        # ATR multiplier normal
+    "skip_dummy_data": True,
+    "require_real_data": True,
+    "max_volatility": 0.20,       # Volatilitas maksimal lebih tinggi
+    "min_volatility": 0.01,       # Minimal volatilitas lebih tinggi
+    "allow_short": True,          # Allow short untuk regular juga
+    "require_clear_signal": True
+}
+
 # ====================================
 # Helper Functions - ENHANCED
 # ====================================
@@ -427,9 +449,10 @@ def format_currency(amount, market_type, decimal_places=2):
         else:
             return f"{currency_symbol} {amount:,.0f}"
     else:
-        # USD dengan 5 desimal untuk crypto, 2 desimal untuk lainnya
+        # USD dengan 8 desimal untuk crypto, 2 desimal untuk lainnya
         if market_type == "Crypto":
-            return f"{currency_symbol}{amount:,.5f}"
+            # Gunakan 8 digit untuk crypto untuk menghindari rounding error
+            return f"{currency_symbol}{amount:,.8f}"
         else:
             return f"{currency_symbol}{amount:,.2f}"
 
@@ -710,8 +733,8 @@ def get_realtime_price_with_fallback(symbol, bot, entry_price=None):
         traceback.print_exc()
         return None, "Error"
 
-def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
-    """Validate and fix price levels in analysis data"""
+def validate_and_fix_price_levels(analysis, symbol=None, bot=None, is_scalping=False):
+    """Validate and fix price levels in analysis data dengan config yang tepat"""
     if not isinstance(analysis, dict):
         return {'symbol': symbol, 'error': 'Invalid analysis data'}
     
@@ -731,7 +754,10 @@ def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
     
     action = analysis.get('action', 'NEUTRAL')
     
-    # ✅ PERBAIKAN: Hitung Entry Range yang REALISTIS
+    # Gunakan config yang tepat berdasarkan mode
+    config = SCALPING_CONFIG_APP if is_scalping else REGULAR_CONFIG_APP
+    
+    # ✅ PERBAIKAN: Hitung Entry Range yang REALISTIS dengan config yang tepat
     if (analysis.get('entry_range_low', 0) <= 0 or 
         analysis.get('entry_range_high', 0) <= 0 or 
         analysis.get('best_entry', 0) <= 0 or
@@ -742,14 +768,16 @@ def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
         volatility = analysis.get('volatility', 0.02)
         
         if atr > 0:
-            range_size = atr * 0.5
+            # Gunakan multiplier yang sesuai dengan mode
+            range_size = atr * config["atr_multiplier"]
         else:
             range_size = current_price * volatility * 0.5
         
-        min_range = current_price * 0.005
+        # Gunakan entry range yang sesuai dengan mode
+        min_range = current_price * (config["entry_range_pct"] * 0.5)
         range_size = max(range_size, min_range)
         
-        max_range = current_price * 0.03
+        max_range = current_price * (config["entry_range_pct"] * 2)
         range_size = min(range_size, max_range)
         
         if action == "LONG":
@@ -767,7 +795,7 @@ def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
         
         analysis['range_size'] = ((analysis['entry_range_high'] - analysis['entry_range_low']) / current_price) * 100
     
-    # Validasi TP/SL
+    # Validasi TP/SL dengan presisi tinggi
     tp1 = analysis.get('tp1', 0)
     tp2 = analysis.get('tp2', 0) 
     tp3 = analysis.get('tp3', 0)
@@ -777,21 +805,47 @@ def validate_and_fix_price_levels(analysis, symbol=None, bot=None):
         tp1 == tp2 == tp3 == sl == current_price):
         
         if action == "LONG":
-            analysis['tp1'] = current_price * 1.02
-            analysis['tp2'] = current_price * 1.04
-            analysis['tp3'] = current_price * 1.06
-            analysis['sl'] = current_price * 0.98
+            # Gunakan TP/SL yang berbeda dengan presisi tinggi
+            analysis['tp1'] = round(current_price * 1.02, 8)  # +2%
+            analysis['tp2'] = round(current_price * 1.04, 8)  # +4%
+            analysis['tp3'] = round(current_price * 1.06, 8)  # +6%
+            analysis['sl'] = round(current_price * 0.98, 8)   # -2%
             
             tp_levels = sorted([analysis['tp1'], analysis['tp2'], analysis['tp3']])
             analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
             
         else:
-            analysis['tp1'] = current_price * 0.98
-            analysis['tp2'] = current_price * 0.96
-            analysis['tp3'] = current_price * 0.94
-            analysis['sl'] = current_price * 1.02
+            analysis['tp1'] = round(current_price * 0.98, 8)  # -2%
+            analysis['tp2'] = round(current_price * 0.96, 8)  # -4%
+            analysis['tp3'] = round(current_price * 0.94, 8)  # -6%
+            analysis['sl'] = round(current_price * 1.02, 8)   # +2%
             
             tp_levels = sorted([analysis['tp1'], analysis['tp2'], analysis['tp3']], reverse=True)
+            analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
+    
+    # 🔥 PERBAIKAN KRITIS: Pastikan TP levels berbeda minimal 0.1% untuk menghindari overlap
+    action = analysis.get('action', 'NEUTRAL')
+    if action in ["LONG", "SHORT"]:
+        # Ambil nilai yang sudah ada
+        tp1 = analysis.get('tp1', 0)
+        tp2 = analysis.get('tp2', 0)
+        tp3 = analysis.get('tp3', 0)
+        
+        if action == "LONG":
+            # Pastikan TP1 < TP2 < TP3
+            tp_levels = sorted([tp1, tp2, tp3])
+            # Minimal perbedaan: 0.1% dari current_price
+            min_diff = max(current_price * 0.001, 0.000001)
+            for i in range(1, 3):
+                if tp_levels[i] - tp_levels[i-1] < min_diff:
+                    tp_levels[i] = tp_levels[i-1] + min_diff
+            analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
+        else:  # SHORT
+            tp_levels = sorted([tp1, tp2, tp3], reverse=True)
+            min_diff = max(current_price * 0.001, 0.000001)
+            for i in range(1, 3):
+                if tp_levels[i-1] - tp_levels[i] < min_diff:
+                    tp_levels[i] = tp_levels[i-1] - min_diff
             analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
     
     return analysis
@@ -1122,19 +1176,19 @@ def open_position(symbol, action, entry_price=None, tp1=None, tp2=None, tp3=None
         
         if tp1 is None or sl is None:
             if action == "LONG":
-                tp1 = tp1 or current_price * 1.02  # TP1: +2%
-                tp2 = tp2 or current_price * 1.04  # TP2: +4%
-                tp3 = tp3 or current_price * 1.06  # TP3: +6%
-                sl = sl or current_price * 0.98   # SL: -2%
+                tp1 = tp1 or round(current_price * 1.02, 8)  # TP1: +2%
+                tp2 = tp2 or round(current_price * 1.04, 8)  # TP2: +4%
+                tp3 = tp3 or round(current_price * 1.06, 8)  # TP3: +6%
+                sl = sl or round(current_price * 0.98, 8)   # SL: -2%
             else:  # SHORT
-                tp1 = tp1 or current_price * 0.98  # TP1: -2%
-                tp2 = tp2 or current_price * 0.96  # TP2: -4%
-                tp3 = tp3 or current_price * 0.94  # TP3: -6%
-                sl = sl or current_price * 1.02   # SL: +2%
+                tp1 = tp1 or round(current_price * 0.98, 8)  # TP1: -2%
+                tp2 = tp2 or round(current_price * 0.96, 8)  # TP2: -4%
+                tp3 = tp3 or round(current_price * 0.94, 8)  # TP3: -6%
+                sl = sl or round(current_price * 1.02, 8)   # SL: +2%
         else:
             # Use provided TP/SL values
-            tp2 = tp2 or tp1 * 1.02 if action == "LONG" else tp1 * 0.98
-            tp3 = tp3 or tp1 * 1.04 if action == "LONG" else tp1 * 0.96
+            tp2 = tp2 or round(tp1 * 1.02, 8) if action == "LONG" else round(tp1 * 0.98, 8)
+            tp3 = tp3 or round(tp1 * 1.04, 8) if action == "LONG" else round(tp1 * 0.96, 8)
         
         # Generate unique ID untuk session
         session_id = f"pos_{int(time.time())}_{symbol.replace('/', '_')}"
@@ -1341,6 +1395,7 @@ def main_app():
         st.session_state.latest_results = []
         st.session_state.scalping_mode = False  # 🔥 NEW: Scalping mode flag
         st.session_state.scalping_config = SCALPING_CONFIG_APP  # 🔥 NEW: Store config
+        st.session_state.regular_config = REGULAR_CONFIG_APP  # 🔥 NEW: Store regular config
         st.session_state.selected_symbol_display = None
         st.session_state.last_selected = None
         st.session_state.test_positions = []  # 🔥 NEW: Untuk menyimpan posisi sementara
@@ -1350,6 +1405,13 @@ def main_app():
         st.session_state.scan_attempts = 0
         st.session_state.show_all_positions = False  # ✅ PERBAIKAN: Initialize here
         st.session_state.use_risk_management = False  # 🔥 NEW: Flag untuk risk management
+        st.session_state.current_config = REGULAR_CONFIG_APP  # 🔥 NEW: Current config based on mode
+
+    # Update current config berdasarkan mode
+    if st.session_state.scalping_mode:
+        st.session_state.current_config = SCALPING_CONFIG_APP
+    else:
+        st.session_state.current_config = REGULAR_CONFIG_APP
 
     # Sidebar
     with st.sidebar:
@@ -1375,6 +1437,12 @@ def main_app():
         if scalping_mode != st.session_state.scalping_mode:
             st.session_state.scalping_mode = scalping_mode
             st.session_state.scanned_results = []  # Clear old results
+            st.session_state.scalping_results = []  # Clear scalping results
+            # Update current config
+            if scalping_mode:
+                st.session_state.current_config = SCALPING_CONFIG_APP
+            else:
+                st.session_state.current_config = REGULAR_CONFIG_APP
             st.rerun()
         
         if scalping_mode:
@@ -1393,6 +1461,7 @@ def main_app():
                 if st.button("Apply Settings", key="apply_scalping_settings"):
                     SCALPING_CONFIG_APP["min_score"] = min_score_sidebar
                     st.session_state.scalping_config = SCALPING_CONFIG_APP
+                    st.session_state.current_config = SCALPING_CONFIG_APP
                     st.success("✅ Settings applied!")
                     st.rerun()
             
@@ -1405,6 +1474,17 @@ def main_app():
             - Max Price: ${SCALPING_CONFIG_APP["price_filter"]["max"]}
             - Allow Short: ✅ Yes
             - Max Signals: {SCALPING_CONFIG_APP["max_signals"]}
+            """)
+        else:
+            st.info(f"""
+            **Regular Parameters:**
+            - Timeframe: 15m
+            - Min Score: {REGULAR_CONFIG_APP["min_score"]}
+            - Bias: 0.0 (Neutral)
+            - Entry Range: 2.0%
+            - Max Price: ${REGULAR_CONFIG_APP["price_filter"]["max"]}
+            - Allow Short: ✅ Yes
+            - Max Signals: {REGULAR_CONFIG_APP["max_signals"]}
             """)
         
         st.divider()
@@ -1540,6 +1620,8 @@ def main_app():
             
             if st.session_state.scalping_mode:
                 st.success("⚡ SCALPING MODE: ON")
+            else:
+                st.info("📊 REGULAR MODE: ON")
             
             # 🔥 NEW: Tampilkan jumlah aset yang tersedia
             if st.session_state.current_market in ["Saham Indonesia", "US Stocks", "Forex"]:
@@ -1724,15 +1806,28 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_info.append("⚡ **SCALPING:** ON")
-            # 🔥 PERBAIKAN: Tampilkan konfigurasi scalping
+            # 🔥 PERBAIKAN: Tampilkan konfigurasi yang tepat
+            config = st.session_state.current_config
             st.info(f"""
-            ⚡ **SCALPING CONFIGURATION:**
-            - Min Score: `{SCALPING_CONFIG_APP['min_score']}`
-            - Price Range: `${SCALPING_CONFIG_APP['price_filter']['min']}` - `${SCALPING_CONFIG_APP['price_filter']['max']}`
-            - Bias: `{SCALPING_CONFIG_APP['long_bias']}` (Neutral)
-            - Entry Range: `{SCALPING_CONFIG_APP['entry_range_pct']*100:.1f}%`
+            ⚡ **{('SCALPING' if st.session_state.scalping_mode else 'REGULAR')} CONFIGURATION:**
+            - Min Score: `{config['min_score']}`
+            - Price Range: `${config['price_filter']['min']}` - `${config['price_filter']['max']}`
+            - Bias: `{config['long_bias']}` (Neutral)
+            - Entry Range: `{config['entry_range_pct']*100:.1f}%`
             - Allow Short: ✅ Yes
-            - Max Signals: `{SCALPING_CONFIG_APP['max_signals']}`
+            - Max Signals: `{config['max_signals']}`
+            """)
+        else:
+            mode_info.append("📊 **REGULAR:** ON")
+            config = st.session_state.current_config
+            st.info(f"""
+            📊 **REGULAR CONFIGURATION:**
+            - Min Score: `{config['min_score']}`
+            - Price Range: `${config['price_filter']['min']}` - `${config['price_filter']['max']}`
+            - Bias: `{config['long_bias']}` (Neutral)
+            - Entry Range: `{config['entry_range_pct']*100:.1f}%`
+            - Allow Short: ✅ Yes
+            - Max Signals: `{config['max_signals']}`
             """)
         
         # 🔥 NEW: Asset pool information
@@ -1830,19 +1925,23 @@ def main_app():
                                 result['symbol'] = formatted_symbol
                                 result['original_symbol'] = original_symbol
                                 
-                                validated_result = validate_and_fix_price_levels(result, formatted_symbol, bot)
+                                # Gunakan config yang tepat untuk validasi
+                                validated_result = validate_and_fix_price_levels(
+                                    result, formatted_symbol, bot, st.session_state.scalping_mode
+                                )
                                 
                                 # 🔥 PERBAIKAN: Filter untuk scalping yang lebih fleksibel
                                 if st.session_state.scalping_mode:
                                     current_score = validated_result.get('score', 0)
                                     current_price = get_valid_price(validated_result, formatted_symbol, bot)
+                                    action = validated_result.get('action', 'NEUTRAL')
                                     
                                     # Kriteria tanpa bias
                                     is_scalping_suitable = (
                                         abs(current_score) >= SCALPING_CONFIG_APP["min_score"] and
-                                        current_price >= 0.05 and
-                                        current_price <= 200 and
-                                        validated_result.get('action', 'NEUTRAL') != 'NEUTRAL'
+                                        current_price >= SCALPING_CONFIG_APP["price_filter"]["min"] and
+                                        current_price <= SCALPING_CONFIG_APP["price_filter"]["max"] and
+                                        action != 'NEUTRAL'
                                     )
                                     
                                     if is_scalping_suitable:
@@ -1878,7 +1977,7 @@ def main_app():
                                 st.info(f"""
                                 **Possible reasons:**
                                 1. Score too low (need ≥ {SCALPING_CONFIG_APP['min_score']})
-                                2. Price outside range ($0.05 - $200)
+                                2. Price outside range (${SCALPING_CONFIG_APP['price_filter']['min']} - ${SCALPING_CONFIG_APP['price_filter']['max']})
                                 3. NEUTRAL action (need LONG/SHORT)
                                 4. Low volume atau data quality
                                 """)
@@ -2041,7 +2140,7 @@ def main_app():
                             value=float(default_entry),
                             min_value=0.00001,
                             step=0.0001,
-                            format="%.5f",
+                            format="%.8f",  # 🔥 PERBAIKAN: 8 digit untuk crypto
                             key=f"entry_price_{symbol}"
                         )
                         
@@ -2087,22 +2186,22 @@ def main_app():
                         
                         # Calculate default TP/SL based on action
                         if action == "LONG":
-                            tp1_default = entry_price * 1.02
-                            tp2_default = entry_price * 1.04
-                            tp3_default = entry_price * 1.06
-                            sl_default = entry_price * 0.98
+                            tp1_default = round(entry_price * 1.02, 8)
+                            tp2_default = round(entry_price * 1.04, 8)
+                            tp3_default = round(entry_price * 1.06, 8)
+                            sl_default = round(entry_price * 0.98, 8)
                         else:
-                            tp1_default = entry_price * 0.98
-                            tp2_default = entry_price * 0.96
-                            tp3_default = entry_price * 0.94
-                            sl_default = entry_price * 1.02
+                            tp1_default = round(entry_price * 0.98, 8)
+                            tp2_default = round(entry_price * 0.96, 8)
+                            tp3_default = round(entry_price * 0.94, 8)
+                            sl_default = round(entry_price * 1.02, 8)
                         
                         tp1 = st.number_input(
                             f"TP1 ({currency_symbol}):",
                             value=tp1_default,
                             min_value=0.00001,
                             step=0.0001,
-                            format="%.5f",
+                            format="%.8f",
                             key=f"tp1_{symbol}"
                         )
                         
@@ -2111,7 +2210,7 @@ def main_app():
                             value=tp2_default,
                             min_value=0.00001,
                             step=0.0001,
-                            format="%.5f",
+                            format="%.8f",
                             key=f"tp2_{symbol}"
                         )
                         
@@ -2120,7 +2219,7 @@ def main_app():
                             value=tp3_default,
                             min_value=0.00001,
                             step=0.0001,
-                            format="%.5f",
+                            format="%.8f",
                             key=f"tp3_{symbol}"
                         )
                         
@@ -2129,7 +2228,7 @@ def main_app():
                             value=sl_default,
                             min_value=0.00001,
                             step=0.0001,
-                            format="%.5f",
+                            format="%.8f",
                             key=f"sl_{symbol}"
                         )
                     
@@ -2239,6 +2338,7 @@ def main_app():
             
             if st.button("⚡ Enable Scalping Mode", key="enable_scalping_tab"):
                 st.session_state.scalping_mode = True
+                st.session_state.current_config = SCALPING_CONFIG_APP
                 st.rerun()
         else:
             st.success("⚡ SCALPING MODE ACTIVE")
@@ -2266,6 +2366,7 @@ def main_app():
                     SCALPING_CONFIG_APP["min_score"] = min_score
                     SCALPING_CONFIG_APP["entry_range_pct"] = entry_range
                     st.session_state.scalping_config = SCALPING_CONFIG_APP
+                    st.session_state.current_config = SCALPING_CONFIG_APP
                     st.success("✅ Scalping configuration updated!")
                     st.rerun()
             
@@ -2419,6 +2520,8 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_status.append("⚡ **SCALPING:** ON")
+        else:
+            mode_status.append("📊 **REGULAR:** ON")
         
         # Asset pool info
         if st.session_state.current_market in ["Saham Indonesia", "US Stocks"]:
@@ -2493,7 +2596,10 @@ def main_app():
                                     analysis['current_price'] = current_price
                                     analysis['last'] = current_price
                                 
-                                analysis = validate_and_fix_price_levels(analysis, formatted_symbol, bot)
+                                # Gunakan config yang tepat untuk validasi
+                                analysis = validate_and_fix_price_levels(
+                                    analysis, formatted_symbol, bot, st.session_state.scalping_mode
+                                )
                                 
                                 analysis['formatted_symbol'] = formatted_symbol
                                 analysis['original_input'] = symbol_input
@@ -2599,7 +2705,7 @@ def main_app():
             with col2:
                 st.metric("RSI", f"{safe_get(analysis, 'rsi', 0):.1f}")
                 st.metric("Volume Ratio", f"{safe_get(analysis, 'volume_ratio', 0):.2f}")
-                st.metric("ATR", f"{safe_get(analysis, 'atr', 0):.5f}")
+                st.metric("ATR", f"{safe_get(analysis, 'atr', 0):.8f}")  # 🔥 PERBAIKAN: 8 digit untuk ATR
                 
                 if 'tp_probabilities' in analysis:
                     probs = analysis['tp_probabilities']
@@ -2661,6 +2767,8 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_info.append("⚡ **SCALPING:** ON")
+        else:
+            mode_info.append("📊 **REGULAR:** ON")
         
         # Asset pool info
         if st.session_state.current_market in ["Saham Indonesia", "US Stocks"]:
@@ -2741,7 +2849,7 @@ def main_app():
                 value=safe_default_price,
                 min_value=0.00001,
                 step=0.01, 
-                format="%.5f",
+                format="%.8f",  # 🔥 PERBAIKAN: 8 digit untuk crypto
                 key="custom_entry_price_tab4"
             )
         
@@ -2814,15 +2922,15 @@ def main_app():
             
             # Calculate TP/SL automatically
             if action_custom == "LONG":
-                tp1_auto = entry_price_custom * (1 + tp_percent/100)
-                tp2_auto = entry_price_custom * (1 + (tp_percent*2)/100)
-                tp3_auto = entry_price_custom * (1 + (tp_percent*3)/100)
-                sl_auto = entry_price_custom * (1 - sl_percent/100)
+                tp1_auto = round(entry_price_custom * (1 + tp_percent/100), 8)
+                tp2_auto = round(entry_price_custom * (1 + (tp_percent*2)/100), 8)
+                tp3_auto = round(entry_price_custom * (1 + (tp_percent*3)/100), 8)
+                sl_auto = round(entry_price_custom * (1 - sl_percent/100), 8)
             else:  # SHORT
-                tp1_auto = entry_price_custom * (1 - tp_percent/100)
-                tp2_auto = entry_price_custom * (1 - (tp_percent*2)/100)
-                tp3_auto = entry_price_custom * (1 - (tp_percent*3)/100)
-                sl_auto = entry_price_custom * (1 + sl_percent/100)
+                tp1_auto = round(entry_price_custom * (1 - tp_percent/100), 8)
+                tp2_auto = round(entry_price_custom * (1 - (tp_percent*2)/100), 8)
+                tp3_auto = round(entry_price_custom * (1 - (tp_percent*3)/100), 8)
+                sl_auto = round(entry_price_custom * (1 + sl_percent/100), 8)
             
             # Assign auto values
             tp1_custom, tp2_custom, tp3_custom, sl_custom = tp1_auto, tp2_auto, tp3_auto, sl_auto
@@ -2851,7 +2959,7 @@ def main_app():
                     value=max(default_tp1, entry_price_custom * 1.02),
                     min_value=0.00001,
                     step=0.01,
-                    format="%.5f",
+                    format="%.8f",
                     key="manual_tp1"
                 )
                 
@@ -2860,7 +2968,7 @@ def main_app():
                     value=max(default_tp2, entry_price_custom * 1.04),
                     min_value=0.00001,
                     step=0.01,
-                    format="%.5f",
+                    format="%.8f",
                     key="manual_tp2"
                 )
                 
@@ -2869,7 +2977,7 @@ def main_app():
                     value=max(default_tp3, entry_price_custom * 1.06),
                     min_value=0.00001,
                     step=0.01,
-                    format="%.5f",
+                    format="%.8f",
                     key="manual_tp3"
                 )
             
@@ -2882,7 +2990,7 @@ def main_app():
                     value=max(default_sl, entry_price_custom * 0.98),
                     min_value=0.00001,
                     step=0.01,
-                    format="%.5f",
+                    format="%.8f",
                     key="manual_sl"
                 )
                 
@@ -2891,15 +2999,15 @@ def main_app():
                 col_sl1, col_sl2, col_sl3 = st.columns(3)
                 with col_sl1:
                     if st.button("-2%", key="sl_minus_2"):
-                        st.session_state.manual_sl = entry_price_custom * 0.98
+                        st.session_state.manual_sl = round(entry_price_custom * 0.98, 8)
                         st.rerun()
                 with col_sl2:
                     if st.button("-5%", key="sl_minus_5"):
-                        st.session_state.manual_sl = entry_price_custom * 0.95
+                        st.session_state.manual_sl = round(entry_price_custom * 0.95, 8)
                         st.rerun()
                 with col_sl3:
                     if st.button("-10%", key="sl_minus_10"):
-                        st.session_state.manual_sl = entry_price_custom * 0.90
+                        st.session_state.manual_sl = round(entry_price_custom * 0.90, 8)
                         st.rerun()
         
         # Calculate Risk/Reward
@@ -3026,6 +3134,8 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_info.append("⚡ **SCALPING:** ON")
+        else:
+            mode_info.append("📊 **REGULAR:** ON")
         
         # Asset pool info
         if st.session_state.current_market in ["Saham Indonesia", "US Stocks"]:
@@ -3420,6 +3530,8 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_info.append("⚡ **SCALPING:** ON")
+        else:
+            mode_info.append("📊 **REGULAR:** ON")
         
         if mode_info:
             st.info(" | ".join(mode_info))
@@ -3597,6 +3709,8 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_info.append("⚡ **SCALPING:** ON")
+        else:
+            mode_info.append("📊 **REGULAR:** ON")
         
         if mode_info:
             st.info(" | ".join(mode_info))
@@ -3690,6 +3804,8 @@ def main_app():
         
         if st.session_state.scalping_mode:
             mode_info.append("⚡ **SCALPING:** ON")
+        else:
+            mode_info.append("📊 **REGULAR:** ON")
         
         if mode_info:
             st.info(" | ".join(mode_info))
@@ -3832,6 +3948,8 @@ def main():
         'latest_results': [],
         'scalping_mode': False,
         'scalping_config': SCALPING_CONFIG_APP,
+        'regular_config': REGULAR_CONFIG_APP,
+        'current_config': REGULAR_CONFIG_APP,
         'selected_symbol_display': None,
         'last_selected': None,
         'test_positions': [],
