@@ -356,6 +356,10 @@ except ImportError as e:
             elif category == 'us_stocks':
                 return ['AAPL', 'MSFT', 'GOOGL'][:limit]
             return []
+        
+        def get_active_assets(self, category, min_volume=1000000, min_volatility=0.025, limit=500):
+            logger.warning(f"Dummy get_active_assets untuk {category}")
+            return self.get_assets(category, limit)
     
     NonCryptoAssetsProvider = NonCryptoAssetsProviderDummy
 
@@ -3495,12 +3499,16 @@ class EnhancedTradingBot:
                         return None
             else:
                 # **NORMAL MODE**
+                # **PERBAIKAN: Gunakan timeframe='1d' untuk saham_id**
+                timeframe = '1d' if self.mode == 'saham_id' else self.config.get("timeframe", "1h")
+                lookback = 90 if self.mode == 'saham_id' else 200
+                
                 if get_trading_data is not None:
                     logger.info(f"    🔧 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
                     df = get_trading_data(formatted_symbol, self.data_provider)
                 else:
                     logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
-                    df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
+                    df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
@@ -3605,13 +3613,17 @@ class EnhancedTradingBot:
             # Auto detect type
             detected_type, formatted_symbol = auto_detect_trading_type(symbol)
             
+            # **PERBAIKAN: Gunakan timeframe='1d' untuk saham_id**
+            timeframe = '1d' if self.mode == 'saham_id' else self.config.get("timeframe", "1h")
+            lookback = 90 if self.mode == 'saham_id' else 200
+            
             # Get data menggunakan get_trading_data jika tersedia
             if get_trading_data is not None:
                 logger.info(f"🔍 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
                 df = get_trading_data(formatted_symbol, self.data_provider)
             else:
                 logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
-                df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 100)
+                df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
@@ -3657,7 +3669,8 @@ class EnhancedTradingBot:
             detected_type, formatted_symbol = auto_detect_trading_type(symbol)
             
             if timeframe is None:
-                timeframe = self.config.get("timeframe", "1h")
+                timeframe = '1d' if self.mode == 'saham_id' else self.config.get("timeframe", "1h")
+                limit = 90 if self.mode == 'saham_id' else limit
                 
             logger.info(f"🔧 Running advanced backtest for {formatted_symbol} ({detected_type})...")
             
@@ -3820,13 +3833,17 @@ class EnhancedTradingBot:
         try:
             detected_type, formatted_symbol = auto_detect_trading_type(symbol)
             
+            # **PERBAIKAN: Gunakan timeframe='1d' untuk saham_id**
+            timeframe = '1d' if self.mode == 'saham_id' else self.config.get("timeframe", "1h")
+            lookback = 90 if self.mode == 'saham_id' else 50
+            
             # Get data menggunakan get_trading_data jika tersedia
             if get_trading_data is not None:
                 logger.info(f"🔍 Menggunakan get_trading_data untuk {formatted_symbol}")
                 df = get_trading_data(formatted_symbol, self.data_provider)
             else:
                 logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk {formatted_symbol}")
-                df = self.data_provider.get_ohlcv(formatted_symbol, self.config.get("timeframe", "1h"), 50)
+                df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             if df is None or df.empty or len(df) < 20:
@@ -4096,7 +4113,17 @@ class EnhancedTradingBot:
                 
                 # Test NonCryptoAssetsProvider
                 if self.non_crypto_provider:
-                    assets = self.get_popular_assets(5)
+                    # **PERBAIKAN: Gunakan get_active_assets() untuk saham_id**
+                    if self.mode == 'saham_id' and hasattr(self.non_crypto_provider, 'get_active_assets'):
+                        assets = self.non_crypto_provider.get_active_assets(
+                            category='indonesia_stocks',
+                            min_volume=1000000,
+                            min_volatility=0.025,
+                            limit=25
+                        )
+                    else:
+                        assets = self.get_popular_assets(5)
+                        
                     if assets:
                         asset_symbols = [f"{a['symbol']} ({a['name']})" for a in assets[:5]]
                         logger.info(f"  ✅ NonCryptoAssetsProvider test passed")
@@ -4129,11 +4156,15 @@ class EnhancedTradingBot:
                 test_symbol = test_asset.get('formatted_symbol', test_asset.get('symbol'))
                 logger.info(f"  Testing OHLCV for: {test_symbol}")
                 
+                # **PERBAIKAN: Gunakan timeframe='1d' untuk saham_id**
+                timeframe = '1d' if self.mode == 'saham_id' else '1h'
+                lookback = 90 if self.mode == 'saham_id' else 10
+                
                 # Gunakan get_trading_data jika tersedia
                 if get_trading_data is not None:
                     df = get_trading_data(test_symbol, self.data_provider)
                 else:
-                    df = self.data_provider.get_ohlcv(test_symbol, '1h', 10)
+                    df = self.data_provider.get_ohlcv(test_symbol, timeframe, lookback)
                 
                 # Validasi data
                 if df is not None and not df.empty:
@@ -4295,10 +4326,27 @@ class TradingCore:
     def scan_market(self, scan_type="standard", limit=50):
         """Scan market dengan universal provider"""
         try:
-            logger.info(f"🔍 Scanning {self.trading_type} market ({scan_type})...")
+            market_type = self.config.get("market_type", "crypto")
+            timeframe = '1d' if market_type == 'saham_id' else '1h'  # PERBAIKAN: '1d' untuk saham_id
+            lookback = 90 if market_type == 'saham_id' else 200     # 90 hari untuk saham
             
-            # Get assets
-            assets = self.data_provider.get_popular_assets(limit=limit)
+            logger.info(f"🔍 Scanning {self.trading_type} market ({scan_type}) | Timeframe: {timeframe} | Lookback: {lookback}")
+            
+            # PERBAIKAN: Gunakan active assets dari provider untuk saham_id dengan multi-threading
+            if market_type == 'saham_id':
+                # **PERBAIKAN: Gunakan get_active_assets() untuk efisiensi**
+                if hasattr(self, 'non_crypto_provider') and hasattr(self.non_crypto_provider, 'get_active_assets'):
+                    symbols = self.non_crypto_provider.get_active_assets(
+                        category='indonesia_stocks',
+                        min_volume=1000000,
+                        min_volatility=0.025,
+                        limit=25  # **PERBAIKAN: Scan 25 saham cepat**
+                    )
+                    assets = [{'symbol': s} for s in symbols]
+                else:
+                    assets = self.data_provider.get_popular_assets(limit=25)
+            else:
+                assets = self.data_provider.get_popular_assets(limit=limit)
             
             if not assets:
                 logger.error("❌ No assets found for scanning")
@@ -4306,40 +4354,28 @@ class TradingCore:
             
             logger.info(f"📊 Found {len(assets)} assets for scanning")
             
-            # Proses scanning...
+            # **PERBAIKAN: Multi-threading untuk scan cepat**
             results = []
-            for asset in assets[:20]:
-                symbol = asset['symbol'] if isinstance(asset, dict) else asset
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_asset = {}
+                for asset in assets[:25]:  # **PERBAIKAN: Maksimal 25 assets untuk scanning cepat**
+                    symbol = asset['symbol'] if isinstance(asset, dict) else asset
+                    future_to_asset[executor.submit(self._analyze_symbol, symbol, timeframe, lookback, market_type)] = symbol
                 
-                try:
-                    # Get data menggunakan get_trading_data jika tersedia
-                    if get_trading_data is not None:
-                        df = get_trading_data(symbol, self.data_provider)
-                    else:
-                        df = self.data_provider.get_ohlcv(
-                            symbol=symbol,
-                            timeframe=self.config.get("timeframe", "1h"),
-                            limit=200
-                        )
-                    
-                    # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
-                    if df is None or df.empty:
-                        continue
-                    
-                    # Analisis dengan strategy (TANPA BIAS)
-                    signal = self.strategy.analyze(df, symbol)
-                    
-                    if signal and signal.get('action') != 'hold':
-                        results.append({
-                            'symbol': symbol,
-                            'signal': signal,
-                            'price': df['close'].iloc[-1] if len(df) > 0 else 0,
-                            'data_points': len(df)
-                        })
-                        
-                except Exception as e:
-                    logger.debug(f"❌ Failed to analyze {symbol}: {e}")
-                    continue
+                for future in concurrent.futures.as_completed(future_to_asset):
+                    symbol = future_to_asset[future]
+                    try:
+                        signal = future.result(timeout=30)
+                        if signal and signal.get('action') != 'NEUTRAL':
+                            # **PERBAIKAN: Block SHORT untuk saham_id**
+                            if market_type == 'saham_id' and signal['action'] == 'SHORT':
+                                signal['action'] = 'NEUTRAL'
+                                signal['notes'] = "SHORT diblokir untuk saham Indonesia (regulasi IDX)"
+                            
+                            if signal['action'] != 'NEUTRAL':
+                                results.append(signal)
+                    except Exception as e:
+                        logger.debug(f"❌ Failed to analyze {symbol}: {e}")
             
             logger.info(f"✅ Scan complete: {len(results)} signals found")
             return results
@@ -4347,6 +4383,61 @@ class TradingCore:
         except Exception as e:
             logger.error(f"❌ Market scan failed: {e}")
             return []
+    
+    def _analyze_symbol(self, symbol, timeframe, lookback, market_type):
+        """Helper untuk analisis per symbol"""
+        try:
+            time.sleep(1)  # Delay untuk rate limit
+            
+            # Get data menggunakan get_trading_data jika tersedia
+            if get_trading_data is not None:
+                df = get_trading_data(symbol, self.data_provider)
+            else:
+                df = self.data_provider.get_ohlcv(symbol, timeframe, lookback)
+            
+            if df is None or df.empty or len(df) < 40:
+                return None
+            
+            # Buat strategy berdasarkan market type
+            if market_type == 'saham_id':
+                # **PERBAIKAN: Gunakan spot strategy untuk saham_id (no leverage)**
+                strategy = TechnicalAnalysisStrategy(
+                    market_type=market_type,
+                    trading_type="spot",
+                    atr_multiplier=1.0,
+                    entry_range_pct=0.02
+                )
+            else:
+                # Untuk crypto, auto-detect type
+                detected_type, _ = auto_detect_trading_type(symbol)
+                if detected_type == "futures":
+                    strategy = TechnicalAnalysisStrategy(
+                        market_type=market_type,
+                        trading_type="futures",
+                        atr_multiplier=1.0,
+                        entry_range_pct=0.02
+                    )
+                else:
+                    strategy = TechnicalAnalysisStrategy(
+                        market_type=market_type,
+                        trading_type="spot",
+                        atr_multiplier=1.0,
+                        entry_range_pct=0.02
+                    )
+            
+            signal = strategy.analyze(df, symbol)
+            
+            return {
+                'symbol': symbol,
+                'action': signal.get('action', 'NEUTRAL'),
+                'score': signal.get('score', 0),
+                'price': df['close'].iloc[-1] if len(df) > 0 else 0,
+                'data_points': len(df)
+            }
+            
+        except Exception as e:
+            logger.debug(f"❌ Failed to analyze {symbol}: {e}")
+            return None
     
     def get_health_status(self):
         """Get health status dari provider"""
@@ -4454,6 +4545,10 @@ def test_universal_provider():
     print("   SHORT TIDAK diizinkan untuk Saham Indonesia (sesuai regulasi IDX)")
     print("   SCALPING mode dengan filter ketat dan timeframe 5m")
     print("   SUPPORT 500+ ASSETS untuk non-crypto markets")
+    print("   ✅ PERBAIKAN: Menggunakan get_active_assets() untuk efisiensi scanning")
+    print("   ✅ PERBAIKAN: Timeframe='1d' untuk saham_id")
+    print("   ✅ PERBAIKAN: Multi-threading untuk scan 25 saham cepat")
+    print("   ✅ PERBAIKAN: SHORT diblokir untuk saham_id")
 
 def test_non_crypto_assets_500():
     """Test khusus untuk 500+ aset non-crypto"""
@@ -4541,6 +4636,10 @@ def test_non_crypto_assets_500():
     print("   Cache 3 hari untuk mengurangi API calls")
     print("   Fallback ke list statis jika provider gagal")
     print("   Multi-threading untuk scanning cepat")
+    print("   ✅ PERBAIKAN: Menggunakan get_active_assets() untuk efisiensi scanning")
+    print("   ✅ PERBAIKAN: Timeframe='1d' untuk saham_id")
+    print("   ✅ PERBAIKAN: Multi-threading untuk scan 25 saham cepat")
+    print("   ✅ PERBAIKAN: SHORT diblokir untuk saham_id")
 
 if __name__ == "__main__":
     test_universal_provider()
@@ -4587,4 +4686,15 @@ if __name__ == "__main__":
     print("   - Hanya analisa aset aktif dengan volume > 1 juta")
     print("   - Minimal volatilitas 2.5% untuk filter aset liquid")
     print("   - Fallback ke get_assets() jika method tidak tersedia")
+    print("🎯 PERBAIKAN BARU: Timeframe='1d' untuk saham_id")
+    print("   - Data harian untuk analisis fundamental")
+    print("   - Lookback 90 hari (3 bulan) untuk saham")
+    print("🎯 PERBAIKAN BARU: Multi-threading untuk scan 25 saham cepat")
+    print("   - 5 workers untuk analisis paralel")
+    print("   - Timeout 30 detik per saham")
+    print("   - Focus pada 25 saham likuid teratas")
+    print("🎯 PERBAIKAN BARU: SHORT diblokir untuk saham_id")
+    print("   - Sesuai regulasi IDX (tidak mengizinkan short selling)")
+    print("   - Semua sinyal SHORT diubah menjadi NEUTRAL")
+    print("   - Pesan jelas bahwa SHORT tidak diizinkan")
     print("="*60)
