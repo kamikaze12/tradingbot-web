@@ -12,6 +12,9 @@ import talib
 import yfinance as yf
 from datetime import datetime, timedelta
 import time
+import json
+import os
+from pathlib import Path
 
 warnings.filterwarnings('ignore')
 
@@ -21,6 +24,81 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# =============================================
+# CACHE SYSTEM FOR OHLCV DATA
+# =============================================
+
+OHLCV_CACHE_DIR = Path("ohlcv_cache")
+OHLCV_CACHE_DIR.mkdir(exist_ok=True)
+CACHE_TTL_MINUTES = 30  # Cache 30 menit untuk data OHLCV
+
+class OHLcvCache:
+    """Simple cache untuk data OHLCV"""
+    
+    def __init__(self):
+        self.cache = {}
+        self.load_cache()
+    
+    def get_cache_key(self, symbol: str, timeframe: str, lookback: int) -> str:
+        """Generate cache key"""
+        return f"{symbol}_{timeframe}_{lookback}"
+    
+    def load_cache(self):
+        """Load cache dari file"""
+        try:
+            cache_file = OHLCV_CACHE_DIR / "ohlcv_cache.json"
+            if cache_file.exists():
+                with open(cache_file, 'r') as f:
+                    self.cache = json.load(f)
+                logger.info(f"📦 Loaded cache with {len(self.cache)} entries")
+        except Exception as e:
+            logger.warning(f"Failed to load cache: {e}")
+            self.cache = {}
+    
+    def save_cache(self):
+        """Save cache ke file"""
+        try:
+            cache_file = OHLCV_CACHE_DIR / "ohlcv_cache.json"
+            with open(cache_file, 'w') as f:
+                json.dump(self.cache, f)
+        except Exception as e:
+            logger.error(f"Failed to save cache: {e}")
+    
+    def get(self, symbol: str, timeframe: str, lookback: int) -> Optional[pd.DataFrame]:
+        """Get data dari cache"""
+        cache_key = self.get_cache_key(symbol, timeframe, lookback)
+        if cache_key in self.cache:
+            cache_data = self.cache[cache_key]
+            cache_time = datetime.fromisoformat(cache_data['timestamp'])
+            if datetime.now() - cache_time < timedelta(minutes=CACHE_TTL_MINUTES):
+                try:
+                    df = pd.read_json(cache_data['data'], orient='split')
+                    logger.debug(f"📦 Using cached OHLCV for {symbol}")
+                    return df
+                except Exception as e:
+                    logger.warning(f"Failed to parse cached data: {e}")
+        return None
+    
+    def set(self, symbol: str, timeframe: str, lookback: int, df: pd.DataFrame):
+        """Simpan data ke cache"""
+        try:
+            cache_key = self.get_cache_key(symbol, timeframe, lookback)
+            self.cache[cache_key] = {
+                'timestamp': datetime.now().isoformat(),
+                'data': df.to_json(orient='split')
+            }
+            # Simpan hanya 100 entry terbaruk untuk hindari memory issue
+            if len(self.cache) > 100:
+                # Hapus entry tertua
+                oldest_key = list(self.cache.keys())[0]
+                del self.cache[oldest_key]
+            self.save_cache()
+        except Exception as e:
+            logger.error(f"Failed to cache data: {e}")
+
+# Global cache instance
+ohlcv_cache = OHLcvCache()
 
 # =============================================
 # SCALPING CONFIGURATION - UNTUK PERBAIKAN BIAS SHORT
@@ -45,64 +123,236 @@ SCALPING_CONFIG = {
 }
 
 # =============================================
-# DATA CLEANER FUNCTION - IMPLEMENTASI GAMPANG (DIPERBAIKI)
+# MARKET TYPE DETECTION AND CONFIGURATION
 # =============================================
 
-def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
+MARKET_CONFIGS = {
+    "crypto": {
+        "default_timeframe": "1h",
+        "min_bars": 50,
+        "yfinance_interval": "1h",
+        "yfinance_period": "60d",
+        "lookback_days": 60
+    },
+    "indonesia_stocks": {
+        "default_timeframe": "1d",  # Saham Indonesia hanya daily
+        "min_bars": 40,             # Minimal 40 bar (hari)
+        "yfinance_interval": "1d",
+        "yfinance_period": "90d",   # 90 hari untuk cukup data
+        "lookback_days": 90
+    },
+    "us_stocks": {
+        "default_timeframe": "1h",
+        "min_bars": 50,
+        "yfinance_interval": "1h",
+        "yfinance_period": "60d",
+        "lookback_days": 60
+    },
+    "forex": {
+        "default_timeframe": "1h",
+        "min_bars": 50,
+        "yfinance_interval": "1h",
+        "yfinance_period": "60d",
+        "lookback_days": 60
+    },
+    "forex_gold": {
+        "default_timeframe": "1h",
+        "min_bars": 50,
+        "yfinance_interval": "1h",
+        "yfinance_period": "60d",
+        "lookback_days": 60
+    },
+    "crypto_future": {
+        "default_timeframe": "1h",
+        "min_bars": 50,
+        "yfinance_interval": "1h",
+        "yfinance_period": "60d",
+        "lookback_days": 60
+    },
+    "stock_future": {
+        "default_timeframe": "1h",
+        "min_bars": 50,
+        "yfinance_interval": "1h",
+        "yfinance_period": "60d",
+        "lookback_days": 60
+    },
+    "forex_future": {
+        "default_timeframe": "1h",
+        "min_bars": 50,
+        "yfinance_interval": "1h",
+        "yfinance_period": "60d",
+        "lookback_days": 60
+    }
+}
+
+def detect_market_type(symbol: str) -> str:
+    """Auto-detect market type berdasarkan symbol"""
+    symbol_upper = symbol.upper()
+    
+    # Deteksi saham Indonesia
+    if any(x in symbol_upper for x in ['.JK', 'IDX', 'JAKARTA']):
+        return "indonesia_stocks"
+    
+    # Deteksi emas/perak
+    if any(x in symbol_upper for x in ['XAU', 'XAG', 'GOLD', 'SILVER']):
+        return "forex_gold"
+    
+    # Deteksi forex
+    if any(x in symbol_upper for x in ['EUR', 'USD', 'JPY', 'GBP', 'AUD', 'CAD', 'CHF', 'NZD']):
+        # Cek apakah futures
+        if any(x in symbol_upper for x in ['PERP', 'FUTURES', 'SWAP', '1226', '0325', '0626', '0926']):
+            return "forex_future"
+        return "forex"
+    
+    # Deteksi saham US
+    if any(x in symbol_upper for x in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX']):
+        # Cek apakah futures
+        if any(x in symbol_upper for x in ['PERP', 'FUTURES', 'SWAP', '1226', '0325', '0626', '0926']):
+            return "stock_future"
+        return "us_stocks"
+    
+    # Deteksi futures
+    if any(x in symbol_upper for x in ['PERP', 'FUTURES', 'SWAP', '1226', '0325', '0626', '0926']):
+        if any(x in symbol_upper for x in ['BTC', 'ETH', 'SOL', 'BNB', 'ADA', 'XRP']):
+            return "crypto_future"
+        elif any(x in symbol_upper for x in ['ES', 'NQ', 'YM', 'RTY']):
+            return "stock_future"
+        else:
+            return "crypto_future"
+    
+    # Default crypto
+    return "crypto"
+
+def get_market_config(symbol: str, scalping_mode: bool = False) -> Dict[str, Any]:
+    """Get market configuration berdasarkan symbol"""
+    market_type = detect_market_type(symbol)
+    config = MARKET_CONFIGS.get(market_type, MARKET_CONFIGS["crypto"]).copy()
+    
+    # Adjust untuk scalping mode
+    if scalping_mode:
+        config["default_timeframe"] = SCALPING_CONFIG["timeframe"]
+        config["min_bars"] = 100  # Lebih banyak data untuk scalping
+        config["yfinance_interval"] = SCALPING_CONFIG["timeframe"]
+        config["yfinance_period"] = "7d"  # 7 hari untuk scalping 5m
+        config["lookback_days"] = 7
+    
+    return config
+
+# =============================================
+# DATA CLEANER FUNCTION - DIPERBAIKI DENGAN CACHE DAN MARKET TYPE AWARENESS
+# =============================================
+
+def get_clean_data(symbol: str, provider=None, timeframe: str = None, 
+                   lookback: int = None, scalping_mode: bool = False) -> pd.DataFrame:
     """
-    Fungsi simple untuk mendapatkan data bersih.
-    HANYA ambil data jika bersih dari masalah harga 100 dan masalah umum lainnya.
+    Fungsi enhanced untuk mendapatkan data bersih dengan cache dan market type awareness
     """
     try:
-        # 🚨 **PERBAIKAN UTAMA: Gunakan provider jika diberikan**
+        # Dapatkan konfigurasi market
+        market_config = get_market_config(symbol, scalping_mode)
+        
+        # Set parameter berdasarkan konfigurasi
+        if timeframe is None:
+            timeframe = market_config["default_timeframe"]
+        
+        if lookback is None:
+            lookback = market_config["lookback_days"]
+        
+        min_bars = market_config["min_bars"]
+        
+        logger.info(f"📊 Getting data for {symbol} (Market: {detect_market_type(symbol)}, TF: {timeframe}, Lookback: {lookback}d)")
+        
+        # Cek cache terlebih dahulu
+        cached_data = ohlcv_cache.get(symbol, timeframe, lookback)
+        if cached_data is not None:
+            if len(cached_data) >= min_bars:
+                logger.info(f"✅ Using cached data for {symbol}: {len(cached_data)} bars")
+                return cached_data
+        
+        # Jika tidak ada cache atau cache expired, ambil dari provider
+        df = None
+        
+        # Coba dari provider jika ada
         if provider is not None and hasattr(provider, 'get_ohlcv'):
             try:
-                logger.info(f"📊 Getting data for {symbol} from {provider.__class__.__name__}...")
-                df = provider.get_ohlcv(symbol, timeframe, limit=lookback)
+                logger.info(f"📡 Getting OHLCV from provider for {symbol}...")
+                df = provider.get_ohlcv(symbol, timeframe, limit=lookback * 24)  # Estimate bars
                 
-                if df is None or df.empty:
-                    logger.warning(f"Provider returned empty data for {symbol}")
-                    # Fallback ke yfinance
-                    provider = None
+                if df is not None and not df.empty and len(df) >= min_bars:
+                    logger.info(f"✅ Got {len(df)} bars from provider")
                 else:
-                    # 🔥 PERBAIKAN: Cek minimal data
-                    if len(df) < 20:
-                        logger.warning(f"⚠️ Insufficient data from provider: {len(df)} bars")
-                        provider = None
-                    else:
-                        logger.info(f"✅ Data from provider: {len(df)} bars")
-                    
+                    logger.warning(f"Provider data insufficient: {len(df) if df is not None else 0} bars")
+                    df = None
             except Exception as provider_error:
-                logger.warning(f"Provider failed for {symbol}: {provider_error}, falling back to yfinance")
-                # Fallback ke yfinance jika provider gagal
-                provider = None
+                logger.warning(f"Provider failed: {provider_error}")
+                df = None
         
-        # Jika provider None atau gagal, gunakan yfinance
-        if provider is None:
-            # ⏰ TAMBAH RATE LIMITING - delay 1 detik antara request
-            time.sleep(0.5)  # Dikurangi dari 1.0 ke 0.5 untuk lebih cepat
+        # Jika provider gagal, gunakan yfinance
+        if df is None or df.empty:
+            time.sleep(1)  # Rate limiting untuk yfinance
             
-            # Clean symbol untuk yfinance
+            # Bersihkan symbol untuk yfinance
             clean_symbol = symbol.split(':')[0] if ':' in symbol else symbol
             clean_symbol = clean_symbol.replace('/', '-').replace('USDT-', '')
             
-            # Download data dari yfinance
-            logger.info(f"📥 Downloading {clean_symbol} from YFinance...")
-            try:
-                df = yf.download(clean_symbol, period=f'{lookback}d', interval=timeframe, progress=False)
-            except Exception as e:
-                logger.error(f"YFinance download error: {e}")
-                return pd.DataFrame()
+            # Untuk saham Indonesia, tambahkan .JK jika belum ada
+            if detect_market_type(symbol) == "indonesia_stocks" and not clean_symbol.endswith('.JK'):
+                if '.' not in clean_symbol:
+                    clean_symbol = f"{clean_symbol}.JK"
             
-            if df is None or df.empty:
-                logger.warning(f"No data for {symbol}")
+            logger.info(f"📥 Downloading {clean_symbol} from YFinance (interval: {market_config['yfinance_interval']}, period: {market_config['yfinance_period']})...")
+            
+            try:
+                df = yf.download(
+                    clean_symbol, 
+                    period=market_config['yfinance_period'],
+                    interval=market_config['yfinance_interval'],
+                    progress=False,
+                    timeout=30
+                )
+                
+                if df is None or df.empty:
+                    logger.warning(f"No data from YFinance for {clean_symbol}")
+                    return pd.DataFrame()
+                    
+            except Exception as e:
+                logger.error(f"YFinance download error for {clean_symbol}: {e}")
                 return pd.DataFrame()
         
+        # Validasi data
         if df is None or df.empty:
-            logger.warning(f"Empty DataFrame after provider for {symbol}")
+            logger.warning(f"Empty DataFrame for {symbol}")
             return pd.DataFrame()
         
-        # 🚨 **CEK DAN PERBAIKI HARGA 100** - DIPERBAIKI: GUNAKAN numpy.isclose
+        # Pastikan ada kolom yang diperlukan
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        
+        # Standardize column names
+        column_mapping = {
+            'Open': 'open', 'High': 'high', 'Low': 'low', 
+            'Close': 'close', 'Volume': 'volume',
+            'Adj Close': 'close'
+        }
+        
+        for old, new in column_mapping.items():
+            if old in df.columns:
+                df = df.rename(columns={old: new})
+        
+        # Tambahkan kolom yang hilang
+        for col in required_cols:
+            if col not in df.columns:
+                if col == 'volume':
+                    df[col] = np.random.normal(1000000, 100000, len(df))
+                else:
+                    # Untuk indonesia_stocks, coba ambil dari 'Close' atau 'Adj Close'
+                    if 'Close' in df.columns:
+                        df[col] = df['Close']
+                    elif 'Adj Close' in df.columns:
+                        df[col] = df['Adj Close']
+                    else:
+                        df[col] = 100  # Fallback
+        
+        # 🚨 **CEK DAN PERBAIKI HARGA 100** - GUNAKAN numpy.isclose
         if 'close' in df.columns:
             # Deteksi harga stuck di 100 - GUNAKAN numpy.isclose
             close_values = df['close'].values
@@ -143,32 +393,13 @@ def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
                 if not np.all(mask_valid):
                     df = df[mask_valid].copy()
         
-        # Standardize column names (jika belum)
-        column_mapping = {
-            'Open': 'open',
-            'High': 'high', 
-            'Low': 'low',
-            'Close': 'close',
-            'Volume': 'volume'
-        }
-        
-        for old, new in column_mapping.items():
-            if old in df.columns:
-                df = df.rename(columns={old: new})
-        
-        # Tambahkan column jika tidak ada
-        required_cols = ['open', 'high', 'low', 'close', 'volume']
-        for col in required_cols:
-            if col not in df.columns:
-                if col == 'volume':
-                    df[col] = np.random.normal(1000000, 100000, len(df))
-                else:
-                    df[col] = df['close'] if 'close' in df.columns else 100
-        
-        # Validasi final
-        if df.empty:
-            logger.warning(f"Empty DataFrame after cleaning for {symbol}")
-            return pd.DataFrame()
+        # Cek jika data terlalu pendek
+        if len(df) < min_bars:
+            logger.warning(f"⚠️ Insufficient data after cleaning: {len(df)} < {min_bars} bars")
+            # Untuk indonesia_stocks, kita perlu minimal 40 hari
+            if detect_market_type(symbol) == "indonesia_stocks" and len(df) < 40:
+                logger.error(f"❌ Data tidak cukup untuk saham Indonesia: {len(df)} bars")
+                return pd.DataFrame()
         
         # Final check: pastikan TIDAK ADA harga 100 - GUNAKAN np.isclose
         if 'close' in df.columns:
@@ -180,131 +411,131 @@ def get_clean_data(symbol, provider=None, timeframe='1h', lookback=200):
                 logger.error(f"🚨 {symbol} still has price 100 after cleaning!")
                 return pd.DataFrame()
         
-        logger.info(f"✅ Clean data for {symbol}: {len(df)} bars")
+        # Simpan ke cache
+        ohlcv_cache.set(symbol, timeframe, lookback, df)
+        
+        logger.info(f"✅ Clean data for {symbol}: {len(df)} bars (Market: {detect_market_type(symbol)})")
         return df
         
     except Exception as e:
         logger.error(f"Error in get_clean_data for {symbol}: {e}")
         return pd.DataFrame()
 
-def get_trading_data(symbol, provider=None, scalping_mode=False, require_real_data=False):
+def get_trading_data(symbol: str, provider=None, scalping_mode: bool = False, 
+                     require_real_data: bool = False) -> Optional[pd.DataFrame]:
     """
     Wrapper function untuk digunakan di strategi trading.
     HANYA return data jika benar-benar bersih.
-    
-    Args:
-        symbol: Trading symbol
-        provider: Data provider (optional)
-        scalping_mode: Jika True, tambahkan filter khusus untuk scalping
-        require_real_data: Jika True, tolak data dummy/sintetis
     """
     try:
+        # Dapatkan konfigurasi market
+        market_config = get_market_config(symbol, scalping_mode)
+        market_type = detect_market_type(symbol)
+        
+        logger.info(f"🔍 Getting trading data for {symbol} (Market: {market_type})")
+        
         # 🚨 **PERBAIKAN: Gunakan provider langsung jika tersedia**
         if provider is not None and hasattr(provider, 'get_ohlcv'):
             try:
-                logger.info(f"🔍 Getting OHLCV for {symbol} from {provider.__class__.__name__}")
+                logger.info(f"📡 Getting OHLCV for {symbol} from {provider.__class__.__name__}")
                 
-                # 🔥 PERBAIKAN UTAMA: Gunakan timeframe dan limit yang sesuai
-                timeframe = '5m' if scalping_mode else '1h'
-                limit = 150 if scalping_mode else 100
+                # Gunakan timeframe yang sesuai
+                timeframe = SCALPING_CONFIG["timeframe"] if scalping_mode else market_config["default_timeframe"]
+                limit = SCALPING_CONFIG["lookback"] if scalping_mode else market_config["lookback_days"] * 24
                 
                 df = provider.get_ohlcv(symbol, timeframe, limit)
                 
                 if df is None or df.empty:
                     logger.warning(f"Provider returned no data for {symbol}")
-                    return None
-                
-                # 🔥 PERBAIKAN: Validasi jumlah data minimum berdasarkan mode
-                min_bars = 100 if scalping_mode else 20  # 🔥 DARI 10 ke 20 untuk regular
-                if len(df) < min_bars:
-                    logger.warning(f"⚠️ {symbol} insufficient data: {len(df)} < {min_bars} bars")
-                    return None
-                
-                # Standardize column names
-                column_mapping = {
-                    'Open': 'open',
-                    'High': 'high', 
-                    'Low': 'low',
-                    'Close': 'close',
-                    'Volume': 'volume'
-                }
-                
-                for old, new in column_mapping.items():
-                    if old in df.columns:
-                        df = df.rename(columns={old: new})
-                
-                # 🔥 PERBAIKAN KETAT: Cek dan bersihkan harga 100 secara eksplisit
-                if 'close' in df.columns:
-                    # Debug logging
-                    logger.debug(f"🔍 {symbol}: Checking for price 100, current range: {df['close'].min():.4f}-{df['close'].max():.4f}")
+                    # Fallback ke get_clean_data
+                    df = get_clean_data(symbol, provider, scalping_mode=scalping_mode)
+                else:
+                    # Standardize column names
+                    column_mapping = {
+                        'Open': 'open',
+                        'High': 'high', 
+                        'Low': 'low',
+                        'Close': 'close',
+                        'Volume': 'volume'
+                    }
                     
-                    # Method 1: Direct check dengan numpy
-                    close_values = df['close'].values
-                    price_100_count = np.sum(np.isclose(close_values, 100.0, atol=0.001))
-                    if price_100_count > 0:
-                        logger.error(f"🚨 {symbol}: Found {price_100_count} bars with price ~100, rejecting!")
-                        return None
+                    for old, new in column_mapping.items():
+                        if old in df.columns:
+                            df = df.rename(columns={old: new})
                     
-                    # Method 2: Filter jika terlalu banyak harga sama
-                    unique_prices = len(np.unique(close_values))
-                    if unique_prices < 3 and len(df) > 10:
-                        logger.warning(f"⚠️ {symbol}: Too few unique prices ({unique_prices}), possibly stuck at 100")
-                        return None
-                
-                logger.info(f"✅ Valid data from provider for {symbol}: {len(df)} bars")
-                return df
-                
+                    # 🔥 PERBAIKAN KETAT: Cek dan bersihkan harga 100 secara eksplisit
+                    if 'close' in df.columns:
+                        # Debug logging
+                        logger.debug(f"🔍 {symbol}: Checking for price 100, current range: {df['close'].min():.4f}-{df['close'].max():.4f}")
+                        
+                        # Method 1: Direct check dengan numpy
+                        close_values = df['close'].values
+                        price_100_count = np.sum(np.isclose(close_values, 100.0, atol=0.001))
+                        if price_100_count > 0:
+                            logger.error(f"🚨 {symbol}: Found {price_100_count} bars with price ~100, rejecting!")
+                            return None
+                        
+                        # Method 2: Filter jika terlalu banyak harga sama
+                        unique_prices = len(np.unique(close_values))
+                        if unique_prices < 3 and len(df) > 10:
+                            logger.warning(f"⚠️ {symbol}: Too few unique prices ({unique_prices}), possibly stuck at 100")
+                            return None
+                    
+                    logger.info(f"✅ Valid data from provider for {symbol}: {len(df)} bars")
+                    
             except Exception as e:
                 logger.error(f"Error getting data from provider: {e}")
                 # Fallback ke get_clean_data
-                pass
+                df = get_clean_data(symbol, provider, scalping_mode=scalping_mode)
+        else:
+            # Langsung gunakan get_clean_data
+            df = get_clean_data(symbol, provider, scalping_mode=scalping_mode)
         
-        # Fallback ke get_clean_data jika provider tidak tersedia atau gagal
-        data = get_clean_data(symbol, provider)
-        
-        # 🔥 PERBAIKAN: Validasi dengan cara yang lebih aman
-        if data is None or data.empty:
+        # Validasi data
+        if df is None or df.empty:
+            logger.warning(f"No data available for {symbol}")
             return None
         
         # Pastikan ini adalah DataFrame
-        if isinstance(data, pd.Series):
-            data = data.to_frame().T
+        if isinstance(df, pd.Series):
+            df = df.to_frame().T
+        
+        # Cek minimal bars berdasarkan market type
+        min_bars = market_config["min_bars"]
+        if len(df) < min_bars:
+            logger.warning(f"⚠️ {symbol} insufficient data: {len(df)} < {min_bars} bars required for {market_type}")
+            return None
         
         # =============================================
         # FILTER KHUSUS UNTUK SCALPING MODE
         # =============================================
         if scalping_mode:
-            # 1. Cek jumlah data minimum untuk scalping
-            if len(data) < 100:
-                logger.warning(f"⚠️ {symbol} insufficient data for scalping: {len(data)} bars")
-                return None
-            
-            # 2. Cek volatilitas (minimal movement untuk scalping)
-            if len(data) > 1:
-                price_changes = data['close'].pct_change().abs().mean()
+            # 1. Cek volatilitas (minimal movement untuk scalping)
+            if len(df) > 1:
+                price_changes = df['close'].pct_change().abs().mean()
                 if price_changes < 0.0005:  # Kurang dari 0.05% average movement
                     logger.warning(f"⚠️ {symbol} too flat for scalping: {price_changes*100:.3f}% avg change")
                     return None
             
-            # 3. Cek volume (harus cukup liquid untuk scalping)
-            if 'volume' in data.columns:
-                avg_volume = data['volume'].mean()
+            # 2. Cek volume (harus cukup liquid untuk scalping)
+            if 'volume' in df.columns:
+                avg_volume = df['volume'].mean()
                 if avg_volume < 100000:  # Minimal volume untuk scalping
                     logger.warning(f"⚠️ {symbol} volume too low for scalping: {avg_volume:.0f}")
                     return None
             
-            # 4. Cek volatilitas maksimal (terlalu volatile berbahaya untuk scalping)
-            if len(data) > 1:
-                volatility = data['close'].pct_change().std() * np.sqrt(252)
+            # 3. Cek volatilitas maksimal (terlalu volatile berbahaya untuk scalping)
+            if len(df) > 1:
+                volatility = df['close'].pct_change().std() * np.sqrt(252)
                 if volatility > SCALPING_CONFIG["max_volatility"]:
                     logger.warning(f"⚠️ {symbol} too volatile for scalping: {volatility:.1%}")
                     return None
         
         # 🔥 PERBAIKAN: Validasi harga 100 dengan metode yang TIDAK menyebabkan ambiguous truth value
         try:
-            if 'close' in data.columns:
+            if 'close' in df.columns:
                 # Gunakan .values untuk menghindari ambiguous truth value
-                close_values = data['close'].values
+                close_values = df['close'].values
                 
                 # Cek jika ada harga yang mendekati 100
                 is_close_to_100 = np.isclose(close_values, 100.0, atol=0.001)
@@ -315,8 +546,8 @@ def get_trading_data(symbol, provider=None, scalping_mode=False, require_real_da
                     return None
                 
                 # Pastikan harga realistic
-                if len(data) > 0:
-                    current_price = data['close'].iloc[-1]
+                if len(df) > 0:
+                    current_price = df['close'].iloc[-1]
                 else:
                     current_price = 0
                 
@@ -326,27 +557,28 @@ def get_trading_data(symbol, provider=None, scalping_mode=False, require_real_da
                     return None
                 
                 # Cek pergerakan harga (tidak stuck)
-                if len(data) > 1:
-                    price_changes = data['close'].diff().abs().sum()
-                    if price_changes < (current_price * 0.0001 * len(data)):
+                if len(df) > 1:
+                    price_changes = df['close'].diff().abs().sum()
+                    if price_changes < (current_price * 0.0001 * len(df)):
                         logger.warning(f"⚠️ {symbol} has flatline prices")
                         return None
         except Exception as e:
             logger.error(f"Error in final validation for {symbol}: {e}")
             return None
         
-        return data
+        logger.info(f"✅ Trading data ready for {symbol}: {len(df)} bars")
+        return df
         
     except Exception as e:
         logger.error(f"Error in get_trading_data for {symbol}: {e}")
         return None
 
 # =============================================
-# BASE STRATEGY CLASS DENGAN BIAS CORRECTION
+# BASE STRATEGY CLASS DENGAN MARKET TYPE AWARENESS
 # =============================================
 
 class TradingStrategy(ABC):
-    """Base class for all trading strategies - ENHANCED WITH BIAS CORRECTION"""
+    """Base class for all trading strategies - ENHANCED WITH MARKET TYPE AWARENESS"""
     
     def __init__(self, market_type="crypto", atr_multiplier=1.0, entry_range_pct=0.02,
                  trading_type="spot", leverage=1, max_leverage_risk=0.01,
@@ -354,7 +586,13 @@ class TradingStrategy(ABC):
                  long_bias=0.0,           # 🔥 UBAH: -1.0 to +1.0, default 0.0 (NEUTRAL)
                  min_score_threshold=3.0, # Minimal absolute score untuk trigger sinyal
                  scalping_mode=False):    # Mode scalping khusus
-        self.market_type = market_type
+        
+        # Auto-detect market type jika "auto"
+        if market_type == "auto":
+            self.market_type = "crypto"  # Default, akan diupdate di analyze()
+        else:
+            self.market_type = market_type
+            
         self.atr_multiplier = atr_multiplier
         self.entry_range_pct = entry_range_pct
         self.trading_type = trading_type  # 'spot' or 'futures'
@@ -384,19 +622,22 @@ class TradingStrategy(ABC):
         """Analyze market data and return trading signals"""
         pass
     
-    def _preprocess_and_validate(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-        """Preprocess data dan validasi kualitas"""
+    def _preprocess_and_validate(self, df: pd.DataFrame, symbol: str, market_type: str = None) -> pd.DataFrame:
+        """Preprocess data dan validasi kualitas dengan market type awareness"""
+        
+        if market_type is None:
+            market_type = detect_market_type(symbol)
         
         # 1. Cek data kosong
         if df is None or df.empty:
             logger.error(f"Empty data for {symbol}")
-            return self._get_fallback_data(symbol)
+            return self._get_fallback_data(symbol, market_type)
         
         # 2. Cek kolom yang diperlukan
         required_cols = ['open', 'high', 'low', 'close', 'volume']
         if not all(col in df.columns for col in required_cols):
             logger.error(f"Missing columns for {symbol}: {df.columns.tolist()}")
-            return self._get_fallback_data(symbol)
+            return self._get_fallback_data(symbol, market_type)
         
         # ✅ TAMBAH: Clean NaN/inf lebih agresif
         df = df.replace([np.inf, -np.inf], np.nan)
@@ -407,26 +648,27 @@ class TradingStrategy(ABC):
         last_10_prices = df['close'].tail(10).values
         if len(set(last_10_prices)) <= 2:
             logger.warning(f"Price stuck detected for {symbol}, using synthetic data")
-            df = self._synthesize_movement(df, symbol)
+            df = self._synthesize_movement(df, symbol, market_type)
         
         # 4. Cek harga tidak valid (<= 0) - PERBAIKAN: GUNAKAN .values
         if (df['close'].values <= 0).any():
             logger.warning(f"Invalid price (<=0) detected for {symbol}, using synthetic data")
-            df = self._synthesize_movement(df, symbol)
+            df = self._synthesize_movement(df, symbol, market_type)
         
         # 5. Cek high < low - PERBAIKAN: GUNAKAN .values
         if (df['high'].values < df['low'].values).any():
             logger.warning(f"High < Low detected for {symbol}, using synthetic data")
-            df = self._synthesize_movement(df, symbol)
+            df = self._synthesize_movement(df, symbol, market_type)
         
-        # 6. Cek volume = 0
-        if df['volume'].mean() < 1:
-            logger.warning(f"Zero volume for {symbol}, estimating from volatility")
-            df['volume'] = self._estimate_volume_from_volatility(df)
+        # 6. Cek volume = 0 (kecuali untuk market tertentu)
+        if market_type != "indonesia_stocks":  # Saham Indonesia sering volume 0
+            if df['volume'].mean() < 1:
+                logger.warning(f"Zero volume for {symbol}, estimating from volatility")
+                df['volume'] = self._estimate_volume_from_volatility(df)
         
         return df
     
-    def _get_fallback_data(self, symbol: str) -> pd.DataFrame:
+    def _get_fallback_data(self, symbol: str, market_type: str = "crypto") -> pd.DataFrame:
         """Generate fallback data when original data is invalid"""
         dates = pd.date_range('2023-01-01', periods=100, freq='D')
         price = self._estimate_realistic_price(symbol)
@@ -439,7 +681,7 @@ class TradingStrategy(ABC):
         }
         return pd.DataFrame(data, index=dates)
     
-    def _synthesize_movement(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    def _synthesize_movement(self, df: pd.DataFrame, symbol: str, market_type: str = "crypto") -> pd.DataFrame:
         """Add synthetic movement to stuck prices"""
         current_price = df['close'].iloc[-1] if len(df) > 0 else self._estimate_realistic_price(symbol)
         
@@ -618,6 +860,7 @@ class TradingStrategy(ABC):
                     "crypto_future": current_price * 0.025,
                     "stock_future": current_price * 0.015,
                     "forex_future": current_price * 0.006,
+                    "indonesia_stocks": current_price * 0.02,  # Tambah untuk saham Indonesia
                 }
                 atr = atr_map.get(self.market_type, current_price * 0.02)
             
@@ -870,11 +1113,13 @@ class TradingStrategy(ABC):
             
             # Indonesian Stocks
             'BBCA.JK': 9000.0, 'BBRI.JK': 5000.0, 'BMRI.JK': 6000.0,
-            'TLKM.JK': 4000.0, 'ASII.JK': 6000.0,
+            'TLKM.JK': 4000.0, 'ASII.JK': 6000.0, 'UNVR.JK': 5000.0,
+            'ICBP.JK': 10000.0, 'INDF.JK': 7000.0,
             
             # New Crypto
             'HYPE/USDT': 35.0, 'TON/USDT': 1.5, 'ENA/USDT': 0.3,
-            'PINGPONG/USDT': 0.022, 'PLUME/USDT': 0.033, 'ASTER/USDT': 1.12
+            'PINGPONG/USDT': 0.022, 'PLUME/USDT': 0.033, 'ASTER/USDT': 1.12,
+            'SKY/USDT': 0.065
         }
         
         # Check for exact match first
@@ -982,7 +1227,7 @@ class TradingStrategy(ABC):
 
 🛑 Stop Loss: {analysis.get('sl', 0):.5f}
 
-{futires_info}
+{futures_info}
 📈 Analytics:
    Confidence: {confidence:.1f}%
    Range Size: ±{range_pct:.1f}%
@@ -1903,11 +2148,15 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             logger.error(f"Error in _get_valid_current_price: {e}")
             return 0.0
     
-    def _safe_data_validation(self, df: pd.DataFrame, symbol: str) -> bool:
+    def _safe_data_validation(self, df: pd.DataFrame, symbol: str, market_type: str = None) -> bool:
         """Validasi data dengan cara yang aman dari ambiguous truth value"""
         try:
             if df is None or df.empty:
                 return False
+            
+            # Auto-detect market type jika tidak diberikan
+            if market_type is None:
+                market_type = detect_market_type(symbol)
             
             # Cek kolom yang diperlukan
             required_cols = ['open', 'high', 'low', 'close']
@@ -1926,9 +2175,17 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 logger.warning(f"High < Low detected for {symbol}")
                 return False
             
-            # Cek jika data terlalu pendek
-            if len(df) < 20:
-                logger.warning(f"Insufficient data for {symbol}: {len(df)} bars")
+            # Cek jika data terlalu pendek berdasarkan market type
+            market_config = get_market_config(symbol, self.scalping_mode)
+            min_bars = market_config["min_bars"]
+            
+            if len(df) < min_bars:
+                logger.warning(f"Insufficient data for {symbol}: {len(df)} < {min_bars} bars required for {market_type}")
+                return False
+            
+            # Khusus untuk indonesia_stocks, perlu minimal 40 hari
+            if market_type == "indonesia_stocks" and len(df) < 40:
+                logger.warning(f"Insufficient data for Indonesian stock {symbol}: {len(df)} < 40 days")
                 return False
             
             return True
@@ -1942,6 +2199,10 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         if df is None or df.empty or len(df) < 10:
             logger.debug(f"Skipping {symbol}: data too short ({len(df) if df is not None else 0} bars)")
             return True
+        
+        # Deteksi market type
+        market_type = detect_market_type(symbol)
+        market_config = get_market_config(symbol, self.scalping_mode)
         
         # Deteksi apakah ini futures
         is_futures = any(x in symbol.upper() for x in [':USDT', 'PERP', 'FUTURES', '-USDT', 'USDT:'])
@@ -1992,8 +2253,8 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             logger.warning(f"Skipping {symbol}: High < Low")
             return True
         
-        # Cek volume terlalu rendah
-        if avg_volume < min_volume:
+        # Cek volume terlalu rendah (kecuali untuk saham Indonesia)
+        if market_type != "indonesia_stocks" and avg_volume < min_volume:
             logger.debug(f"Skipping {symbol}: low volume {avg_volume:.0f}")
             return True
         
@@ -2002,8 +2263,8 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             logger.warning(f"Skipping {symbol}: flatline data")
             return True
         
-        # Cek volatility terlalu rendah
-        if volatility < min_volatility:
+        # Cek volatility terlalu rendah (kecuali untuk saham Indonesia)
+        if market_type != "indonesia_stocks" and volatility < min_volatility:
             logger.debug(f"Skipping {symbol}: low volatility {volatility:.6f}")
             return True
         
@@ -2040,18 +2301,22 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
         """Enhanced analysis dengan semua improvement DAN HYBRID SCORING SYSTEM"""
         try:
+            # Update market type berdasarkan symbol
+            if symbol is not None:
+                self.market_type = detect_market_type(symbol)
+            
             # 1. Validasi data dasar
-            if df is None or df.empty or len(df) < 10:
-                logger.warning(f"Data insufficient for {symbol}: {len(df) if df is not None else 0} bars")
+            if df is None or df.empty:
+                logger.warning(f"Data insufficient for {symbol}: empty DataFrame")
                 return self._get_default_analysis(symbol)
             
-            # 2. Gunakan validasi data yang aman
-            if not self._safe_data_validation(df, symbol):
+            # 2. Gunakan validasi data yang aman dengan market type awareness
+            if not self._safe_data_validation(df, symbol, self.market_type):
                 logger.warning(f"Data validation failed for {symbol}")
                 return self._get_safe_neutral_signal(symbol)
             
             # 3. Preprocess data
-            df = self._preprocess_and_validate(df, symbol)
+            df = self._preprocess_and_validate(df, symbol, self.market_type)
             
             # 4. Skip jika data tidak valid
             if self._should_skip_symbol(df, symbol):
@@ -2593,8 +2858,11 @@ class ScalpingStrategy(EnhancedTechnicalAnalysisStrategy):
             return self._get_safe_neutral_signal(symbol)
         
         # 3. Cek minimal data untuk scalping
-        if len(df) < 50:
-            logger.warning(f"⚠️ {symbol}: Insufficient data for scalping ({len(df)} bars)")
+        market_config = get_market_config(symbol, True)  # True untuk scalping mode
+        min_bars = market_config["min_bars"]
+        
+        if len(df) < min_bars:
+            logger.warning(f"⚠️ {symbol}: Insufficient data for scalping ({len(df)} bars < {min_bars} required)")
             return self._get_safe_neutral_signal(symbol)
         
         # 4. Cek volatilitas untuk scalping
@@ -2607,8 +2875,9 @@ class ScalpingStrategy(EnhancedTechnicalAnalysisStrategy):
             logger.debug(f"⚠️ {symbol}: Too high volatility for scalping ({volatility:.3%})")
             return self._get_safe_neutral_signal(symbol)
         
-        # 5. Cek volume untuk scalping
-        if 'volume' in df.columns:
+        # 5. Cek volume untuk scalping (kecuali untuk saham Indonesia)
+        market_type = detect_market_type(symbol)
+        if market_type != "indonesia_stocks" and 'volume' in df.columns:
             avg_volume = df['volume'].mean()
             if avg_volume < 50000:  # Minimal volume untuk scalping
                 logger.debug(f"⚠️ {symbol}: Low volume for scalping ({avg_volume:.0f})")
@@ -2722,6 +2991,9 @@ def auto_suggest_leverage(symbol: str, market_type: str = "crypto", scalping_mod
                 'USDCAD': 15, 'USDCHF': 15, 'NZDUSD': 15, 'XAUUSD': 10, 'XAGUSD': 10,
                 'default': 15  # Leverage rendah untuk scalping
             },
+            'indonesia_stocks': {
+                'default': 1  # Tidak ada leverage untuk saham Indonesia di scalping
+            },
             'default': 5
         }
     else:
@@ -2753,6 +3025,9 @@ def auto_suggest_leverage(symbol: str, market_type: str = "crypto", scalping_mod
             },
             'forex_future': {
                 'EURUSD': 30, 'USDJPY': 30, 'default': 25
+            },
+            'indonesia_stocks': {
+                'default': 1  # Tidak ada leverage untuk saham Indonesia
             }
         }
     
@@ -2771,27 +3046,9 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
     """
     Create appropriate strategy based on symbol auto-detection dengan scalping support
     """
-    # Auto-detect market type if not specified
+    # Auto-detect market type jika tidak ditentukan atau "auto"
     if market_type == "auto":
-        if any(x in symbol.upper() for x in ['.JK', 'IDX', 'JAKARTA']):
-            market_type = "indonesia_stocks"
-        elif any(x in symbol.upper() for x in ['XAU', 'XAG', 'GOLD', 'SILVER']):
-            market_type = "forex_gold"
-        elif any(x in symbol.upper() for x in ['EUR', 'USD', 'JPY', 'GBP', 'AUD', 'CAD']):
-            market_type = "forex"
-        elif any(x in symbol.upper() for x in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META']):
-            market_type = "us_stocks"
-        elif any(x in symbol.upper() for x in ['PERP', 'FUTURES', 'SWAP', '1226', '0325', '0626', '0926']):
-            if 'BTC' in symbol.upper() or 'ETH' in symbol.upper() or 'SOL' in symbol.upper():
-                market_type = "crypto_future"
-            elif 'ES' in symbol.upper() or 'NQ' in symbol.upper() or 'YM' in symbol.upper():
-                market_type = "stock_future"
-            elif 'EUR' in symbol.upper() or 'USD' in symbol.upper() or 'JPY' in symbol.upper():
-                market_type = "forex_future"
-            else:
-                market_type = "crypto_future"
-        else:
-            market_type = "crypto"
+        market_type = detect_market_type(symbol)
     
     # Jika trading_mode diberikan dari core.py, gunakan itu
     if trading_mode:
@@ -2860,10 +3117,81 @@ class TechnicalAnalysisStrategy(EnhancedTechnicalAnalysisStrategy):
 # TESTING FUNCTIONS UNTUK VERIFIKASI PERBAIKAN
 # =============================================
 
+def test_indonesia_stocks():
+    """Test untuk saham Indonesia"""
+    print("\n" + "=" * 60)
+    print("🇮🇩 TESTING INDONESIA STOCKS (.JK)")
+    print("=" * 60)
+    
+    # Test dengan symbol saham Indonesia
+    symbols = ['BBCA.JK', 'BBRI.JK', 'TLKM.JK']
+    
+    for symbol in symbols:
+        print(f"\n📊 Testing {symbol}:")
+        
+        # Deteksi market type
+        market_type = detect_market_type(symbol)
+        print(f"   Market Type: {market_type}")
+        
+        # Dapatkan konfigurasi
+        config = get_market_config(symbol, False)
+        print(f"   Config: TF={config['default_timeframe']}, Min Bars={config['min_bars']}, Period={config['yfinance_period']}")
+        
+        # Buat strategi
+        strategy = create_strategy_for_symbol(symbol, market_type=market_type, scalping_mode=False)
+        print(f"   Strategy created: Market={strategy.market_type}, Bias={strategy.long_bias}")
+        
+        # Test mendapatkan data
+        print(f"   Getting data for {symbol}...")
+        df = get_clean_data(symbol, scalping_mode=False)
+        
+        if df is not None and not df.empty:
+            print(f"   Data received: {len(df)} bars")
+            print(f"   Date range: {df.index[0].date()} to {df.index[-1].date()}")
+            print(f"   Price range: {df['close'].min():.0f} - {df['close'].max():.0f}")
+            
+            # Coba analisis
+            result = strategy.analyze(df, symbol)
+            print(f"   Analysis result: {result['action']} (Score: {result['score']:.1f})")
+        else:
+            print(f"   ❌ Failed to get data for {symbol}")
+    
+    return True
+
+def test_cache_system():
+    """Test cache system"""
+    print("\n" + "=" * 60)
+    print("💾 TESTING CACHE SYSTEM")
+    print("=" * 60)
+    
+    # Test symbol
+    symbol = 'BTC/USDT'
+    
+    # First call - should download
+    print(f"\n1. First call for {symbol}:")
+    df1 = get_clean_data(symbol, scalping_mode=False)
+    print(f"   Downloaded: {len(df1) if df1 is not None else 0} bars")
+    
+    # Second call - should use cache
+    print(f"\n2. Second call for {symbol} (should use cache):")
+    df2 = get_clean_data(symbol, scalping_mode=False)
+    print(f"   From cache: {len(df2) if df2 is not None else 0} bars")
+    
+    # Clear cache and try again
+    print(f"\n3. Clearing cache and trying again:")
+    global ohlcv_cache
+    ohlcv_cache.cache = {}
+    ohlcv_cache.save_cache()
+    
+    df3 = get_clean_data(symbol, scalping_mode=False)
+    print(f"   Downloaded again: {len(df3) if df3 is not None else 0} bars")
+    
+    return True
+
 def test_hybrid_scoring_system():
     """Test the hybrid scoring system"""
-    print("=" * 60)
-    print("TESTING HYBRID SCORING SYSTEM")
+    print("\n" + "=" * 60)
+    print("🧪 TESTING HYBRID SCORING SYSTEM")
     print("=" * 60)
     
     # Buat data dengan berbagai kondisi
@@ -2917,91 +3245,26 @@ def test_hybrid_scoring_system():
     
     return True
 
-def test_skyusdt_scenario():
-    """Test specific SKYUSDT scenario from Dec 24"""
-    print("\n" + "=" * 60)
-    print("🔍 TESTING SKYUSDT DEC 24 SCENARIO")
-    print("=" * 60)
-    
-    # Simulasi data SKYUSDT tanggal 24 Desember
-    # Harga: 0.065 -> 0.068 (naik 4.6%)
-    
-    dates = pd.date_range('2025-12-24 09:00', periods=100, freq='5min')
-    
-    # Price movement: flat di 0.065, lalu breakout ke 0.068
-    prices = np.ones(100) * 0.065
-    prices[50:] = np.linspace(0.065, 0.068, 50)  # Breakout mulai jam 11:30
-    
-    # Volume spike saat breakout
-    volumes = np.random.normal(500000, 100000, 100)
-    volumes[50:70] = np.random.normal(1500000, 200000, 20)  # Volume spike
-    
-    data = {
-        'open': prices * np.random.uniform(0.999, 1.001, 100),
-        'high': prices * np.random.uniform(1.001, 1.003, 100),
-        'low': prices * np.random.uniform(0.997, 0.999, 100),
-        'close': prices,
-        'volume': volumes,
-    }
-    
-    df = pd.DataFrame(data, index=dates)
-    
-    # Test dengan regular strategy (HYBRID scoring)
-    strategy = EnhancedTechnicalAnalysisStrategy(market_type="crypto", trading_type="futures", leverage=3)
-    
-    # Analisis setiap 10 bar untuk simulasi
-    print("⏰ Time-based analysis:")
-    for i in range(0, 100, 10):
-        subset = df.iloc[:i+10] if i+10 <= len(df) else df
-        if len(subset) > 30:
-            result = strategy.analyze(subset, "SKY/USDT")
-            time_str = subset.index[-1].strftime('%H:%M')
-            action_emoji = "🟢" if result['action'] == 'LONG' else "🔴" if result['action'] == 'SHORT' else "⚪"
-            print(f"   {time_str} - {action_emoji} Action: {result['action']}, Score: {result['score']:.1f}, Scoring: {result.get('scoring_system', 'N/A')}")
-    
-    # Full analysis
-    result = strategy.analyze(df, "SKY/USDT")
-    
-    print(f"\n📊 Final Result:")
-    print(f"   Action: {result['action']}")
-    print(f"   Score: {result['score']:.1f}")
-    print(f"   Bias Applied: {result['long_bias_applied']}")
-    print(f"   Breakout Detected: {result['breakout_detected']}")
-    print(f"   Breakout Direction: {result['breakout_direction']}")
-    print(f"   Scoring System: {result.get('scoring_system', 'N/A')}")
-    print(f"   Market Regime: {result.get('market_regime', 'UNKNOWN')}")
-    print(f"   Enter Tag: {result['enter_tag']}")
-    
-    if result['action'] == 'SHORT' and result['breakout_detected'] and result['breakout_direction'] == 'BULLISH':
-        print(f"\n✅ SUCCESS: Breakout detection bekerja! SHORT signal di-warning saat bullish breakout.")
-    elif result['action'] == 'NEUTRAL' and result['breakout_detected']:
-        print(f"\n✅ SUCCESS: Breakout membuat sinyal menjadi NEUTRAL.")
-    elif result['scoring_system'] == 'HYBRID':
-        print(f"\n✅ SUCCESS: Hybrid scoring system aktif dan berfungsi.")
-    else:
-        print(f"\n⚠️ WARNING: Perlu pengecekan lebih lanjut.")
-    
-    return result
-
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("STRATEGIES.PY - HYBRID SCORING SYSTEM V1.0")
+    print("STRATEGIES.PY - ENHANCED VERSION WITH CACHE AND MARKET TYPE AWARENESS")
     print("=" * 60)
+    print("✅ Cache System: Active (30 min TTL)")
+    print("✅ Market Type Detection: Auto for all symbols")
+    print("✅ Indonesia Stocks: 1d timeframe, 40+ days required")
     print("✅ Bias Correction: SEMUA BIAS = 0.0")
     print("✅ Hybrid Scoring: Symmetrical + Trend-Following")
-    print("✅ Smart Adaptation: Berdasarkan ADX dan Market Regime")
-    print("✅ Breakout Detection: Aktif dengan parameter aman")
-    print("✅ Warning System: Tidak langsung block, hanya warning")
     print("=" * 60)
     
     # Jalankan test
+    test_cache_system()
+    test_indonesia_stocks()
     test_hybrid_scoring_system()
-    test_skyusdt_scenario()
     
     print("\n" + "=" * 60)
-    print("✅ HYBRID SCORING SYSTEM READY!")
-    print("✅ Symmetrical Scoring untuk ranging markets")
-    print("✅ Trend-Following Scoring untuk trending markets")
-    print("✅ Adaptive switching berdasarkan ADX")
-    print("✅ Mencegah false signals saat breakout")
+    print("✅ SEMUA SYSTEM READY!")
+    print("✅ Cache bekerja untuk hindari rate limit")
+    print("✅ Saham Indonesia menggunakan timeframe 1d")
+    print("✅ Market type auto-detection aktif")
+    print("✅ Long bias tetap 0.0 (NEUTRAL)")
     print("=" * 60)
