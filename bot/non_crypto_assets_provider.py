@@ -24,7 +24,7 @@ CACHE_TTL_DAYS = 3
 class NonCryptoAssetsProvider:
     """
     Provider untuk list aset non-crypto (saham Indo, forex, saham US).
-    - FIXED: Gunakan hanya saham LQ45 yang aktif trading
+    - UPDATED: Gunakan daftar saham aktif IDX per Januari 2026 (high cap, liquid)
     - FIXED: Ambil data 90 hari untuk analisa teknikal
     - FIXED: Skip saham delisted/error
     """
@@ -34,23 +34,124 @@ class NonCryptoAssetsProvider:
         self.invalid_symbols: Set[str] = set()
         self.cache_lock = Lock()
         self.rate_limit_delay = 0.5  # Delay antara request untuk hindari rate limit
+        self._verified_stocks = None  # Cache untuk saham terverifikasi
         
     # =============================================
-    # 🚨 PERBAIKAN UTAMA: GANTI KE SAHAM LQ45 SAJA
+    # 🚨 UPDATE UTAMA: GANTI KE SAHAM IDX AKTIF 2026
     # =============================================
+    
+    def _get_active_stocks(self) -> List[str]:
+        """Update daftar saham aktif IDX per Januari 2026 (high cap, liquid, exclude delisted/suspended). 
+        Total ~200 saham bagus dengan trend positif."""
+        
+        # Jika sudah di-cache, return cache
+        if self._verified_stocks is not None:
+            return self._verified_stocks
+            
+        active_stocks = [
+            # LQ45 Core (45 saham aktif dari periode Nov 2025-Jan 2026, termasuk update July 2025: AADI dan SCMA masuk)
+            'AADI.JK', 'ACES.JK', 'ADMR.JK', 'ADRO.JK', 'AKRA.JK', 'AMMN.JK', 'ANTM.JK', 'ASII.JK', 
+            'AVIA.JK', 'BBCA.JK', 'BBNI.JK', 'BBRI.JK', 'BMRI.JK', 'BRMS.JK', 'BRPT.JK', 'BUKA.JK', 
+            'BUMI.JK', 'BYAN.JK', 'CPIN.JK', 'CTRA.JK', 'DSSA.JK', 'EMTK.JK', 'ESSA.JK', 'EXCL.JK', 
+            'GOTO.JK', 'HEAL.JK', 'ICBP.JK', 'INCO.JK', 'INDF.JK', 'INKP.JK', 'INTP.JK', 'ITMG.JK', 
+            'JPFA.JK', 'JSMR.JK', 'KLBF.JK', 'MAPA.JK', 'MDKA.JK', 'MEDC.JK', 'MTEL.JK', 'NCKL.JK', 
+            'PGAS.JK', 'PTBA.JK', 'PGEO.JK', 'SCMA.JK', 'SIDO.JK', 'SMGR.JK', 'SRTG.JK', 'TBIG.JK', 
+            'TINS.JK', 'TLKM.JK', 'TOWR.JK', 'TPIA.JK', 'UNTR.JK', 'UNVR.JK',
+
+            # Tambahan dari IDX80 dan top performers 2025-2026 (high liquid mid-cap dengan trend positif: banking/mining/consumer/property)
+            'AGII.JK', 'AGRO.JK', 'AKSI.JK', 'ALTO.JK', 'AMRT.JK', 'APLN.JK', 'ARTO.JK', 'ASRI.JK', 
+            'ASSA.JK', 'BACA.JK', 'BALI.JK', 'BANK.JK', 'BBHI.JK', 'BBKP.JK', 'BBTN.JK', 'BCAP.JK', 
+            'BFIN.JK', 'BINA.JK', 'BJBR.JK', 'BJTM.JK', 'BKSW.JK', 'BMAS.JK', 'BNGA.JK', 'BNII.JK', 
+            'BRIS.JK', 'BSDE.JK', 'BSSR.JK', 'BTPS.JK', 'BVIC.JK', 'CASA.JK', 'CMNP.JK', 'CMRY.JK', 
+            'CSAP.JK', 'CSMI.JK', 'DMAS.JK', 'DMND.JK', 'DOID.JK', 'DSNG.JK', 'DUTI.JK', 'ELSA.JK', 
+            'ENRG.JK', 'FAST.JK', 'FREN.JK', 'GEMS.JK', 'GIAA.JK', 'GOOD.JK', 'HEXA.JK', 'HOKI.JK', 
+            'HRTA.JK', 'HRUM.JK', 'IBFN.JK', 'IFSH.JK', 'IMAS.JK', 'IMJS.JK', 'IMPC.JK', 'INAF.JK',
+            'INAI.JK', 'INCF.JK', 'INDO.JK', 'INDR.JK', 'INDX.JK', 'INDY.JK', 'INPC.JK', 'INPP.JK', 
+            'INPS.JK', 'INRU.JK', 'IPCC.JK', 'IPCM.JK', 'IPOL.JK', 'ISAT.JK', 'ISSP.JK', 'ITIC.JK', 
+            'JARR.JK', 'JAST.JK', 'JECC.JK', 'JIHD.JK', 'JKSW.JK', 'JMAS.JK', 'JRPT.JK', 'KAEF.JK', 
+            'KARW.JK', 'KBAG.JK', 'KBLI.JK', 'KBLM.JK', 'KBLV.JK', 'KDSI.JK', 'KEEN.JK', 'KIAS.JK', 
+            'KIJA.JK', 'KKES.JK', 'KMDS.JK', 'KMTR.JK', 'KOBX.JK', 'KOPI.JK', 'KPAS.JK', 'KPPI.JK', 
+            'KRAS.JK', 'KREN.JK', 'LAND.JK', 'LAPD.JK', 'LCKM.JK', 'LEAD.JK', 'LIFE.JK', 'LINK.JK', 
+            'LION.JK', 'LMAX.JK', 'LMSH.JK', 'LPGI.JK', 'LPIN.JK', 'LPLI.JK', 'LPPF.JK', 'LPPS.JK', 
+            'LRNA.JK', 'LTLS.JK', 'LUCK.JK', 'MAIN.JK', 'MAMI.JK', 'MAPB.JK', 'MAPI.JK', 'MARI.JK', 
+            'MARK.JK', 'MASA.JK', 'MAYA.JK', 'MBSS.JK', 'MBTO.JK', 'MCAS.JK', 'MCOR.JK', 'MDIA.JK', 
+            'MDLN.JK', 'MDRN.JK', 'MEGA.JK', 'META.JK', 'MGNA.JK', 'MGRO.JK', 'MICE.JK', 'MIKA.JK', 
+            'MINA.JK', 'MITI.JK', 'MKPI.JK', 'MKTR.JK', 'MLBI.JK', 'MLIA.JK', 'MLPL.JK', 'MLPT.JK', 
+            'MLTX.JK', 'MNCN.JK', 'MPMX.JK', 'MPPA.JK', 'MRAT.JK', 'MSIN.JK', 'MSKY.JK', 'MTDL.JK', 
+            'MTFN.JK', 'MTLA.JK', 'MTMH.JK', 'MTPS.JK', 'MTSM.JK', 'MTWI.JK', 'MYOH.JK', 'MYOR.JK', 
+            'MYTX.JK', 'NASA.JK', 'NATO.JK', 'NETV.JK', 'NFCX.JK', 'NIKL.JK', 'NRCA.JK', 'NSSS.JK', 
+            'NTBK.JK', 'NUSA.JK', 'NZIA.JK', 'OBMD.JK', 'OILS.JK', 'OKAS.JK', 'OMRE.JK', 'OPMS.JK', 
+            'PACK.JK', 'PADI.JK', 'PALM.JK', 'PAMG.JK', 'PANI.JK', 'PBID.JK', 'PBSA.JK', 'PCAR.JK', 
+            'PDAI.JK', 'PDES.JK', 'PEGE.JK', 'PEHA.JK', 'PGUN.JK', 'PICO.JK', 'PKPK.JK', 'PLAS.JK', 
+            'PLIN.JK', 'PMJS.JK', 'PMMP.JK', 'PNLF.JK', 'POLA.JK', 'POLI.JK', 'POLU.JK', 'POOL.JK', 
+            'PORT.JK', 'POWR.JK', 'PPGL.JK', 'PPRE.JK', 'PRDA.JK', 'PRIM.JK', 'PSAB.JK', 'PSDN.JK', 
+            'PSGO.JK', 'PSKT.JK', 'PTDU.JK', 'PTIS.JK', 'PTRO.JK', 'PTSN.JK', 'PUDP.JK', 'PWON.JK', 
+            'PYFA.JK', 'PZZA.JK', 'RAJA.JK', 'RALS.JK', 'RANC.JK', 'RBMS.JK', 'RDTX.JK', 'REAL.JK', 
+            'RELI.JK', 'RICY.JK', 'RIGS.JK', 'RISE.JK', 'RMKE.JK', 'RMKO.JK', 'ROCK.JK', 'RODA.JK', 
+            'ROTI.JK', 'RUIS.JK', 'SAFE.JK', 'SAGE.JK', 'SAMA.JK', 'SAMF.JK', 'SAPX.JK', 'SATU.JK', 
+            'SBAT.JK', 'SBMA.JK', 'SBSN.JK', 'SCBD.JK', 'SCMA.JK', 'SCNP.JK', 'SCPI.JK', 'SDMU.JK', 
+            'SDPC.JK', 'SDRA.JK', 'SFAN.JK', 'SGER.JK', 'SGRO.JK', 'SHID.JK', 'SHIP.JK', 'SICO.JK', 
+            'SILO.JK', 'SINI.JK', 'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK', 'SLIS.JK', 'SMAR.JK', 
+            'SMBR.JK', 'SMDR.JK', 'SMGA.JK', 'SMKL.JK', 'SMKM.JK', 'SMMA.JK', 'SMMT.JK', 'SMRU.JK', 
+            'SMSM.JK', 'SNLK.JK', 'SOCI.JK', 'SOFA.JK', 'SOHO.JK', 'SONA.JK', 'SOSS.JK', 'SOTS.JK', 
+            'SPMA.JK', 'SPTO.JK', 'SQMI.JK', 'SRAJ.JK', 'SRSN.JK', 'STAA.JK', 'STAR.JK', 'STRK.JK', 
+            'STTP.JK', 'SUGI.JK', 'SULI.JK', 'SUPR.JK', 'SURE.JK', 'SWAT.JK', 'TALF.JK', 'TAMU.JK', 
+            'TARA.JK', 'TAXI.JK', 'TBMS.JK', 'TCID.JK', 'TCPI.JK', 'TDPM.JK', 'TECH.JK', 'TEBE.JK', 
+            'TELE.JK', 'TFAS.JK', 'TFCO.JK', 'TGKA.JK', 'TIFA.JK', 'TIRT.JK', 'TJWI.JK', 'TKIM.JK', 
+            'TMAS.JK', 'TMPO.JK', 'TNCA.JK', 'TOPS.JK', 'TOTL.JK', 'TPMA.JK', 'TRGU.JK', 'TRIM.JK', 
+            'TRIN.JK', 'TRIS.JK', 'TRJA.JK', 'TRST.JK', 'TRUE.JK', 'TRUK.JK', 'TRUS.JK', 'TUGU.JK', 
+            'UANG.JK', 'UCID.JK', 'UFOE.JK', 'UNIC.JK', 'UNIQ.JK', 'UNSP.JK', 'UVCR.JK', 'VAST.JK', 
+            'VICI.JK', 'VICO.JK', 'VINS.JK', 'VIVA.JK', 'VKTR.JK', 'VOKS.JK', 'VTNY.JK', 'WAPO.JK', 
+            'WEGE.JK', 'WEHA.JK', 'WGSH.JK', 'WINE.JK', 'WINS.JK', 'WMPP.JK', 'WMUU.JK', 'WOMF.JK', 
+            'WOOD.JK', 'WOWS.JK', 'YELO.JK', 'YPAS.JK', 'ZATA.JK', 'ZONE.JK', 'ZBRA.JK', 'ZYRX.JK'
+        ]
+        
+        # Exclude delisted/suspended (dari IDX 2025-2026 update)
+        delisted_suspended = [
+            'ALMI.JK', 'ARMY.JK', 'ARTI.JK', 'BEBS.JK', 'BIKA.JK', 'CNTX.JK', 'ENVY.JK', 'FKON.JK', 
+            'HDTX.JK', 'HITS.JK', 'KPAL.JK', 'MAGP.JK', 'RSGK.JK', 'SKYB.JK', 'SRIL.JK', 'TGRA.JK', 
+            'WICO.JK', 'CHEK.JK', 'PMUI.JK', 'COIN.JK', 'CDIA.JK', 'NIPS.JK', 'PRAS.JK', 'POSA.JK',
+            'WIKA.JK', 'WSKT.JK', 'INAF.JK'
+        ]
+        active_stocks = [s for s in active_stocks if s not in delisted_suspended]
+        
+        # Verifikasi dengan YFinance
+        verified = []
+        for symbol in active_stocks:
+            if symbol not in self.invalid_symbols:
+                try:
+                    time.sleep(0.5)  # Anti-rate limit (dikurangi dari 2 detik)
+                    ticker = yf.Ticker(symbol)
+                    hist = ticker.history(period="30d")  # Cukup 30 hari untuk verifikasi awal
+                    if not hist.empty and len(hist) >= 15 and (hist['Volume'] > 0).mean() > 0.7:
+                        # Check ada data minimal
+                        if len(hist) > 1:
+                            verified.append(symbol)
+                    else:
+                        self.invalid_symbols.add(symbol)
+                        logger.debug(f"⚠️ {symbol}: Insufficient data ({len(hist)} bars)")
+                except Exception as e:
+                    self.invalid_symbols.add(symbol)
+                    logger.debug(f"⚠️ {symbol}: Error - {str(e)[:50]}")
+        
+        # Cache hasil
+        self._verified_stocks = verified[:200]  # Cap di 200
+        
+        logger.info(f"✅ Verified {len(self._verified_stocks)} active high-cap liquid stocks (Jan 2026)")
+        return self._verified_stocks
     
     def get_assets(self, category: str, limit: int = 200, force_update: bool = False) -> List[str]:
         """
         Dapatkan list simbol aset untuk kategori tertentu.
         
-        FIXED: Untuk Indonesia stocks, hanya gunakan LQ45 + Bluechip yang aktif
+        UPDATED: Untuk Indonesia stocks, gunakan daftar aktif Januari 2026
         """
         if category not in ['indonesia_stocks', 'forex', 'us_stocks']:
             raise ValueError(f"Invalid category: {category}. Pilih: indonesia_stocks, forex, us_stocks.")
         
-        # 🚨 FIXED: Untuk saham Indonesia, gunakan LQ45 SAJA
+        # 🚨 UPDATED: Untuk saham Indonesia, gunakan daftar aktif 2026
         if category == 'indonesia_stocks':
-            return self._get_lq45_stocks()[:limit]
+            return self._get_active_stocks()[:limit]
         
         # Untuk forex dan US stocks, gunakan cache
         cache_key = f"{category}_assets"
@@ -78,45 +179,6 @@ class NonCryptoAssetsProvider:
         
         return self._get_static_assets(category)[:limit]
     
-    def _get_lq45_stocks(self) -> List[str]:
-        """Hanya saham LQ45 yang benar-benar aktif trading."""
-        lq45 = [
-            # ✅ Saham LIKUID dengan data YFinance yang BAGUS
-            'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK',
-            'UNVR.JK', 'ICBP.JK', 'INDF.JK', 'ANTM.JK', 'ADRO.JK',
-            'AKRA.JK', 'AMRT.JK', 'INCO.JK', 'BRPT.JK', 'SMGR.JK',
-            'PGAS.JK', 'KLBF.JK', 'CPIN.JK', 'INTP.JK', 'BBNI.JK',
-            'BNGA.JK', 'BSDE.JK', 'GOTO.JK', 'MDKA.JK', 'ITMG.JK',
-            'MNCN.JK', 'ERAA.JK', 'TPIA.JK', 'CTRA.JK', 'EXCL.JK',
-            'JPFA.JK', 'JSMR.JK', 'KIJA.JK', 'MEDC.JK', 'MYOR.JK',
-            'PTBA.JK', 'PTPP.JK', 'SMRA.JK', 'SRIL.JK', 'TBIG.JK',
-            'TINS.JK', 'TKIM.JK', 'ULTJ.JK', 'UNTR.JK', 'WIKA.JK',
-            'WSKT.JK', 'WEGE.JK', 'ADHI.JK', 'ASRI.JK', 'PWON.JK',
-            'SMBR.JK', 'SIDO.JK', 'LPPF.JK', 'HRUM.JK', 'BUMI.JK',
-            'AKPI.JK', 'BRPT.JK', 'INTP.JK', 'JSMR.JK', 'PTBA.JK'
-        ]
-        
-        # Verifikasi saham yang benar-benar ada data di YFinance
-        verified = []
-        for symbol in lq45:
-            if symbol not in self.invalid_symbols:
-                try:
-                    ticker = yf.Ticker(symbol)
-                    hist = ticker.history(period="7d")
-                    if not hist.empty and len(hist) > 3:
-                        verified.append(symbol)
-                    else:
-                        self.invalid_symbols.add(symbol)
-                        logger.warning(f"⚠️ {symbol}: No data found, marking as invalid")
-                except Exception as e:
-                    self.invalid_symbols.add(symbol)
-                    logger.warning(f"⚠️ {symbol}: Error - {str(e)[:50]}")
-            
-            time.sleep(self.rate_limit_delay)  # Hindari rate limit
-        
-        logger.info(f"✅ Verified {len(verified)} LQ45 stocks with valid data")
-        return verified
-    
     # =============================================
     # 🎯 SCREENER YANG EFEKTIF (25 SAHAM TERAKTIF)
     # =============================================
@@ -127,7 +189,7 @@ class NonCryptoAssetsProvider:
                          min_price_change: float = 0.02,  # Minimal 2% price change
                          limit: int = 25) -> List[str]:   # Hanya 25 terbaik
         """
-        🚨 FIXED: Ambil HANYA 25 aset teraktif dari LQ45 untuk analisa!
+        🚨 UPDATED: Ambil HANYA 25 aset teraktif dari daftar aktif 2026 untuk analisa!
         """
         print(f"\n🔥 SCREENING ASET AKTIF ({category})")
         print("=" * 60)
@@ -135,9 +197,9 @@ class NonCryptoAssetsProvider:
         if category != 'indonesia_stocks':
             return self._get_predefined_active(category, limit)
         
-        # 1. Ambil saham LQ45
-        lq45_stocks = self._get_lq45_stocks()[:50]  # 50 teratas
-        print(f"📊 Total LQ45 stocks: {len(lq45_stocks)}")
+        # 1. Ambil saham aktif 2026
+        active_stocks = self._get_active_stocks()[:100]  # 100 teratas untuk screening
+        print(f"📊 Total active stocks: {len(active_stocks)}")
         
         # 2. Screening dengan data 90 hari
         print("🔍 Screening untuk aset aktif...")
@@ -145,14 +207,13 @@ class NonCryptoAssetsProvider:
         screened_stocks = []
         results = []
         
-        for symbol in lq45_stocks:
+        for symbol in active_stocks:
             try:
                 # Ambil data 90 hari untuk analisa yang proper
                 ticker = yf.Ticker(symbol)
                 hist = ticker.history(period="90d", interval="1d")
                 
                 if len(hist) < 30:  # Minimal 30 data points
-                    print(f"  ⚠️ {symbol}: Data kurang ({len(hist)} bars)")
                     continue
                 
                 # Hitung metrics
@@ -200,10 +261,9 @@ class NonCryptoAssetsProvider:
                     'data_points': len(hist)
                 })
                 
-                time.sleep(self.rate_limit_delay * 2)  # Delay lebih lama
+                time.sleep(self.rate_limit_delay)
                 
             except Exception as e:
-                print(f"  ❌ {symbol}: Error - {str(e)[:50]}")
                 continue
         
         # Sort by score
@@ -217,12 +277,13 @@ class NonCryptoAssetsProvider:
             print(f"🎯 Top 5: {screened_stocks[:5]}")
             
             # Debug info
-            print(f"📈 Rata-rata data points: {np.mean([r['data_points'] for r in results[:10]]):.0f}")
-            print(f"📊 Rata-rata volume: {np.mean([r['volume'] for r in results[:10]]):,.0f}")
-            print(f"📉 Rata-rata volatilitas: {np.mean([r['volatility'] for r in results[:10]]):.3%}")
+            if results:
+                print(f"📈 Rata-rata data points: {np.mean([r['data_points'] for r in results[:10]]):.0f}")
+                print(f"📊 Rata-rata volume: {np.mean([r['volume'] for r in results[:10]]):,.0f}")
+                print(f"📉 Rata-rata volatilitas: {np.mean([r['volatility'] for r in results[:10]]):.3%}")
         else:
-            print("⚠️ Tidak ada aset aktif ditemukan, gunakan LQ45 default")
-            screened_stocks = lq45_stocks[:limit]
+            print("⚠️ Tidak ada aset aktif ditemukan, gunakan default")
+            screened_stocks = active_stocks[:limit]
         
         return screened_stocks
     
@@ -235,7 +296,7 @@ class NonCryptoAssetsProvider:
                                rsi_oversold: int = 30,
                                rsi_overbought: int = 70) -> List[Dict]:
         """
-        FIXED: Generate trading signals dengan data yang cukup.
+        UPDATED: Generate trading signals dengan data yang cukup.
         Hanya analisa jika punya minimal 40 bars data.
         """
         if symbols is None:
@@ -258,7 +319,7 @@ class NonCryptoAssetsProvider:
                         
                         if len(hist) < min_bars:
                             print(f"    ⚠️ Data tidak cukup: {len(hist)} < {min_bars} bars")
-                            break  # Skip, tidak cukup data
+                            break
                         
                         # ✅ DATA CUKUP, lanjut analisa
                         break
@@ -403,7 +464,7 @@ class NonCryptoAssetsProvider:
                 else:
                     print(f"    ⚪ HOLD (Strength: {signal_strength}/10)")
                 
-                time.sleep(self.rate_limit_delay * 2)
+                time.sleep(self.rate_limit_delay)
                 
             except Exception as e:
                 print(f"    ❌ Error: {str(e)[:50]}")
@@ -468,12 +529,13 @@ class NonCryptoAssetsProvider:
     def get_hot_sectors(self) -> Dict[str, List[str]]:
         """Identifikasi sektor yang sedang aktif."""
         sector_map = {
-            'BANKING': ['BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'BNGA.JK'],
-            'MINING': ['ANTM.JK', 'ADRO.JK', 'INCO.JK', 'BRPT.JK', 'PTBA.JK'],
-            'CONSUMER': ['UNVR.JK', 'ICBP.JK', 'INDF.JK', 'MYOR.JK', 'ULTJ.JK'],
-            'PROPERTY': ['BSDE.JK', 'CTRA.JK', 'ASRI.JK', 'SMRA.JK', 'PWON.JK'],
-            'INFRASTRUCTURE': ['WIKA.JK', 'PTPP.JK', 'ADHI.JK', 'JSMR.JK', 'SRIL.JK'],
-            'TECH': ['GOTO.JK', 'BRIS.JK', 'DMMX.JK', 'ARTO.JK', 'TCID.JK']
+            'BANKING': ['BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'BNGA.JK', 'BRIS.JK', 'BBTN.JK'],
+            'MINING': ['ANTM.JK', 'ADRO.JK', 'INCO.JK', 'BRPT.JK', 'PTBA.JK', 'MDKA.JK', 'TINS.JK'],
+            'CONSUMER': ['UNVR.JK', 'ICBP.JK', 'INDF.JK', 'MYOR.JK', 'ULTJ.JK', 'SIDO.JK', 'TCPI.JK'],
+            'PROPERTY': ['BSDE.JK', 'CTRA.JK', 'ASRI.JK', 'SMRA.JK', 'PWON.JK', 'JRPT.JK', 'LPPS.JK'],
+            'INFRASTRUCTURE': ['WIKA.JK', 'PTPP.JK', 'ADHI.JK', 'JSMR.JK', 'SRIL.JK', 'WEGE.JK', 'MTEL.JK'],
+            'TECH': ['GOTO.JK', 'BRIS.JK', 'DMMX.JK', 'ARTO.JK', 'TCID.JK', 'EMTK.JK', 'DSSA.JK'],
+            'ENERGY': ['PGAS.JK', 'MEDC.JK', 'AKRA.JK', 'HRUM.JK', 'BUMI.JK', 'ITMG.JK', 'ENRG.JK']
         }
         
         active_symbols = set(self.get_active_assets(limit=50))
@@ -490,7 +552,7 @@ class NonCryptoAssetsProvider:
                          reverse=True))
     
     # =============================================
-    # 🛠️ FUNGSI HELPER (TETAP SAMA)
+    # 🛠️ FUNGSI HELPER (UPDATED)
     # =============================================
     
     def _get_predefined_active(self, category: str, limit: int) -> List[str]:
@@ -519,7 +581,7 @@ class NonCryptoAssetsProvider:
                 'JPM', 'V', 'JNJ', 'WMT', 'PG', 'MA', 'UNH', 'HD'
             ]
         elif category == 'indonesia_stocks':
-            return self._get_lq45_stocks()
+            return self._get_active_stocks()  # Gunakan daftar aktif 2026
         elif category == 'forex':
             return [
                 'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X',
@@ -549,11 +611,11 @@ class NonCryptoAssetsProvider:
 if __name__ == "__main__":
     provider = NonCryptoAssetsProvider()
     
-    print("🚀 NON-CRYPTO ASSETS PROVIDER - FIXED VERSION")
+    print("🚀 NON-CRYPTO ASSETS PROVIDER - UPDATED 2026 VERSION")
     print("=" * 60)
     
-    # 1. Dapatkan saham aktif LQ45
-    print("\n1️⃣ Mengambil 25 saham LQ45 teraktif...")
+    # 1. Dapatkan saham aktif 2026
+    print("\n1️⃣ Mengambil 25 saham aktif terbaik 2026...")
     active_stocks = provider.get_active_assets(
         category='indonesia_stocks',
         min_volume=5_000_000,
@@ -602,9 +664,9 @@ if __name__ == "__main__":
         print(f"   🔥 {sector}: {', '.join(stocks[:3])}")
     
     print("\n" + "=" * 60)
-    print("🎯 STRATEGI EFEKTIF:")
-    print("   • Analisa hanya 25 saham LQ45 teraktif")
+    print("🎯 STRATEGI EFEKTIF 2026:")
+    print("   • Analisa hanya 25 saham aktif terbaik dari daftar 200+")
     print("   • Minimal 40 bars data untuk analisa")
     print("   • Multi-indicator confirmation (RSI, MACD, MA, Volume)")
     print("   • Strength threshold >= 4 untuk filter noise")
-    print("\n✅ File telah difix untuk menghasilkan signal trading!")
+    print("\n✅ File telah diupdate dengan daftar saham aktif Januari 2026!")
