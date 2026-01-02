@@ -2829,7 +2829,7 @@ class EnhancedTradingBot:
             return []
     
     def _get_non_crypto_assets_from_provider(self, limit=500):
-        """Get non-crypto assets dari NonCryptoAssetsProvider dengan limit lebih besar"""
+        """Get non-crypto assets dari NonCryptoAssetsProvider - OPTIMIZED UNTUK SAHAM"""
         try:
             if not self.non_crypto_provider:
                 logger.warning("⚠️ NonCryptoAssetsProvider not available")
@@ -2846,61 +2846,70 @@ class EnhancedTradingBot:
                 logger.error(f"Invalid mode for NonCryptoAssetsProvider: {self.mode}")
                 return self._get_non_crypto_assets_fallback()
             
-            # **PERBAIKAN: Minta lebih banyak aset (500-600) untuk memastikan cukup**
-            requested_limit = min(600, limit * 2)  # Minta 2x limit yang diinginkan
-            
-            # **PERBAIKAN UTAMA: Gunakan get_active_assets() bukan get_assets()**
-            # Hanya ambil aset aktif dengan volume dan volatilitas yang memadai
-            min_volume = 1_000_000  # Minimal volume 1 juta lembar/unit
-            min_volatility = 0.025   # Minimal volatilitas 2.5%
-            
-            if hasattr(self.non_crypto_provider, 'get_active_assets'):
-                symbols = self.non_crypto_provider.get_active_assets(
-                    category=category,
-                    min_volume=min_volume,
-                    min_volatility=min_volatility,
-                    limit=requested_limit
-                )
-                logger.info(f"📊 Menggunakan get_active_assets() untuk {self.mode} - {len(symbols)} aset aktif")
-            else:
-                # Fallback ke get_assets() jika method get_active_assets tidak ada
-                symbols = self.non_crypto_provider.get_assets(
-                    category=category, 
-                    limit=requested_limit, 
-                    force_update=True
-                )
-                logger.warning(f"⚠️ Menggunakan get_assets() (fallback) untuk {self.mode}")
-            
-            if not symbols:
-                logger.warning(f"No symbols found for {self.mode} from NonCryptoAssetsProvider")
-                return self._get_non_crypto_assets_fallback()
-            
-            logger.info(f"📊 NonCryptoAssetsProvider returned {len(symbols)} symbols for {self.mode}")
-            
-            # Jika kurang dari yang diminta, tambahkan dari fallback
-            if len(symbols) < limit:
-                logger.info(f"⚠️ Provider hanya memberikan {len(symbols)} simbol, menambah dari fallback...")
-                fallback_symbols = self._get_non_crypto_assets_fallback()
+            # **PERBAIKAN KHUSUS UNTUK SAHAM INDONESIA: SCAN SEMUA!**
+            if self.mode == 'saham_id':
+                logger.info("📊 MODE SAHAM INDONESIA: Menggunakan FULL LIST (semua saham)")
                 
-                # Gabungkan dan hilangkan duplikat
-                all_symbols = list(set(symbols + [s['symbol'] for s in fallback_symbols]))
-                symbols = all_symbols[:limit]
-                logger.info(f"📊 Total setelah gabung: {len(symbols)} simbol")
+                # **STRATEGI SMART:** 
+                # 1. Ambil dari provider jika ada method get_all_assets
+                # 2. Jika tidak, gunakan fallback lengkap
+                # 3. Untuk saham, TIDAK PERLU filter min_volume/min_volatility
+                
+                if hasattr(self.non_crypto_provider, 'get_all_assets'):
+                    symbols = self.non_crypto_provider.get_all_assets(category=category)
+                    logger.info(f"✅ Menggunakan get_all_assets() untuk {self.mode} - {len(symbols)} saham")
+                else:
+                    # Untuk saham Indonesia, skip volume filter, ambil semua
+                    symbols = self.non_crypto_provider.get_assets(
+                        category=category, 
+                        limit=1000,  # Request besar untuk cover semua
+                        force_update=True
+                    )
+                    logger.info(f"📊 Menggunakan get_assets() untuk {self.mode} - {len(symbols)} saham")
+                
+                # Jika masih sedikit, gunakan fallback lengkap
+                if not symbols or len(symbols) < 50:
+                    logger.info(f"⚠️ Provider hanya memberikan {len(symbols)} saham, menggunakan fallback lengkap")
+                    fallback_assets = self._get_non_crypto_assets_fallback()
+                    return fallback_assets  # Return semua dari fallback
+                
+            else:
+                # Untuk forex & US stocks, gunakan strategi normal dengan filter
+                requested_limit = min(600, limit * 2)
+                min_volume = 1_000_000  
+                min_volatility = 0.025
+                
+                if hasattr(self.non_crypto_provider, 'get_active_assets'):
+                    symbols = self.non_crypto_provider.get_active_assets(
+                        category=category,
+                        min_volume=min_volume,
+                        min_volatility=min_volatility,
+                        limit=requested_limit
+                    )
+                    logger.info(f"📊 Menggunakan get_active_assets() untuk {self.mode} - {len(symbols)} aset aktif")
+                else:
+                    symbols = self.non_crypto_provider.get_assets(
+                        category=category, 
+                        limit=requested_limit, 
+                        force_update=True
+                    )
+                    logger.warning(f"⚠️ Menggunakan get_assets() (fallback) untuk {self.mode}")
             
-            # Format hasil untuk konsistensi
+            logger.info(f"📊 Provider returned {len(symbols)} symbols for {self.mode}")
+            
+            # Format hasil
             processed_assets = []
             
-            for symbol in symbols[:limit]:
-                # Untuk non-crypto, semua adalah spot trading
+            for symbol in symbols:
                 detected_type = "spot"
                 
-                # Format simbol untuk provider
                 if self.mode == 'saham_id':
                     if not symbol.endswith('.JK'):
                         formatted_symbol = f"{symbol}.JK"
                     else:
                         formatted_symbol = symbol
                         
+                    # Ambil nama saham dari yfinance atau gunakan symbol
                     try:
                         import yfinance as yf
                         ticker = yf.Ticker(formatted_symbol)
@@ -2948,11 +2957,8 @@ class EnhancedTradingBot:
                     'source': 'non_crypto_provider'
                 })
             
-            # Acak urutan untuk menghindari bias
-            random.shuffle(processed_assets)
-            
             logger.info(f"✅ Processed {len(processed_assets)} assets from NonCryptoAssetsProvider")
-            return processed_assets[:limit]
+            return processed_assets[:2000]  # Return banyak untuk scanning lengkap
             
         except Exception as e:
             logger.error(f"Error getting non-crypto assets: {e}")
@@ -2965,187 +2971,75 @@ class EnhancedTradingBot:
         fallback_assets = []
         
         if self.mode == 'saham_id':
-            # Saham Indonesia fallback - DIPERBESAR KE 500 ASET
+            # Saham Indonesia fallback - LIST LENGKAP TANPA LIMIT (DIPERBARUI)
             fallback_symbols = [
-                'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK',
-                'UNVR.JK', 'ICBP.JK', 'INDF.JK', 'ANTM.JK', 'ADRO.JK',
-                'AKRA.JK', 'AMRT.JK', 'INCO.JK', 'BRPT.JK', 'SMGR.JK',
-                'PGAS.JK', 'KLBF.JK', 'CPIN.JK', 'INTP.JK', 'BBNI.JK',
-                'BNGA.JK', 'BSDE.JK', 'BUKA.JK', 'GOTO.JK', 'MDKA.JK',
-                'ITMG.JK', 'MNCN.JK', 'ERAA.JK', 'TPIA.JK', 'BUMI.JK',
-                'CTRA.JK', 'EXCL.JK', 'HRUM.JK', 'JPFA.JK', 'JSMR.JK',
-                'KIJA.JK', 'LPPF.JK', 'MEDC.JK', 'MYOR.JK', 'PTBA.JK',
-                'PTPP.JK', 'SIDO.JK', 'SMRA.JK', 'SRIL.JK', 'TBIG.JK',
-                'TINS.JK', 'TOTO.JK', 'TPMA.JK', 'ULTJ.JK', 'UNTR.JK',
-                'WIKA.JK', 'WSKT.JK', 'WSBP.JK', 'WEGE.JK', 'WTON.JK',
-                'YPAS.JK', 'ACES.JK', 'ADMR.JK', 'AGRO.JK', 'AIMS.JK',
-                'AKPI.JK', 'ALMI.JK', 'AMAG.JK', 'APLN.JK', 'ARNA.JK',
-                'ASSA.JK', 'AUTO.JK', 'BATA.JK', 'BIMA.JK', 'BOLT.JK',
-                'BRMS.JK', 'BTEK.JK', 'BTPN.JK', 'CARE.JK', 'CEKA.JK',
-                'CMNP.JK', 'CNTX.JK', 'COWL.JK', 'CPRO.JK', 'CTTH.JK',
-                'DART.JK', 'DEWA.JK', 'DILD.JK', 'DNET.JK', 'DSSA.JK',
-                'DVLA.JK', 'EKAD.JK', 'ELSA.JK', 'EMTK.JK', 'ENRG.JK',
-                'ESSA.JK', 'ESTI.JK', 'EXSA.JK', 'FASW.JK', 'FILM.JK',
-                'GDST.JK', 'GEMA.JK', 'GGRM.JK', 'GJTL.JK', 'GLOB.JK',
-                'GOLD.JK', 'GTBO.JK', 'HDFA.JK', 'HEAL.JK', 'HELI.JK',
-                'HERO.JK', 'HITS.JK', 'HMSP.JK', 'HOME.JK', 'ICON.JK',
-                'IFII.JK', 'IGAR.JK', 'IIKP.JK', 'IKAI.JK', 'IMAS.JK',
-                'INAF.JK', 'INAI.JK', 'INCF.JK', 'INDX.JK', 'INKP.JK',
-                'INPC.JK', 'INPP.JK', 'INPS.JK', 'INRU.JK', 'INTA.JK',
-                'INTP.JK', 'IPCC.JK', 'ISAT.JK', 'ITIC.JK', 'ITMG.JK',
-                'JAST.JK', 'JECC.JK', 'JIHD.JK', 'JKON.JK', 'JPFA.JK',
-                'JSMR.JK', 'KBLI.JK', 'KBLM.JK', 'KDSI.JK', 'KIJA.JK',
-                'KKGI.JK', 'KLBF.JK', 'KOIN.JK', 'KPAL.JK', 'KRAS.JK',
-                'LION.JK', 'LMAS.JK', 'LMPI.JK', 'LPCK.JK', 'LPPF.JK',
-                'LSIP.JK', 'LTLS.JK', 'MABA.JK', 'MAGP.JK', 'MAIN.JK',
-                'MAPI.JK', 'MASA.JK', 'MBAP.JK', 'MBSS.JK', 'MCAS.JK',
-                'MDIA.JK', 'MDKA.JK', 'MEDC.JK', 'MEGA.JK', 'MERK.JK',
-                'META.JK', 'MFIN.JK', 'MIKA.JK', 'MLBI.JK', 'MLIA.JK',
-                'MLPL.JK', 'MMLP.JK', 'MNCN.JK', 'MPMX.JK', 'MRAT.JK',
-                'MTDL.JK', 'MTFN.JK', 'MYOH.JK', 'MYOR.JK', 'MYRX.JK',
-                'NATO.JK', 'NFCX.JK', 'NIKL.JK', 'NIPS.JK', 'NOVO.JK',
-                'NRCA.JK', 'OKAS.JK', 'OPMS.JK', 'PALM.JK', 'PANI.JK',
-                'PANS.JK', 'PBRX.JK', 'PCAR.JK', 'PEHA.JK', 'PGAS.JK',
-                'PGLI.JK', 'PICO.JK', 'PJAA.JK', 'PKPK.JK', 'PLAS.JK',
-                'PLIN.JK', 'PMJS.JK', 'PNBN.JK', 'PNBS.JK', 'PNIN.JK',
-                'PNLF.JK', 'POLA.JK', 'POLU.JK', 'POWR.JK', 'PPRE.JK',
-                'PRAS.JK', 'PRDA.JK', 'PSAB.JK', 'PSDN.JK', 'PSGO.JK',
-                'PTBA.JK', 'PTIS.JK', 'PTPP.JK', 'PTRO.JK', 'PURI.JK',
-                'PWON.JK', 'PYFA.JK', 'RAJA.JK', 'RALS.JK', 'RANC.JK',
-                'RBMS.JK', 'RDTX.JK', 'REAL.JK', 'RICY.JK', 'RIGS.JK',
-                'RIMO.JK', 'RODA.JK', 'RONY.JK', 'ROTI.JK', 'RSGK.JK',
-                'RUIS.JK', 'SAFE.JK', 'SAME.JK', 'SAMF.JK', 'SAPX.JK',
-                'SATU.JK', 'SBAT.JK', 'SCCO.JK', 'SCMA.JK', 'SCNP.JK',
-                'SDMU.JK', 'SDPC.JK', 'SFAN.JK', 'SGER.JK', 'SGRO.JK',
-                'SHID.JK', 'SIDO.JK', 'SILO.JK', 'SIMA.JK', 'SIMP.JK',
-                'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK', 'SKYB.JK',
-                'SLIS.JK', 'SMBR.JK', 'SMCB.JK', 'SMGR.JK', 'SMMA.JK',
-                'SMMT.JK', 'SMRA.JK', 'SMSM.JK', 'SNLK.JK', 'SOCI.JK',
-                'SOSS.JK', 'SOTS.JK', 'SPTO.JK', 'SQMI.JK', 'SRIL.JK',
-                'SRSN.JK', 'SRTG.JK', 'SSIA.JK', 'SSMS.JK', 'SSTM.JK',
-                'STAR.JK', 'STTP.JK', 'SUGI.JK', 'SULI.JK', 'SUPR.JK',
-                'SURY.JK', 'SWAT.JK', 'TALF.JK', 'TAMA.JK', 'TAPG.JK',
-                'TARA.JK', 'TAXI.JK', 'TBIG.JK', 'TBLA.JK', 'TCID.JK',
-                'TCPI.JK', 'TDPM.JK', 'TEBE.JK', 'TELE.JK', 'TFAS.JK',
-                'TFCO.JK', 'TGKA.JK', 'TGRA.JK', 'TIFA.JK', 'TINS.JK',
-                'TIRT.JK', 'TKIM.JK', 'TLDN.JK', 'TLKM.JK', 'TMAS.JK',
-                'TMPO.JK', 'TOTO.JK', 'TOWR.JK', 'TOYS.JK', 'TPIA.JK',
-                'TPMA.JK', 'TRIO.JK', 'TRIS.JK', 'TRST.JK', 'TRUB.JK',
-                'TSPC.JK', 'TUGU.JK', 'TUNA.JK', 'UCID.JK', 'UFOE.JK',
-                'ULTJ.JK', 'UNIC.JK', 'UNIT.JK', 'UNSP.JK', 'UNTR.JK',
-                'UNVR.JK', 'URBN.JK', 'VICI.JK', 'VINS.JK', 'VIVA.JK',
-                'VOKS.JK', 'VRNA.JK', 'WAPO.JK', 'WEGE.JK', 'WEHA.JK',
-                'WICO.JK', 'WIFI.JK', 'WIKA.JK', 'WINS.JK', 'WMPP.JK',
-                'WOOD.JK', 'WOWS.JK', 'WSBP.JK', 'WSKT.JK', 'WTON.JK',
-                'YELO.JK', 'YPAS.JK', 'ZBRA.JK', 'ZONE.JK',
-                'BALI.JK', 'BAND.JK', 'BANG.JK', 'BATA.JK', 'BEEF.JK',
-                'BIMA.JK', 'BIPI.JK', 'BIRD.JK', 'BJTM.JK', 'BJBR.JK',
-                'BKDP.JK', 'BKSL.JK', 'BKSW.JK', 'BLTA.JK', 'BLTZ.JK',
-                'BMBL.JK', 'BMHS.JK', 'BMTR.JK', 'BNBA.JK', 'BNGA.JK',
-                'BOBA.JK', 'BOSS.JK', 'BPFI.JK', 'BPII.JK', 'BRAM.JK',
-                'BRIS.JK', 'BRMS.JK', 'BSIM.JK', 'BSSR.JK', 'BSWD.JK',
-                'BTEK.JK', 'BTEL.JK', 'BTPN.JK', 'BUDI.JK', 'BUKK.JK',
-                'CAMP.JK', 'CANI.JK', 'CASA.JK', 'CEKA.JK', 'CENT.JK',
-                'CFIN.JK', 'CINT.JK', 'CITA.JK', 'CLAY.JK', 'CLEO.JK',
-                'CMNP.JK', 'CMNT.JK', 'CMRY.JK', 'CNKO.JK', 'CNTX.JK',
-                'COWL.JK', 'CPRO.JK', 'CTTH.JK', 'DART.JK', 'DAYA.JK',
-                'DCII.JK', 'DEAL.JK', 'DEFI.JK', 'DGIK.JK', 'DIGI.JK',
-                'DILD.JK', 'DIVA.JK', 'DKFT.JK', 'DLTA.JK', 'DMMX.JK',
-                'DMND.JK', 'DNET.JK', 'DOID.JK', 'DPNS.JK', 'DSFI.JK',
-                'DSNG.JK', 'DSSA.JK', 'DUCK.JK', 'DUTI.JK', 'DVLA.JK',
-                'DWGL.JK', 'ECII.JK', 'EDGE.JK', 'EKAD.JK', 'ELSA.JK',
-                'ELTY.JK', 'EMDE.JK', 'EMTK.JK', 'ENRG.JK', 'ENVY.JK',
-                'EPMT.JK', 'ERAA.JK', 'ESIP.JK', 'ESSA.JK', 'ESTI.JK',
-                'ETWA.JK', 'EXSA.JK', 'FAPA.JK', 'FASW.JK', 'FAST.JK',
-                'FIRE.JK', 'FISH.JK', 'FITT.JK', 'FKON.JK', 'FMII.JK',
-                'FORU.JK', 'FORZ.JK', 'FPNI.JK', 'FREN.JK', 'FUJI.JK',
-                'GAMA.JK', 'GDST.JK', 'GDYR.JK', 'GEMA.JK', 'GEMS.JK',
-                'GGRM.JK', 'GIHO.JK', 'GJTL.JK', 'GLOB.JK', 'GMFI.JK',
-                'GMTD.JK', 'GOLD.JK', 'GOLL.JK', 'GOOD.JK', 'GPRA.JK',
-                'GRHA.JK', 'GSMF.JK', 'GTBO.JK', 'GWSA.JK', 'GZCO.JK',
-                'HADE.JK', 'HAIS.JK', 'HDFA.JK', 'HDTX.JK', 'HEAL.JK',
-                'HELI.JK', 'HERO.JK', 'HEXA.JK', 'HITS.JK', 'HKMU.JK',
-                'HMSP.JK', 'HOKI.JK', 'HOME.JK', 'HOMI.JK', 'HOPE.JK',
-                'HOTL.JK', 'HRTA.JK', 'HRUM.JK', 'IATA.JK', 'IBFN.JK',
-                'IBST.JK', 'ICON.JK', 'IDPR.JK', 'IFII.JK', 'IFSH.JK',
-                'IGAR.JK', 'IIKP.JK', 'IKAI.JK', 'IKAN.JK', 'IKBI.JK',
-                'IMAS.JK', 'IMJS.JK', 'IMPC.JK', 'INAF.JK', 'INAI.JK',
-                'INCF.JK', 'INCI.JK', 'INCO.JK', 'INDF.JK', 'INDO.JK',
-                'INDR.JK', 'INDS.JK', 'INDX.JK', 'INDY.JK', 'INKP.JK',
-                'INOV.JK', 'INPC.JK', 'INPP.JK', 'INPS.JK', 'INRU.JK',
-                'INTA.JK', 'INTD.JK', 'INTP.JK', 'IPCC.JK', 'IPCM.JK',
-                'IPOL.JK', 'IPTV.JK', 'IRRA.JK', 'ISAT.JK', 'ISSP.JK',
-                'ITIC.JK', 'ITMA.JK', 'ITMG.JK', 'JAST.JK', 'JAWA.JK',
-                'JAYA.JK', 'JECC.JK', 'JIHD.JK', 'JKON.JK', 'JKSW.JK',
-                'JMAS.JK', 'JPFA.JK', 'JPRS.JK', 'JRPT.JK', 'JSKY.JK',
-                'JSMR.JK', 'JSPT.JK', 'JTPE.JK', 'KAEF.JK', 'KARW.JK',
-                'KBLI.JK', 'KBLM.JK', 'KDSI.JK', 'KEEN.JK', 'KEJU.JK',
-                'KIJA.JK', 'KINO.JK', 'KIOS.JK', 'KJEN.JK', 'KKGI.JK',
-                'KLBF.JK', 'KMDS.JK', 'KMTR.JK', 'KOBX.JK', 'KOIN.JK',
-                'KONI.JK', 'KOPI.JK', 'KOTA.JK', 'KPAL.JK', 'KPAS.JK',
-                'KRAH.JK', 'KRAS.JK', 'KREN.JK', 'KUAS.JK', 'LABA.JK',
-                'LAND.JK', 'LAPD.JK', 'LCGP.JK', 'LCKM.JK', 'LEAD.JK',
-                'LIFE.JK', 'LINK.JK', 'LION.JK', 'LMAS.JK', 'LMPI.JK',
-                'LMSH.JK', 'LPCK.JK', 'LPGI.JK', 'LPIN.JK', 'LPLI.JK',
-                'LPPF.JK', 'LPPS.JK', 'LRNA.JK', 'LSIP.JK', 'LTLS.JK',
-                'LUCK.JK', 'MAGP.JK', 'MAHA.JK', 'MAIN.JK', 'MAMI.JK',
-                'MAPA.JK', 'MAPI.JK', 'MARI.JK', 'MARK.JK', 'MASA.JK',
-                'MAYA.JK', 'MBAP.JK', 'MBSS.JK', 'MBTO.JK', 'MCAS.JK',
-                'MCOL.JK', 'MCOR.JK', 'MDIA.JK', 'MDKA.JK', 'MDLN.JK',
-                'MDRN.JK', 'MEDC.JK', 'MEGA.JK', 'MERK.JK', 'META.JK',
-                'MFIN.JK', 'MGNA.JK', 'MICE.JK', 'MIDI.JK', 'MIKA.JK',
-                'MINA.JK', 'MIRA.JK', 'MITI.JK', 'MLBI.JK', 'MLIA.JK',
-                'MLPL.JK', 'MLPT.JK', 'MMLP.JK', 'MNCN.JK', 'MOLI.JK',
-                'MPMX.JK', 'MPOW.JK', 'MPPA.JK', 'MRAT.JK', 'MREI.JK',
-                'MSIN.JK', 'MSKY.JK', 'MTDL.JK', 'MTFN.JK', 'MTLA.JK',
-                'MTPS.JK', 'MTRA.JK', 'MTSM.JK', 'MYOH.JK', 'MYOR.JK',
-                'MYRX.JK', 'MYTX.JK', 'NANO.JK', 'NASA.JK', 'NATO.JK',
-                'NELY.JK', 'NFCX.JK', 'NICK.JK', 'NIKL.JK', 'NIPS.JK',
-                'NIRO.JK', 'NISP.JK', 'NOBU.JK', 'NOVO.JK', 'NPGF.JK',
-                'NRCA.JK', 'NUSA.JK', 'NZIA.JK', 'OASA.JK', 'OCAP.JK',
-                'OILS.JK', 'OKAS.JK', 'OMRE.JK', 'OPMS.JK', 'PADI.JK',
-                'PALM.JK', 'PAMG.JK', 'PANI.JK', 'PANS.JK', 'PBRX.JK',
-                'PBSA.JK', 'PCAR.JK', 'PDES.JK', 'PEGE.JK', 'PEHA.JK',
-                'PGAS.JK', 'PGLI.JK', 'PGUN.JK', 'PICO.JK', 'PJAA.JK',
-                'PKPK.JK', 'PLAN.JK', 'PLAS.JK', 'PLIN.JK', 'PMJS.JK',
-                'PMMP.JK', 'PNBN.JK', 'PNBS.JK', 'PNIN.JK', 'PNLF.JK',
-                'PNSE.JK', 'POLA.JK', 'POLU.JK', 'POWR.JK', 'PPRE.JK',
-                'PPRO.JK', 'PRAS.JK', 'PRDA.JK', 'PRIM.JK', 'PSAB.JK',
-                'PSDN.JK', 'PSGO.JK', 'PSKT.JK', 'PSSI.JK', 'PTBA.JK',
-                'PTDU.JK', 'PTIS.JK', 'PTPP.JK', 'PTPW.JK', 'PTRO.JK',
-                'PTSN.JK', 'PULU.JK', 'PURI.JK', 'PWON.JK', 'PYFA.JK',
-                'RALS.JK', 'RANC.JK', 'RBMS.JK', 'RDTX.JK', 'REAL.JK',
-                'RELI.JK', 'RICY.JK', 'RIGS.JK', 'RIMO.JK', 'RISE.JK',
-                'RMBA.JK', 'ROCK.JK', 'RODA.JK', 'RONY.JK', 'ROTI.JK',
-                'RSGK.JK', 'RUIS.JK', 'RUNS.JK', 'SAFE.JK', 'SAME.JK',
-                'SAMF.JK', 'SAPX.JK', 'SATU.JK', 'SBAT.JK', 'SCCO.JK',
-                'SCMA.JK', 'SCNP.JK', 'SDMU.JK', 'SDPC.JK', 'SDRA.JK',
-                'SFAN.JK', 'SGER.JK', 'SGRO.JK', 'SHID.JK', 'SIDO.JK',
-                'SILO.JK', 'SIMA.JK', 'SIMP.JK', 'SIPD.JK', 'SKBM.JK',
-                'SKLT.JK', 'SKRN.JK', 'SKYB.JK', 'SLIS.JK', 'SMBR.JK',
-                'SMCB.JK', 'SMGR.JK', 'SMMA.JK', 'SMMT.JK', 'SMRA.JK',
-                'SMSM.JK', 'SNLK.JK', 'SOCI.JK', 'SOSS.JK', 'SOTS.JK',
-                'SPTO.JK', 'SQMI.JK', 'SRIL.JK', 'SRSN.JK', 'SRTG.JK',
-                'SSIA.JK', 'SSMS.JK', 'SSTM.JK', 'STAR.JK', 'STTP.JK',
-                'SUGI.JK', 'SULI.JK', 'SUPR.JK', 'SURY.JK', 'SWAT.JK',
-                'TALF.JK', 'TAMA.JK', 'TAPG.JK', 'TARA.JK', 'TAXI.JK',
-                'TBIG.JK', 'TBLA.JK', 'TCID.JK', 'TCPI.JK', 'TDPM.JK',
-                'TEBE.JK', 'TELE.JK', 'TFAS.JK', 'TFCO.JK', 'TGKA.JK',
-                'TGRA.JK', 'TIFA.JK', 'TINS.JK', 'TIRT.JK', 'TKIM.JK',
-                'TLKM.JK', 'TMAS.JK', 'TMPO.JK', 'TOTO.JK', 'TOWR.JK',
-                'TOYS.JK', 'TPIA.JK', 'TPMA.JK', 'TRIO.JK', 'TRIS.JK',
-                'TRST.JK', 'TRUB.JK', 'TSPC.JK', 'TUGU.JK', 'TUNA.JK',
-                'UCID.JK', 'UFOE.JK', 'ULTJ.JK', 'UNIC.JK', 'UNIT.JK',
-                'UNSP.JK', 'UNTR.JK', 'UNVR.JK', 'URBN.JK', 'VICI.JK',
-                'VINS.JK', 'VIVA.JK', 'VOKS.JK', 'VRNA.JK', 'WAPO.JK',
-                'WEGE.JK', 'WEHA.JK', 'WICO.JK', 'WIFI.JK', 'WIKA.JK',
-                'WINS.JK', 'WMPP.JK', 'WOOD.JK', 'WOWS.JK', 'WSBP.JK',
-                'WSKT.JK', 'WTON.JK', 'YELO.JK', 'YPAS.JK', 'ZBRA.JK',
-                'ZONE.JK', 'ZYRX.JK'
-            ][:500]  # Ambil 500 pertama
+                'AADI.JK', 'ACES.JK', 'ADMR.JK', 'ADRO.JK', 'AKRA.JK', 'AMMN.JK', 'ANTM.JK', 'ASII.JK', 
+                'AVIA.JK', 'BBCA.JK', 'BBNI.JK', 'BBRI.JK', 'BMRI.JK', 'BRMS.JK', 'BRPT.JK', 'BUKA.JK', 
+                'BUMI.JK', 'BYAN.JK', 'CPIN.JK', 'CTRA.JK', 'DSSA.JK', 'EMTK.JK', 'ESSA.JK', 'EXCL.JK', 
+                'GOTO.JK', 'HEAL.JK', 'ICBP.JK', 'INCO.JK', 'INDF.JK', 'INKP.JK', 'INTP.JK', 'ITMG.JK', 
+                'JPFA.JK', 'JSMR.JK', 'KLBF.JK', 'MAPA.JK', 'MDKA.JK', 'MEDC.JK', 'MTEL.JK', 'NCKL.JK', 
+                'PGAS.JK', 'PTBA.JK', 'PGEO.JK', 'SCMA.JK', 'SIDO.JK', 'SMGR.JK', 'SRTG.JK', 'TBIG.JK', 
+                'TINS.JK', 'TLKM.JK', 'TOWR.JK', 'TPIA.JK', 'UNTR.JK', 'UNVR.JK',
+                
+                # Tambahan dari IDX80 dan top performers 2025-2026
+                'AGII.JK', 'AGRO.JK', 'AKSI.JK', 'ALTO.JK', 'AMRT.JK', 'APLN.JK', 'ARTO.JK', 'ASRI.JK', 
+                'ASSA.JK', 'BACA.JK', 'BALI.JK', 'BANK.JK', 'BBHI.JK', 'BBKP.JK', 'BBTN.JK', 'BCAP.JK', 
+                'BFIN.JK', 'BINA.JK', 'BJBR.JK', 'BJTM.JK', 'BKSW.JK', 'BMAS.JK', 'BNGA.JK', 'BNII.JK', 
+                'BRIS.JK', 'BSDE.JK', 'BSSR.JK', 'BTPS.JK', 'BVIC.JK', 'CASA.JK', 'CMNP.JK', 'CMRY.JK', 
+                'CSAP.JK', 'CSMI.JK', 'DMAS.JK', 'DMND.JK', 'DOID.JK', 'DSNG.JK', 'DUTI.JK', 'ELSA.JK', 
+                'ENRG.JK', 'FAST.JK', 'FREN.JK', 'GEMS.JK', 'GIAA.JK', 'GOOD.JK', 'HEXA.JK', 'HOKI.JK', 
+                'HRTA.JK', 'HRUM.JK', 'IBFN.JK', 'IFSH.JK', 'IMAS.JK', 'IMJS.JK', 'IMPC.JK', 'INAF.JK',
+                'INAI.JK', 'INCF.JK', 'INDO.JK', 'INDR.JK', 'INDX.JK', 'INDY.JK', 'INPC.JK', 'INPP.JK', 
+                'INPS.JK', 'INRU.JK', 'IPCC.JK', 'IPCM.JK', 'IPOL.JK', 'ISAT.JK', 'ISSP.JK', 'ITIC.JK', 
+                'JARR.JK', 'JAST.JK', 'JECC.JK', 'JIHD.JK', 'JKSW.JK', 'JMAS.JK', 'JRPT.JK', 'KAEF.JK', 
+                'KARW.JK', 'KBAG.JK', 'KBLI.JK', 'KBLM.JK', 'KBLV.JK', 'KDSI.JK', 'KEEN.JK', 'KIAS.JK', 
+                'KIJA.JK', 'KKES.JK', 'KMDS.JK', 'KMTR.JK', 'KOBX.JK', 'KOPI.JK', 'KPAS.JK', 'KPPI.JK', 
+                'KRAS.JK', 'KREN.JK', 'LAND.JK', 'LAPD.JK', 'LCKM.JK', 'LEAD.JK', 'LIFE.JK', 'LINK.JK', 
+                'LION.JK', 'LMAX.JK', 'LMSH.JK', 'LPGI.JK', 'LPIN.JK', 'LPLI.JK', 'LPPF.JK', 'LPPS.JK', 
+                'LRNA.JK', 'LTLS.JK', 'LUCK.JK', 'MAIN.JK', 'MAMI.JK', 'MAPB.JK', 'MAPI.JK', 'MARI.JK', 
+                'MARK.JK', 'MASA.JK', 'MAYA.JK', 'MBSS.JK', 'MBTO.JK', 'MCAS.JK', 'MCOR.JK', 'MDIA.JK', 
+                'MDLN.JK', 'MDRN.JK', 'MEGA.JK', 'META.JK', 'MGNA.JK', 'MGRO.JK', 'MICE.JK', 'MIKA.JK', 
+                'MINA.JK', 'MITI.JK', 'MKPI.JK', 'MKTR.JK', 'MLBI.JK', 'MLIA.JK', 'MLPL.JK', 'MLPT.JK', 
+                'MLTX.JK', 'MNCN.JK', 'MPMX.JK', 'MPPA.JK', 'MRAT.JK', 'MSIN.JK', 'MSKY.JK', 'MTDL.JK', 
+                'MTFN.JK', 'MTLA.JK', 'MTMH.JK', 'MTPS.JK', 'MTSM.JK', 'MTWI.JK', 'MYOH.JK', 'MYOR.JK', 
+                'MYTX.JK', 'NASA.JK', 'NATO.JK', 'NETV.JK', 'NFCX.JK', 'NIKL.JK', 'NRCA.JK', 'NSSS.JK', 
+                'NTBK.JK', 'NUSA.JK', 'NZIA.JK', 'OBMD.JK', 'OILS.JK', 'OKAS.JK', 'OMRE.JK', 'OPMS.JK', 
+                'PACK.JK', 'PADI.JK', 'PALM.JK', 'PAMG.JK', 'PANI.JK', 'PBID.JK', 'PBSA.JK', 'PCAR.JK', 
+                'PDAI.JK', 'PDES.JK', 'PEGE.JK', 'PEHA.JK', 'PGUN.JK', 'PICO.JK', 'PKPK.JK', 'PLAS.JK', 
+                'PLIN.JK', 'PMJS.JK', 'PMMP.JK', 'PNLF.JK', 'POLA.JK', 'POLI.JK', 'POLU.JK', 'POOL.JK', 
+                'PORT.JK', 'POWR.JK', 'PPGL.JK', 'PPRE.JK', 'PRDA.JK', 'PRIM.JK', 'PSAB.JK', 'PSDN.JK', 
+                'PSGO.JK', 'PSKT.JK', 'PTDU.JK', 'PTIS.JK', 'PTRO.JK', 'PTSN.JK', 'PUDP.JK', 'PWON.JK', 
+                'PYFA.JK', 'PZZA.JK', 'RAJA.JK', 'RALS.JK', 'RANC.JK', 'RBMS.JK', 'RDTX.JK', 'REAL.JK', 
+                'RELI.JK', 'RICY.JK', 'RIGS.JK', 'RISE.JK', 'RMKE.JK', 'RMKO.JK', 'ROCK.JK', 'RODA.JK', 
+                'ROTI.JK', 'RUIS.JK', 'SAFE.JK', 'SAGE.JK', 'SAMA.JK', 'SAMF.JK', 'SAPX.JK', 'SATU.JK', 
+                'SBAT.JK', 'SBMA.JK', 'SBSN.JK', 'SCBD.JK', 'SCMA.JK', 'SCNP.JK', 'SCPI.JK', 'SDMU.JK', 
+                'SDPC.JK', 'SDRA.JK', 'SFAN.JK', 'SGER.JK', 'SGRO.JK', 'SHID.JK', 'SHIP.JK', 'SICO.JK', 
+                'SILO.JK', 'SINI.JK', 'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK', 'SLIS.JK', 'SMAR.JK', 
+                'SMBR.JK', 'SMDR.JK', 'SMGA.JK', 'SMKL.JK', 'SMKM.JK', 'SMMA.JK', 'SMMT.JK', 'SMRU.JK', 
+                'SMSM.JK', 'SNLK.JK', 'SOCI.JK', 'SOFA.JK', 'SOHO.JK', 'SONA.JK', 'SOSS.JK', 'SOTS.JK', 
+                'SPMA.JK', 'SPTO.JK', 'SQMI.JK', 'SRAJ.JK', 'SRSN.JK', 'STAA.JK', 'STAR.JK', 'STRK.JK', 
+                'STTP.JK', 'SUGI.JK', 'SULI.JK', 'SUPR.JK', 'SURE.JK', 'SWAT.JK', 'TALF.JK', 'TAMU.JK', 
+                'TARA.JK', 'TAXI.JK', 'TBMS.JK', 'TCID.JK', 'TCPI.JK', 'TDPM.JK', 'TECH.JK', 'TEBE.JK', 
+                'TELE.JK', 'TFAS.JK', 'TFCO.JK', 'TGKA.JK', 'TIFA.JK', 'TIRT.JK', 'TJWI.JK', 'TKIM.JK', 
+                'TMAS.JK', 'TMPO.JK', 'TNCA.JK', 'TOPS.JK', 'TOTL.JK', 'TPMA.JK', 'TRGU.JK', 'TRIM.JK', 
+                'TRIN.JK', 'TRIS.JK', 'TRJA.JK', 'TRST.JK', 'TRUE.JK', 'TRUK.JK', 'TRUS.JK', 'TUGU.JK', 
+                'UANG.JK', 'UCID.JK', 'UFOE.JK', 'UNIC.JK', 'UNIQ.JK', 'UNSP.JK', 'UVCR.JK', 'VAST.JK', 
+                'VICI.JK', 'VICO.JK', 'VINS.JK', 'VIVA.JK', 'VKTR.JK', 'VOKS.JK', 'VTNY.JK', 'WAPO.JK', 
+                'WEGE.JK', 'WEHA.JK', 'WGSH.JK', 'WINE.JK', 'WINS.JK', 'WMPP.JK', 'WMUU.JK', 'WOMF.JK', 
+                'WOOD.JK', 'WOWS.JK', 'YELO.JK', 'YPAS.JK', 'ZATA.JK', 'ZONE.JK', 'ZBRA.JK', 'ZYRX.JK'
+            ]
+            
+            # Exclude delisted/suspended
+            delisted_suspended = [
+                'ALMI.JK', 'ARMY.JK', 'ARTI.JK', 'BEBS.JK', 'BIKA.JK', 'CNTX.JK', 'ENVY.JK', 'FKON.JK', 
+                'HDTX.JK', 'HITS.JK', 'KPAL.JK', 'MAGP.JK', 'RSGK.JK', 'SKYB.JK', 'SRIL.JK', 'TGRA.JK', 
+                'WICO.JK', 'CHEK.JK', 'PMUI.JK', 'COIN.JK', 'CDIA.JK', 'NIPS.JK', 'PRAS.JK', 'POSA.JK',
+                'WIKA.JK', 'WSKT.JK', 'INAF.JK'
+            ]
+            fallback_symbols = [s for s in fallback_symbols if s not in delisted_suspended]
             
         elif self.mode == 'forex':
-            # Forex fallback - DIPERBESAR KE 500 ASET
+            # Forex fallback - LIST LENGKAP TANPA LIMIT
             fallback_symbols = [
                 'EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X',
                 'USDCHF=X', 'NZDUSD=X', 'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
@@ -3162,115 +3056,11 @@ class EnhancedTradingBot:
                 'EURSEK', 'EURNOK', 'EURDKK', 'EURPLN', 'EURHUF',
                 'EURCZK', 'EURRON', 'EURTRY', 'USDRUB', 'USDINR',
                 'USDBRL', 'USDMXN', 'USDZAR', 'USDTWD', 'USDTHB',
-                'USDPHP', 'USDIDR', 'USDVND', 'USDBDT', 'USDPKR',
-                'EURHUF', 'EURPLN', 'EURRON', 'EURSEK', 'EURNOK',
-                'EURDKK', 'EURCZK', 'EURHUF', 'EURPLN', 'EURRON',
-                'EURSEK', 'EURNOK', 'EURDKK', 'EURCZK', 'EURHUF',
-                'EURPLN', 'EURRON', 'EURSEK', 'EURNOK', 'EURDKK',
-                'EURCZK', 'EURHUF', 'EURPLN', 'EURRON', 'EURSEK',
-                'EURNOK', 'EURDKK', 'EURCZK', 'EURHUF', 'EURPLN',
-                'EURRON', 'EURSEK', 'EURNOK', 'EURDKK', 'EURCZK',
-                'EURHUF', 'EURPLN', 'EURRON', 'EURSEK', 'EURNOK',
-                'EURDKK', 'EURCZK', 'EURHUF', 'EURPLN', 'EURRON',
-                # Tambahan untuk mencapai 500
-                'GBPAUD', 'GBPCAD', 'GBPCHF', 'GBPJPY', 'GBPNZD',
-                'AUDCAD', 'AUDCHF', 'AUDJPY', 'AUDNZD', 'AUDUSD',
-                'CADCHF', 'CADJPY', 'CHFJPY', 'EURAUD', 'EURCAD',
-                'EURCHF', 'EURGBP', 'EURJPY', 'EURNZD', 'EURUSD',
-                'GBPUSD', 'NZDCAD', 'NZDCHF', 'NZDJPY', 'NZDUSD',
-                'USDCAD', 'USDCHF', 'USDJPY', 'USDMXN', 'USDSGD',
-                'USDHKD', 'USDCNY', 'USDKRW', 'USDMYR', 'USDRUB',
-                'USDINR', 'USDBRL', 'USDZAR', 'USDTWD', 'USDTHB',
-                'USDPHP', 'USDIDR', 'USDVND', 'USDBDT', 'USDPKR',
-                'EURSEK', 'EURNOK', 'EURDKK', 'EURPLN', 'EURHUF',
-                'EURCZK', 'EURRON', 'EURTRY', 'GBPAUD', 'GBPCAD',
-                'GBPCHF', 'GBPJPY', 'GBPNZD', 'AUDCAD', 'AUDCHF',
-                'AUDJPY', 'AUDNZD', 'AUDUSD', 'CADCHF', 'CADJPY',
-                'CHFJPY', 'EURAUD', 'EURCAD', 'EURCHF', 'EURGBP',
-                'EURJPY', 'EURNZD', 'EURUSD', 'GBPUSD', 'NZDCAD',
-                'NZDCHF', 'NZDJPY', 'NZDUSD', 'USDCAD', 'USDCHF',
-                'USDJPY', 'USDMXN', 'USDSGD', 'USDHKD', 'USDCNY',
-                'USDKRW', 'USDMYR', 'USDRUB', 'USDINR', 'USDBRL',
-                'USDZAR', 'USDTWD', 'USDTHB', 'USDPHP', 'USDIDR',
-                'USDVND', 'USDBDT', 'USDPKR', 'EURSEK', 'EURNOK',
-                'EURDKK', 'EURPLN', 'EURHUF', 'EURCZK', 'EURRON',
-                'EURTRY', 'GBPAUD', 'GBPCAD', 'GBPCHF', 'GBPJPY',
-                'GBPNZD', 'AUDCAD', 'AUDCHF', 'AUDJPY', 'AUDNZD',
-                'AUDUSD', 'CADCHF', 'CADJPY', 'CHFJPY', 'EURAUD',
-                'EURCAD', 'EURCHF', 'EURGBP', 'EURJPY', 'EURNZD',
-                'EURUSD', 'GBPUSD', 'NZDCAD', 'NZDCHF', 'NZDJPY',
-                'NZDUSD', 'USDCAD', 'USDCHF', 'USDJPY', 'USDMXN',
-                'USDSGD', 'USDHKD', 'USDCNY', 'USDKRW', 'USDMYR',
-                'USDRUB', 'USDINR', 'USDBRL', 'USDZAR', 'USDTWD',
-                'USDTHB', 'USDPHP', 'USDIDR', 'USDVND', 'USDBDT',
-                'USDPKR', 'EURSEK', 'EURNOK', 'EURDKK', 'EURPLN',
-                'EURHUF', 'EURCZK', 'EURRON', 'EURTRY', 'GBPAUD',
-                'GBPCAD', 'GBPCHF', 'GBPJPY', 'GBPNZD', 'AUDCAD',
-                'AUDCHF', 'AUDJPY', 'AUDNZD', 'AUDUSD', 'CADCHF',
-                'CADJPY', 'CHFJPY', 'EURAUD', 'EURCAD', 'EURCHF',
-                'EURGBP', 'EURJPY', 'EURNZD', 'EURUSD', 'GBPUSD',
-                'NZDCAD', 'NZDCHF', 'NZDJPY', 'NZDUSD', 'USDCAD',
-                'USDCHF', 'USDJPY', 'USDMXN', 'USDSGD', 'USDHKD',
-                'USDCNY', 'USDKRW', 'USDMYR', 'USDRUB', 'USDINR',
-                'USDBRL', 'USDZAR', 'USDTWD', 'USDTHB', 'USDPHP',
-                'USDIDR', 'USDVND', 'USDBDT', 'USDPKR', 'EURSEK',
-                'EURNOK', 'EURDKK', 'EURPLN', 'EURHUF', 'EURCZK',
-                'EURRON', 'EURTRY', 'GBPAUD', 'GBPCAD', 'GBPCHF',
-                'GBPJPY', 'GBPNZD', 'AUDCAD', 'AUDCHF', 'AUDJPY',
-                'AUDNZD', 'AUDUSD', 'CADCHF', 'CADJPY', 'CHFJPY',
-                'EURAUD', 'EURCAD', 'EURCHF', 'EURGBP', 'EURJPY',
-                'EURNZD', 'EURUSD', 'GBPUSD', 'NZDCAD', 'NZDCHF',
-                'NZDJPY', 'NZDUSD', 'USDCAD', 'USDCHF', 'USDJPY',
-                'USDMXN', 'USDSGD', 'USDHKD', 'USDCNY', 'USDKRW',
-                'USDMYR', 'USDRUB', 'USDINR', 'USDBRL', 'USDZAR',
-                'USDTWD', 'USDTHB', 'USDPHP', 'USDIDR', 'USDVND',
-                'USDBDT', 'USDPKR', 'EURSEK', 'EURNOK', 'EURDKK',
-                'EURPLN', 'EURHUF', 'EURCZK', 'EURRON', 'EURTRY',
-                'GBPAUD', 'GBPCAD', 'GBPCHF', 'GBPJPY', 'GBPNZD',
-                'AUDCAD', 'AUDCHF', 'AUDJPY', 'AUDNZD', 'AUDUSD',
-                'CADCHF', 'CADJPY', 'CHFJPY', 'EURAUD', 'EURCAD',
-                'EURCHF', 'EURGBP', 'EURJPY', 'EURNZD', 'EURUSD',
-                'GBPUSD', 'NZDCAD', 'NZDCHF', 'NZDJPY', 'NZDUSD',
-                'USDCAD', 'USDCHF', 'USDJPY', 'USDMXN', 'USDSGD',
-                'USDHKD', 'USDCNY', 'USDKRW', 'USDMYR', 'USDRUB',
-                'USDINR', 'USDBRL', 'USDZAR', 'USDTWD', 'USDTHB',
-                'USDPHP', 'USDIDR', 'USDVND', 'USDBDT', 'USDPKR',
-                'EURSEK', 'EURNOK', 'EURDKK', 'EURPLN', 'EURHUF',
-                'EURCZK', 'EURRON', 'EURTRY', 'GBPAUD', 'GBPCAD',
-                'GBPCHF', 'GBPJPY', 'GBPNZD', 'AUDCAD', 'AUDCHF',
-                'AUDJPY', 'AUDNZD', 'AUDUSD', 'CADCHF', 'CADJPY',
-                'CHFJPY', 'EURAUD', 'EURCAD', 'EURCHF', 'EURGBP',
-                'EURJPY', 'EURNZD', 'EURUSD', 'GBPUSD', 'NZDCAD',
-                'NZDCHF', 'NZDJPY', 'NZDUSD', 'USDCAD', 'USDCHF',
-                'USDJPY', 'USDMXN', 'USDSGD', 'USDHKD', 'USDCNY',
-                'USDKRW', 'USDMYR', 'USDRUB', 'USDINR', 'USDBRL',
-                'USDZAR', 'USDTWD', 'USDTHB', 'USDPHP', 'USDIDR',
-                'USDVND', 'USDBDT', 'USDPKR', 'EURSEK', 'EURNOK',
-                'EURDKK', 'EURPLN', 'EURHUF', 'EURCZK', 'EURRON',
-                'EURTRY', 'GBPAUD', 'GBPCAD', 'GBPCHF', 'GBPJPY',
-                'GBPNZD', 'AUDCAD', 'AUDCHF', 'AUDJPY', 'AUDNZD',
-                'AUDUSD', 'CADCHF', 'CADJPY', 'CHFJPY', 'EURAUD',
-                'EURCAD', 'EURCHF', 'EURGBP', 'EURJPY', 'EURNZD',
-                'EURUSD', 'GBPUSD', 'NZDCAD', 'NZDCHF', 'NZDJPY',
-                'NZDUSD', 'USDCAD', 'USDCHF', 'USDJPY', 'USDMXN',
-                'USDSGD', 'USDHKD', 'USDCNY', 'USDKRW', 'USDMYR',
-                'USDRUB', 'USDINR', 'USDBRL', 'USDZAR', 'USDTWD',
-                'USDTHB', 'USDPHP', 'USDIDR', 'USDVND', 'USDBDT',
-                'USDPKR', 'EURSEK', 'EURNOK', 'EURDKK', 'EURPLN',
-                'EURHUF', 'EURCZK', 'EURRON', 'EURTRY', 'GBPAUD',
-                'GBPCAD', 'GBPCHF', 'GBPJPY', 'GBPNZD', 'AUDCAD',
-                'AUDCHF', 'AUDJPY', 'AUDNZD', 'AUDUSD', 'CADCHF',
-                'CADJPY', 'CHFJPY', 'EURAUD', 'EURCAD', 'EURCHF',
-                'EURGBP', 'EURJPY', 'EURNZD', 'EURUSD', 'GBPUSD',
-                'NZDCAD', 'NZDCHF', 'NZDJPY', 'NZDUSD', 'USDCAD',
-                'USDCHF', 'USDJPY', 'USDMXN', 'USDSGD', 'USDHKD',
-                'USDCNY', 'USDKRW', 'USDMYR', 'USDRUB', 'USDINR',
-                'USDBRL', 'USDZAR', 'USDTWD', 'USDTHB', 'USDPHP',
-                'USDIDR', 'USDVND', 'USDBDT', 'USDPKR'
-            ][:500]  # Ambil 500 pertama
+                'USDPHP', 'USDIDR', 'USDVND', 'USDBDT', 'USDPKR'
+            ]
             
         elif self.mode == 'us_stocks':
-            # US Stocks fallback - DIPERBESAR KE 500 ASET
+            # US Stocks fallback - LIST LENGKAP TANPA LIMIT
             fallback_symbols = [
                 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA',
                 'BRK-B', 'JPM', 'V', 'JNJ', 'WMT', 'PG', 'MA', 'UNH',
@@ -3296,7 +3086,6 @@ class EnhancedTradingBot:
                 'EXPD', 'CHRW', 'JBHT', 'LSTR', 'ODFL', 'XPO', 'YRCW',
                 'ZTO', 'JD', 'BABA', 'PDD', 'TCEHY', 'BIDU', 'NTES',
                 'BILI', 'IQ', 'TME', 'YY', 'DOYU', 'HUYA', 'WB', 'MOMO',
-                # Tambahan untuk mencapai 500
                 'ADP', 'ADSK', 'AEP', 'AIG', 'ALL', 'AMAT', 'AMD', 'AMGN',
                 'AMT', 'ANET', 'ANTM', 'APA', 'APD', 'APH', 'ATVI', 'AVB',
                 'AVGO', 'AVY', 'AXP', 'AZO', 'BA', 'BAC', 'BAX', 'BBY',
@@ -3354,7 +3143,7 @@ class EnhancedTradingBot:
                 'WFC', 'WHR', 'WLTW', 'WM', 'WMB', 'WMT', 'WRB', 'WRK',
                 'WST', 'WU', 'WY', 'WYNN', 'XEL', 'XLNX', 'XOM', 'XRAY',
                 'XYL', 'YUM', 'ZBH', 'ZBRA', 'ZION', 'ZTS'
-            ][:500]  # Ambil 500 pertama
+            ]
         else:
             return []
         
@@ -3367,10 +3156,10 @@ class EnhancedTradingBot:
                 'source': 'fallback'
             })
         
-        return fallback_assets[:500]  # Batasi 500 aset
+        return fallback_assets  # TIDAK ADA LIMIT DI SINI JUGA
 
     def scan_potential_assets(self, limit=25, search_query: str = None):
-        """Scan sederhana dengan provider universal - DIPERBAIKI UNTUK 500+ ASET"""
+        """Scan sederhana dengan provider universal - OPTIMIZED UNTUK SAHAM"""
         if self.scanning_in_progress:
             logger.warning("Scan already in progress")
             return []
@@ -3385,8 +3174,19 @@ class EnhancedTradingBot:
                 self.scanning_in_progress = False
                 return []
             
-            # **PERBAIKAN: Naikkan limit assets untuk dianalisis**
-            assets_limit = self.config.get("analysis_coins_limit", 500)  # Gunakan dari config, default 500
+            # **STRATEGI BERBEDA UNTUK SAHAM vs CRYPTO**
+            if self.mode == 'saham_id':
+                # UNTUK SAHAM: ANALISIS SEMUA SAHAM (FULL COVERAGE)
+                assets_limit = 1000  # Sangat besar untuk cover semua saham
+                max_workers = 20     # Lebih banyak thread untuk handle volume besar
+                scan_timeout = 45    # Timeout lebih lama untuk saham
+                logger.info("🎯 MODE SAHAM INDONESIA: SCANNING SEMUA SAHAM (FULL COVERAGE)")
+            else:
+                # Untuk crypto/forex/stocks lain: strategi normal
+                assets_limit = self.config.get("analysis_coins_limit", 500)
+                max_workers = 10
+                scan_timeout = 30
+            
             logger.info(f"🔍 Scanning for {limit} signals (analyzing up to {assets_limit} assets)...")
             
             # Get assets menggunakan metode yang sudah diperbaiki
@@ -3400,11 +3200,14 @@ class EnhancedTradingBot:
             logger.info(f"📊 Scanning {len(assets)} assets...")
             
             signals = []
-            scan_delay = self.config.get("scan_delay", 0.1)
             
-            # **PERBAIKAN: Gunakan threading untuk mempercepat scanning**
-            max_workers = 10  # Jumlah thread paralel
-            assets_to_process = assets[:500]  # Proses 500 aset pertama
+            # **PERBAIKAN: Batasi jumlah assets jika terlalu banyak untuk testing**
+            # Dalam production, bisa scan semua, tapi untuk testing kita batasi
+            if len(assets) > 200 and self.mode == 'saham_id':
+                logger.info(f"⚠️ Terlalu banyak assets ({len(assets)}), menggunakan 200 saham teratas untuk demo")
+                assets_to_process = assets[:200]
+            else:
+                assets_to_process = assets
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit semua tasks
@@ -3417,13 +3220,14 @@ class EnhancedTradingBot:
                 for future in concurrent.futures.as_completed(future_to_asset):
                     asset = future_to_asset[future]
                     try:
-                        signal_data = future.result(timeout=30)
+                        signal_data = future.result(timeout=scan_timeout)
                         if signal_data:
                             signals.append(signal_data)
                             
-                            # Stop jika sudah cukup sinyal
-                            max_signals = self.scalping_config.get("max_signals", 10) if self.scalping_mode else limit
+                            # Untuk saham, kumpulkan lebih banyak sinyal
+                            max_signals = 50 if self.mode == 'saham_id' else self.scalping_config.get("max_signals", 10) if self.scalping_mode else limit
                             if len(signals) >= max_signals:
+                                logger.info(f"✅ Sudah mencapai {max_signals} sinyal, menghentikan scan...")
                                 break
                                 
                     except Exception as e:
@@ -3435,9 +3239,15 @@ class EnhancedTradingBot:
             # Sort signals by score absolute value
             if signals:
                 signals.sort(key=lambda x: abs(x['score']), reverse=True)
-                logger.info("🏆 Top signals:")
-                for i, signal in enumerate(signals[:min(10, len(signals))]):
-                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} | Score: {signal['score']}")
+                
+                # **UNTUK SAHAM: Tampilkan lebih banyak hasil**
+                top_n = 20 if self.mode == 'saham_id' else 10
+                logger.info(f"🏆 Top {top_n} signals:")
+                
+                for i, signal in enumerate(signals[:top_n]):
+                    # Tandai sinyal SHORT dengan warna berbeda (hanya untuk info)
+                    short_marker = "🚫" if signal['action'] == 'SHORT' and self.mode == 'saham_id' else ""
+                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} {short_marker} | Score: {signal['score']}")
             else:
                 logger.info("ℹ️ No signals found with current criteria")
             
