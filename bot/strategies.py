@@ -101,13 +101,122 @@ class OHLcvCache:
 ohlcv_cache = OHLcvCache()
 
 # =============================================
+# PROBABILITY CALCULATOR
+# =============================================
+
+class ProbabilityCalculator:
+    """Calculator probabilitas berdasarkan multiple factors"""
+    
+    @staticmethod
+    def calculate_probabilities(df, action, score, indicators):
+        """Hitung probabilitas TP yang realistis"""
+        
+        base_prob = {
+            'LONG': {'TP1': 45, 'TP2': 30, 'TP3': 20},
+            'SHORT': {'TP1': 40, 'TP2': 25, 'TP3': 15}
+        }[action]
+        
+        # Factor 1: Score strength
+        score_factor = min(abs(score) / 10.0, 1.5)  # Max 1.5x
+        for key in base_prob:
+            base_prob[key] = int(base_prob[key] * score_factor)
+        
+        # Factor 2: Volume confirmation
+        vol_ratio = indicators.get('volume_ratio', 1.0)
+        if vol_ratio > 1.5:
+            for key in base_prob:
+                base_prob[key] += 10
+        elif vol_ratio < 0.7:
+            for key in base_prob:
+                base_prob[key] -= 15
+        
+        # Factor 3: Trend alignment
+        trend = indicators.get('trend_strength', 0)
+        if (action == "LONG" and trend > 0.2) or (action == "SHORT" and trend < -0.2):
+            for key in base_prob:
+                base_prob[key] += 15
+        elif (action == "LONG" and trend < -0.2) or (action == "SHORT" and trend > 0.2):
+            for key in base_prob:
+                base_prob[key] -= 20  # Strong penalty for counter-trend
+        
+        # Factor 4: Market regime
+        regime = indicators.get('market_regime', 'UNKNOWN')
+        if regime == 'BULL_TREND' and action == "LONG":
+            for key in base_prob:
+                base_prob[key] += 10
+        elif regime == 'BEAR_TREND' and action == "SHORT":
+            for key in base_prob:
+                base_prob[key] += 10
+        
+        # Clamp values
+        for key in base_prob:
+            base_prob[key] = max(5, min(base_prob[key], 85))
+        
+        return base_prob
+
+# =============================================
+# SIGNAL FILTER
+# =============================================
+
+class SignalFilter:
+    """Filter sinyal sebelum dikirim ke trading - INTEGRATED"""
+    
+    MIN_PROBABILITY = 40  # Minimal 40% untuk TP1
+    MIN_RR_RATIO = 1.5    # Minimal RR 1:1.5
+    MIN_SCORE = 6.0       # Minimal score 6.0
+    
+    @staticmethod
+    def should_trade(signal):
+        """Cek apakah sinyal layak ditrading"""
+        
+        # Skip jika NEUTRAL
+        if signal.get('action') == 'NEUTRAL':
+            return False, "Neutral signal"
+        
+        # 1. Cek probabilitas
+        prob_tp1 = signal.get('prob_tp1', 0)
+        if prob_tp1 < SignalFilter.MIN_PROBABILITY:
+            return False, f"Probability too low: {prob_tp1}%"
+        
+        # 2. Cek RR ratio
+        rr_ratio = signal.get('rr_ratio_tp1', 0)
+        if rr_ratio < SignalFilter.MIN_RR_RATIO:
+            return False, f"RR ratio too low: {rr_ratio:.2f}"
+        
+        # 3. Cek score
+        score = abs(signal.get('score', 0))
+        if score < SignalFilter.MIN_SCORE:
+            return False, f"Score too low: {score:.1f}"
+        
+        # 4. Cek volume (kecuali untuk futures dan saham Indonesia)
+        volume_ratio = signal.get('volume_ratio', 1.0)
+        market_type = signal.get('market_type', 'crypto')
+        
+        if market_type != "indonesia_stocks" and volume_ratio < 0.8:
+            return False, f"Volume too low: {volume_ratio:.1f}x"
+        
+        # 5. Cek trend alignment untuk short
+        if signal['action'] == 'SHORT':
+            trend = signal.get('trend_strength', 0)
+            if trend > 0.3:  # Strong uptrend
+                return False, "Avoid short in strong uptrend"
+        
+        # 6. Cek volatilitas untuk scalping
+        if signal.get('scalping_mode', False):
+            volatility = signal.get('volatility', 0)
+            if volatility < 0.005 or volatility > 0.15:
+                return False, f"Volatility not suitable for scalping: {volatility:.3%}"
+        
+        return True, "Signal approved"
+
+# =============================================
 # SCALPING CONFIGURATION - UNTUK PERBAIKAN BIAS SHORT
 # =============================================
 
 SCALPING_CONFIG = {
     "timeframe": "5m",            # 5 menit untuk scalping
     "lookback": 150,              # ~12.5 jam data
-    "min_score_threshold": 4.0,   # Minimal absolute score untuk trigger sinyal
+    "min_score_threshold": 6.0,   # 🔥 PERBAIKAN: dari 4.0 ke 6.0
     "long_bias": 0.0,            # 🔥 UBAH: dari 0.3 ke 0.0 (NEUTRAL)
     "entry_range_pct": 0.008,     # 0.8% lebih ketat untuk scalping
     "atr_multiplier": 0.7,        # TP/SL lebih ketat untuk scalping
@@ -1227,7 +1336,7 @@ class TradingStrategy(ABC):
 
 🛑 Stop Loss: {analysis.get('sl', 0):.5f}
 
-{futures_info}
+{futires_info}
 📈 Analytics:
    Confidence: {confidence:.1f}%
    Range Size: ±{range_pct:.1f}%
@@ -1717,6 +1826,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         
         self.pattern_detector = AdvancedPatternDetector()
         self.analysis_history = []
+        self.probability_calculator = ProbabilityCalculator()
         
         # 🔥 NEW: Konfigurasi enhancement
         self.use_multi_tf_confirmation = use_multi_tf_confirmation
@@ -1746,6 +1856,152 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         }
         
         logger.info(f"📊 Strategy Enhanced: Multi-TF={use_multi_tf_confirmation}, Adaptive={use_adaptive_params}, Regime={use_regime_detection}")
+
+    def calculate_robust_score(self, indicators, df, symbol):
+        """Scoring system yang lebih kuat dan realistis"""
+        score = 0
+        current_price = df['close'].iloc[-1]
+        
+        # 1. RSI WEIGHTED (40% weight)
+        rsi = indicators['rsi_14']
+        if rsi < 25: score += 12      # STRONG OVERSOLD
+        elif rsi < 35: score += 8     # MILD OVERSOLD
+        elif rsi > 85: score -= 12    # STRONG OVERBOUGHT
+        elif rsi > 75: score -= 8     # MILD OVERBOUGHT
+        else: score += 0              # NEUTRAL
+        
+        # 2. TREND ALIGNMENT (30% weight)
+        trend = self._calculate_trend_strength(df, symbol)
+        price_vs_sma = current_price / indicators.get('sma_20', current_price)
+        
+        if trend > 0.3:  # STRONG UPTREND
+            if price_vs_sma < 0.98: score += 10  # PULLBACK BUY
+            elif price_vs_sma > 1.02: score += 2 # CONTINUATION
+        elif trend < -0.3:  # STRONG DOWNTREND
+            if price_vs_sma > 1.02: score -= 10  # DEAD CAT BOUNCE SHORT
+            elif price_vs_sma < 0.98: score -= 2 # CONTINUATION
+        
+        # 3. VOLUME CONFIRMATION (20% weight)
+        if 'volume_ratio' in indicators:
+            vol_ratio = indicators['volume_ratio']
+            if vol_ratio > 2.0: score += 6      # VERY HIGH VOLUME
+            elif vol_ratio > 1.5: score += 3    # HIGH VOLUME
+            elif vol_ratio < 0.5: score -= 3    # LOW VOLUME
+        
+        # 4. MARKET REGIME (10% weight)
+        regime = indicators.get('market_regime', 'UNKNOWN')
+        if regime == 'BULL_TREND' and score > 0:
+            score = int(score * 1.3)  # BOOST LONGS
+        elif regime == 'BEAR_TREND' and score < 0:
+            score = int(score * 1.3)  # BOOST SHORTS
+        
+        return score
+
+    def calculate_dynamic_threshold(self, df, symbol):
+        """Threshold berdasarkan volatilitas dan volume"""
+        volatility = df['close'].pct_change().std() * np.sqrt(252)
+        avg_volume = df['volume'].mean() if 'volume' in df.columns else 0
+        
+        base_threshold = 6.0
+        
+        # Adjust untuk volatilitas tinggi
+        if volatility > 0.8:  # >80% volatilitas tahunan
+            base_threshold += 2.0
+        elif volatility > 0.5:  # >50%
+            base_threshold += 1.0
+        
+        # Adjust untuk volume rendah
+        if avg_volume < 100000:  # Volume sangat rendah
+            base_threshold += 3.0
+        elif avg_volume < 500000:
+            base_threshold += 1.5
+        
+        # Adjust untuk coin murah (<$0.01)
+        current_price = df['close'].iloc[-1]
+        if current_price < 0.01:
+            base_threshold += 2.0  # Lebih ketat untuk penny coins
+        
+        return min(base_threshold, 10.0)  # Maksimal threshold 10
+
+    def calculate_smart_entry(self, symbol, current_price, action, df, score=None):
+        """Entry dan TP/SL yang cerdas berdasarkan karakteristik koin"""
+        
+        # 1. Hitung volatilitas koin ini
+        if len(df) > 20:
+            volatility = df['close'].pct_change().std() * np.sqrt(252)
+        else:
+            # Default berdasarkan kategori koin
+            if 'BTC' in symbol or 'ETH' in symbol:
+                volatility = 0.6  # 60% volatilitas tahunan
+            elif current_price < 0.01:
+                volatility = 1.2  # 120% untuk penny coins
+            else:
+                volatility = 0.8  # 80% untuk altcoin umum
+        
+        # 2. Dynamic ATR multiplier berdasarkan volatilitas
+        if volatility < 0.5:
+            atr_multiplier = 1.0
+        elif volatility < 1.0:
+            atr_multiplier = 1.5
+        else:
+            atr_multiplier = 2.0
+        
+        # 3. Entry range berdasarkan volatilitas (bukan fixed!)
+        entry_range_pct = volatility * 0.01  # 1% dari volatilitas tahunan
+        entry_range_pct = max(0.005, min(entry_range_pct, 0.03))  # Clamp 0.5-3%
+        
+        # 4. TP/SL distances
+        atr = self._calculate_atr(df)
+        
+        if action == "LONG":
+            # Untuk LONG
+            sl_distance = atr * atr_multiplier * 1.2  # SL lebih lebar
+            tp1_distance = atr * atr_multiplier * 1.5  # TP1 1.5x ATR
+            tp3_distance = atr * atr_multiplier * 3.0  # TP3 3x ATR
+            
+            # Pastikan RR ratio minimal 1:1.5
+            if tp1_distance / sl_distance < 1.5:
+                tp1_distance = sl_distance * 1.5
+        
+        elif action == "SHORT":
+            # Untuk SHORT di crypto (harus lebih konservatif)
+            sl_distance = atr * atr_multiplier * 1.5  # SL lebih lebar untuk short
+            tp1_distance = atr * atr_multiplier * 1.2  # TP1 lebih dekat
+            tp3_distance = atr * atr_multiplier * 2.5  # TP3 2.5x ATR
+            
+            # Short harus punya RR ratio lebih baik
+            if tp1_distance / sl_distance < 1.8:
+                tp1_distance = sl_distance * 1.8
+        
+        # 5. Hitung probabilities REALISTIS
+        if score is not None:
+            if abs(score) > 8:  # Score kuat
+                tp1_prob = min(65, 40 + abs(score) * 2)
+                tp2_prob = min(45, 25 + abs(score) * 1.5)
+                tp3_prob = min(30, 15 + abs(score))
+            elif abs(score) > 5:  # Score medium
+                tp1_prob = min(50, 30 + abs(score) * 2)
+                tp2_prob = min(35, 20 + abs(score) * 1.5)
+                tp3_prob = min(20, 10 + abs(score))
+            else:  # Score lemah
+                tp1_prob = 25
+                tp2_prob = 15
+                tp3_prob = 8
+        else:
+            tp1_prob = 40
+            tp2_prob = 25
+            tp3_prob = 15
+        
+        return {
+            'entry_range_pct': entry_range_pct,
+            'sl_distance': sl_distance,
+            'tp1_distance': tp1_distance,
+            'tp3_distance': tp3_distance,
+            'prob_tp1': tp1_prob,
+            'prob_tp2': tp2_prob,
+            'prob_tp3': tp3_prob,
+            'required_score': self.calculate_dynamic_threshold(df, symbol)
+        }
 
     def _calculate_symmetrical_score(self, indicators, df):
         """Scoring system yang lebih seimbang untuk ranging markets"""
@@ -2299,7 +2555,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         }
 
     def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
-        """Enhanced analysis dengan semua improvement DAN HYBRID SCORING SYSTEM"""
+        """Enhanced analysis dengan sistem robust scoring dan filter sinyal"""
         try:
             # Update market type berdasarkan symbol
             if symbol is not None:
@@ -2332,82 +2588,11 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             adaptive_indicators = self._calculate_adaptive_indicators(df)
             indicators.update(adaptive_indicators)
             
-            # 🔥 NEW: Multi-timeframe confirmation (simulated)
-            mtf_confirmation = 1.0
-            if self.use_multi_tf_confirmation and df is not None and len(df) > 100:
-                # Simulate higher timeframe analysis using longer lookback
-                mtf_data = df.iloc[-100:]  # Use last 100 bars as "higher timeframe"
-                mtf_rsi = self._calculate_rsi(mtf_data['close'].values, 14)
-                mtf_trend = 'BULLISH' if mtf_data['close'].iloc[-1] > mtf_data['close'].iloc[-20] else 'BEARISH'
-                
-                # Confirm direction alignment
-                current_trend = 'BULLISH' if indicators['momentum_5'] > 0 else 'BEARISH'
-                if mtf_trend == current_trend:
-                    mtf_confirmation = 1.2  # 20% boost for alignment
-                else:
-                    mtf_confirmation = 0.8  # 20% penalty for divergence
+            # 🔥 NEW: Gunakan robust scoring system
+            score = self.calculate_robust_score(indicators, df, symbol)
             
-            # 🔥 NEW: Confidence scoring system dengan multiple factors
-            confidence_factors = []
-            enter_tags = []
-            
-            # 1. RSI condition
-            rsi = indicators['rsi_14']
-            if rsi < self.rsi_oversold:
-                confidence_factors.append(self.confidence_weights['rsi'])
-                enter_tags.append('RSI_OVERSOLD')
-            elif rsi > self.rsi_overbought:
-                confidence_factors.append(self.confidence_weights['rsi'])
-                enter_tags.append('RSI_OVERBOUGHT')
-            else:
-                confidence_factors.append(0.8)
-            
-            # 2. MACD condition
-            macd_signal = indicators['macd_line'] > indicators['macd_signal']
-            if macd_signal:
-                confidence_factors.append(self.confidence_weights['macd'])
-                enter_tags.append('MACD_BULLISH')
-            else:
-                confidence_factors.append(0.9)
-                enter_tags.append('MACD_BEARISH')
-            
-            # 3. Market regime condition
-            if indicators['market_regime'] in ['BULL_TREND', 'BEAR_TREND']:
-                confidence_factors.append(self.confidence_weights['regime'])
-                enter_tags.append('TRENDING')
-            elif indicators['market_regime'] == 'RANGING':
-                confidence_factors.append(0.7)
-                enter_tags.append('RANGING')
-            
-            # 4. Volume confirmation
-            if 'volume_ratio' in indicators and indicators['volume_ratio'] > 1.2:
-                confidence_factors.append(self.confidence_weights['volume'])
-                enter_tags.append('VOLUME_SPIKE')
-            
-            # 5. Pattern detection
-            patterns = self.pattern_detector.detect_comprehensive_patterns(df, symbol)
-            if patterns:
-                confidence_factors.append(self.confidence_weights['pattern'])
-                pattern_names = [p for p in patterns.keys()][:2]  # Max 2 patterns
-                enter_tags.append(f"PATTERN_{'_'.join(pattern_names)}")
-            
-            # 6. Consolidation filter
-            if 'consolidation_score' in indicators and indicators['consolidation_score'] > 0.7:
-                confidence_factors.append(0.5)  # Heavy penalty during consolidation
-                enter_tags.append('CONSOLIDATION')
-            
-            # 7. Multi-timeframe confirmation
-            confidence_factors.append(mtf_confirmation)
-            if mtf_confirmation > 1.0:
-                enter_tags.append('MTF_CONFIRMED')
-            
-            # Calculate final confidence score
-            base_confidence = np.mean(confidence_factors) if confidence_factors else 1.0
-            confidence_score = min(base_confidence * 100, 100)
-            
-            # 7. Tentukan sinyal menggunakan HYBRID SCORING SYSTEM
-            # 🆕 SCORING SISTEM ADAPTIF BERDASARKAN REGIME
-            score = self.calculate_adaptive_score(indicators, df, symbol)
+            # 🔥 NEW: Hitung dynamic threshold
+            required_score = self.calculate_dynamic_threshold(df, symbol)
             
             # 🔥 APPLY LONG BIAS CORRECTION - TIDAK ADA BIAS (0.0)
             biased_score = score + (self.long_bias * 5)  # Scale bias effect
@@ -2421,7 +2606,6 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                     # Jika breakout bullish, beri WARNING untuk SHORT (tidak langsung block)
                     if biased_score < 0:  # Ini adalah sinyal SHORT
                         logger.warning(f"⚠️ {symbol}: Bullish breakout detected, caution on SHORT signal")
-                        enter_tags.append('BULL_BREAKOUT_WARNING')
                         # Kurangi sedikit score SHORT (20% reduction, bukan 70%)
                         biased_score = biased_score * self.breakout_penalty_factor
                 
@@ -2429,18 +2613,13 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                     # Jika breakout bearish, beri WARNING untuk LONG
                     if biased_score > 0:  # Ini adalah sinyal LONG
                         logger.warning(f"⚠️ {symbol}: Bearish breakout detected, caution on LONG signal")
-                        enter_tags.append('BEAR_BREAKOUT_WARNING')
                         biased_score = biased_score * self.breakout_penalty_factor
             
-            logger.debug(f"Score calculation for {symbol}: Base={score:.1f}, Bias={self.long_bias:.2f}, Final={biased_score:.1f}, Breakout={breakout_info['breakout_detected']}")
+            logger.debug(f"Score calculation for {symbol}: Base={score:.1f}, Bias={self.long_bias:.2f}, Final={biased_score:.1f}, Required={required_score:.1f}, Breakout={breakout_info['breakout_detected']}")
             
-            # 🔥 NEW: Adjust confidence based on consolidation
-            if indicators.get('consolidation_score', 0) > 0.8:
-                confidence_score *= 0.3  # Reduce confidence during strong consolidation
-            
-            # 🆕 APPLY MINIMUM SCORE THRESHOLD
-            if abs(biased_score) < self.min_score_threshold:
-                logger.debug(f"{symbol}: Score {biased_score:.1f} below threshold {self.min_score_threshold}, returning NEUTRAL")
+            # 🆕 APPLY MINIMUM SCORE THRESHOLD dengan dynamic threshold
+            if abs(biased_score) < max(required_score, self.min_score_threshold):
+                logger.debug(f"{symbol}: Score {biased_score:.1f} below threshold {max(required_score, self.min_score_threshold):.1f}, returning NEUTRAL")
                 action = "NEUTRAL"
             elif biased_score > 0:
                 action = "LONG"
@@ -2453,7 +2632,15 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 action != "NEUTRAL"):
                 logger.info(f"⏸️ {symbol}: Skipping {action} signal due to strong consolidation (ADX: {indicators.get('adx', 20):.1f})")
                 action = "NEUTRAL"
-                enter_tags.append('CONSOLIDATION_SKIP')
+            
+            # 7. Hitung smart entry dan probabilities
+            smart_entry = self.calculate_smart_entry(
+                symbol=symbol or "UNKNOWN",
+                current_price=current_price,
+                action=action,
+                df=df,
+                score=biased_score
+            )
             
             # 8. Hitung TP/SL dengan bias correction
             entry_calc = self.calculate_custom_entry(
@@ -2463,11 +2650,56 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 df=df
             )
             
-            # Adjust confidence based on bias
-            if (action == "LONG" and self.long_bias > 0) or (action == "SHORT" and self.long_bias < 0):
-                confidence_score = min(confidence_score * (1 + abs(self.long_bias) * 0.3), 100)
+            # Tambahkan smart entry ke hasil
+            entry_calc['prob_tp1'] = smart_entry['prob_tp1']
+            entry_calc['prob_tp2'] = smart_entry['prob_tp2']
+            entry_calc['prob_tp3'] = smart_entry['prob_tp3']
             
-            # 9. Return hasil
+            # 🔥 NEW: Hitung probabilitas dengan ProbabilityCalculator
+            probabilities = self.probability_calculator.calculate_probabilities(df, action, biased_score, indicators)
+            
+            # 🔥 NEW: Filter sinyal dengan SignalFilter
+            signal_to_check = {
+                'action': action,
+                'score': biased_score,
+                'prob_tp1': smart_entry['prob_tp1'],
+                'rr_ratio_tp1': entry_calc.get('rr_ratio_tp1', 0),
+                'volume_ratio': indicators.get('volume_ratio', 1.0),
+                'trend_strength': indicators.get('trend_strength', 0),
+                'market_type': self.market_type,
+                'scalping_mode': self.scalping_mode,
+                'volatility': indicators.get('volatility', 0)
+            }
+            
+            should_trade, reason = SignalFilter.should_trade(signal_to_check)
+            
+            if not should_trade and action != "NEUTRAL":
+                logger.info(f"⏸️ {symbol}: Signal filtered out: {reason}")
+                action = "NEUTRAL"
+            
+            # 9. Hitung confidence berdasarkan multiple factors
+            confidence_factors = []
+            enter_tags = []
+            
+            # RSI condition
+            rsi = indicators['rsi_14']
+            if rsi < self.rsi_oversold:
+                confidence_factors.append(self.confidence_weights['rsi'])
+                enter_tags.append('RSI_OVERSOLD')
+            elif rsi > self.rsi_overbought:
+                confidence_factors.append(self.confidence_weights['rsi'])
+                enter_tags.append('RSI_OVERBOUGHT')
+            
+            # Volume confirmation
+            if 'volume_ratio' in indicators and indicators['volume_ratio'] > 1.2:
+                confidence_factors.append(self.confidence_weights['volume'])
+                enter_tags.append('VOLUME_SPIKE')
+            
+            # Calculate final confidence score
+            base_confidence = np.mean(confidence_factors) if confidence_factors else 1.0
+            confidence_score = min(base_confidence * 100, 100)
+            
+            # 10. Return hasil
             result = {
                 'action': action,
                 'score': biased_score,
@@ -2493,24 +2725,30 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 'liquidation_buffer_pct': entry_calc.get('liquidation_buffer_pct', 0),
                 'confidence': confidence_score / 100.0,
                 'long_bias_applied': self.long_bias,
-                'min_score_threshold': self.min_score_threshold,
+                'min_score_threshold': max(required_score, self.min_score_threshold),
                 'scalping_mode': self.scalping_mode,
                 'enter_tag': '|'.join(enter_tags) if enter_tags else 'BASIC',
                 'market_regime': indicators.get('market_regime', 'UNKNOWN'),
                 'adx': indicators.get('adx', 20),
                 'consolidation_score': indicators.get('consolidation_score', 0),
                 'rsi_threshold_used': f"{self.rsi_oversold:.1f}/{self.rsi_overbought:.1f}",
-                'mtf_confirmation': mtf_confirmation,
                 'volume_ratio': indicators.get('volume_ratio', 1.0),
                 'breakout_detected': breakout_info['breakout_detected'],
                 'breakout_direction': breakout_info.get('direction', 'NONE'),
-                'scoring_system': 'HYBRID'  # Tambahkan info sistem scoring yang digunakan
+                'scoring_system': 'ROBUST',
+                'prob_tp1': smart_entry['prob_tp1'],
+                'prob_tp2': smart_entry['prob_tp2'],
+                'prob_tp3': smart_entry['prob_tp3'],
+                'required_score': required_score,
+                'dynamic_threshold': required_score,
+                'filter_reason': reason if not should_trade else "APPROVED",
+                'probabilities': probabilities
             }
             
-            # 10. Hitung trend_strength
+            # 11. Hitung trend_strength
             ts = self._calculate_trend_strength(df, symbol)
             
-            # 11. Tambahkan indikator tambahan
+            # 12. Tambahkan indikator tambahan
             result.update({
                 'macd_line': indicators['macd_line'],
                 'macd_signal': indicators['macd_signal'],
@@ -2518,11 +2756,11 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                 'volatility': indicators['volatility'],
                 'trend_strength': ts,
                 'trend_direction': 'BULLISH' if indicators['momentum_5'] > 0 else 'BEARISH' if indicators['momentum_5'] < 0 else 'NEUTRAL',
-                'pattern_count': len(patterns)
+                'pattern_count': len(self.pattern_detector.detect_comprehensive_patterns(df, symbol))
             })
             
             # LOG SIGNAL DETAILS
-            logger.info(f"📈 {symbol}: {action} (Score: {biased_score:.1f}, Bias: {self.long_bias:.2f}, Conf: {confidence_score:.1f}%, Regime: {indicators.get('market_regime', 'UNKNOWN')}, Breakout: {breakout_info['breakout_detected']}, Scoring: {result['scoring_system']})")
+            logger.info(f"📈 {symbol}: {action} (Score: {biased_score:.1f}, Threshold: {required_score:.1f}, Prob TP1: {smart_entry['prob_tp1']}%, Filter: {reason if not should_trade else 'PASSED'})")
             
             return result
             
@@ -2806,7 +3044,14 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'volume_ratio': 1.0,
             'breakout_detected': False,
             'breakout_direction': 'NONE',
-            'scoring_system': 'DEFAULT'
+            'scoring_system': 'DEFAULT',
+            'prob_tp1': 25,
+            'prob_tp2': 15,
+            'prob_tp3': 8,
+            'required_score': self.min_score_threshold,
+            'dynamic_threshold': self.min_score_threshold,
+            'filter_reason': 'DEFAULT_ANALYSIS',
+            'probabilities': {'TP1': 25, 'TP2': 15, 'TP3': 8}
         }
 
 # =============================================
@@ -2825,7 +3070,7 @@ class ScalpingStrategy(EnhancedTechnicalAnalysisStrategy):
             entry_range_pct=SCALPING_CONFIG["entry_range_pct"],  # 0.8%
             atr_multiplier=SCALPING_CONFIG["atr_multiplier"],    # 0.7
             long_bias=0.0,  # 🔥 GANTI: PASTIKAN 0.0 - TIDAK ADA BIAS
-            min_score_threshold=SCALPING_CONFIG["min_score_threshold"],  # 4.0
+            min_score_threshold=SCALPING_CONFIG["min_score_threshold"],  # 6.0
             scalping_mode=True,
             # 🔥 NEW: Scalping-specific config
             use_multi_tf_confirmation=True,
@@ -3069,7 +3314,7 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
         )
         logger.info(f"⚡ SCALPING Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x, Breakout Protection=ON")
     else:
-        # 🔥 PERBAIKAN: HYBRID SCORING SYSTEM UNTUK REGULAR STRATEGY
+        # 🔥 PERBAIKAN: ROBUST SCORING SYSTEM UNTUK REGULAR STRATEGY
         strategy = EnhancedTechnicalAnalysisStrategy(
             market_type=market_type,
             trading_type=trading_type,
@@ -3077,13 +3322,13 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
             entry_range_pct=0.02,
             atr_multiplier=1.0,
             long_bias=0.0,  # 🔥 GANTI: dari 0.1 ke 0.0 (NEUTRAL)
-            min_score_threshold=3.0,
+            min_score_threshold=6.0,
             use_multi_tf_confirmation=True,
             use_adaptive_params=True,
             use_regime_detection=True,
             use_consolidation_filter=True
         )
-        logger.info(f"📊 REGULAR Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x, Hybrid Scoring=ON")
+        logger.info(f"📊 REGULAR Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x, Robust Scoring=ON")
     
     return strategy
 
@@ -3152,7 +3397,7 @@ def test_indonesia_stocks():
             
             # Coba analisis
             result = strategy.analyze(df, symbol)
-            print(f"   Analysis result: {result['action']} (Score: {result['score']:.1f})")
+            print(f"   Analysis result: {result['action']} (Score: {result['score']:.1f}, Prob TP1: {result['prob_tp1']}%)")
         else:
             print(f"   ❌ Failed to get data for {symbol}")
     
@@ -3188,10 +3433,10 @@ def test_cache_system():
     
     return True
 
-def test_hybrid_scoring_system():
-    """Test the hybrid scoring system"""
+def test_robust_scoring_system():
+    """Test the robust scoring system"""
     print("\n" + "=" * 60)
-    print("🧪 TESTING HYBRID SCORING SYSTEM")
+    print("🧪 TESTING ROBUST SCORING SYSTEM")
     print("=" * 60)
     
     # Buat data dengan berbagai kondisi
@@ -3228,43 +3473,110 @@ def test_hybrid_scoring_system():
         adaptive_indicators = strategy._calculate_adaptive_indicators(test_df)
         indicators.update(adaptive_indicators)
         
-        # Test semua scoring systems
-        sym_score = strategy._calculate_symmetrical_score(indicators, test_df)
-        tf_score = strategy._calculate_trend_following_score(indicators, test_df)
-        hybrid_score = strategy.calculate_adaptive_score(indicators, test_df, "TEST")
+        # Test robust scoring system
+        robust_score = strategy.calculate_robust_score(indicators, test_df, f"TEST_{scenario_name}")
         
-        print(f"   Symmetrical Score: {sym_score:.1f}")
-        print(f"   Trend-Following Score: {tf_score:.1f}")
-        print(f"   Hybrid Score: {hybrid_score:.1f}")
+        # Test dynamic threshold
+        threshold = strategy.calculate_dynamic_threshold(test_df, f"TEST_{scenario_name}")
+        
+        print(f"   Robust Score: {robust_score:.1f}")
+        print(f"   Dynamic Threshold: {threshold:.1f}")
+        
+        # Test smart entry
+        current_price = test_df['close'].iloc[-1]
+        smart_entry = strategy.calculate_smart_entry(
+            f"TEST_{scenario_name}", 
+            current_price, 
+            "LONG" if robust_score > 0 else "SHORT" if robust_score < 0 else "NEUTRAL",
+            test_df,
+            robust_score
+        )
+        
+        print(f"   Smart Entry - TP1 Prob: {smart_entry['prob_tp1']}%")
+        print(f"   Smart Entry - Required Score: {smart_entry['required_score']:.1f}")
         
         # Test full analysis
         result = strategy.analyze(test_df, f"TEST_{scenario_name}")
         print(f"   Final Action: {result['action']}")
         print(f"   Final Score: {result['score']:.1f}")
         print(f"   Scoring System Used: {result.get('scoring_system', 'N/A')}")
+        print(f"   Probabilities: TP1={result['prob_tp1']}%, TP2={result['prob_tp2']}%, TP3={result['prob_tp3']}%")
+    
+    return True
+
+def test_signal_filter():
+    """Test signal filter"""
+    print("\n" + "=" * 60)
+    print("🔍 TESTING SIGNAL FILTER")
+    print("=" * 60)
+    
+    # Test cases
+    test_signals = [
+        {
+            'action': 'LONG',
+            'score': 7.5,
+            'prob_tp1': 45,
+            'rr_ratio_tp1': 1.8,
+            'volume_ratio': 1.2,
+            'trend_strength': 0.4,
+            'market_type': 'crypto',
+            'scalping_mode': False
+        },
+        {
+            'action': 'SHORT',
+            'score': 4.0,  # Too low
+            'prob_tp1': 35,
+            'rr_ratio_tp1': 1.6,
+            'volume_ratio': 0.9,
+            'trend_strength': 0.5,  # Strong uptrend - bad for short
+            'market_type': 'crypto',
+            'scalping_mode': False
+        },
+        {
+            'action': 'LONG',
+            'score': 8.5,
+            'prob_tp1': 30,  # Too low probability
+            'rr_ratio_tp1': 2.0,
+            'volume_ratio': 1.5,
+            'trend_strength': 0.3,
+            'market_type': 'crypto',
+            'scalping_mode': False
+        }
+    ]
+    
+    for i, signal in enumerate(test_signals, 1):
+        print(f"\nTest Case {i}: {signal['action']}")
+        should_trade, reason = SignalFilter.should_trade(signal)
+        print(f"   Should Trade: {should_trade}")
+        print(f"   Reason: {reason}")
     
     return True
 
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("STRATEGIES.PY - ENHANCED VERSION WITH CACHE AND MARKET TYPE AWARENESS")
+    print("STRATEGIES.PY - ENHANCED VERSION WITH ALL IMPROVEMENTS")
     print("=" * 60)
     print("✅ Cache System: Active (30 min TTL)")
     print("✅ Market Type Detection: Auto for all symbols")
     print("✅ Indonesia Stocks: 1d timeframe, 40+ days required")
     print("✅ Bias Correction: SEMUA BIAS = 0.0")
-    print("✅ Hybrid Scoring: Symmetrical + Trend-Following")
+    print("✅ Robust Scoring: New scoring system dengan dynamic threshold")
+    print("✅ Signal Filter: Integrated filtering untuk semua sinyal")
+    print("✅ Probability Calculator: Realistic probabilities")
     print("=" * 60)
     
     # Jalankan test
     test_cache_system()
     test_indonesia_stocks()
-    test_hybrid_scoring_system()
+    test_robust_scoring_system()
+    test_signal_filter()
     
     print("\n" + "=" * 60)
-    print("✅ SEMUA SYSTEM READY!")
+    print("✅ SEMUA SYSTEM READY DAN TERINTEGRASI!")
     print("✅ Cache bekerja untuk hindari rate limit")
     print("✅ Saham Indonesia menggunakan timeframe 1d")
     print("✅ Market type auto-detection aktif")
     print("✅ Long bias tetap 0.0 (NEUTRAL)")
+    print("✅ Robust scoring dengan dynamic threshold aktif")
+    print("✅ Signal filter terintegrasi ke dalam strategi")
     print("=" * 60)
