@@ -1,3 +1,5 @@
+# core.py - PERBAIKAN UNTUK ANALISIS ENHANCED DAN FILTER SINYAL
+
 import os
 import sys
 import time
@@ -246,6 +248,44 @@ class ScalpingStrategy:
         except:
             return df['close'].iloc[-1] * 0.02
 
+    def analyze_enhanced(self, df, symbol=None):
+        """Enhanced analysis untuk scalping dengan filter tambahan"""
+        # Panggil analisis standar
+        analysis = self.analyze(df, symbol)
+        if not analysis:
+            return None
+        
+        # Tambahkan filter tambahan untuk scalping
+        current_price = df['close'].iloc[-1] if len(df) > 0 else 0
+        
+        # Filter volatilitas ekstrem untuk scalping
+        if analysis.get('volatility', 0) > 0.1:  # 10% volatilitas dalam 5m terlalu tinggi
+            analysis['action'] = 'NEUTRAL'
+            analysis['notes'] = 'Volatilitas terlalu tinggi untuk scalping'
+            analysis['score'] = 0
+        
+        # Filter spread (untuk scalping, spread harus kecil)
+        if 'spread' in df.columns and len(df) > 0:
+            spread = (df['high'].iloc[-1] - df['low'].iloc[-1]) / current_price
+            if spread > 0.02:  # Spread 2% terlalu besar untuk scalping
+                analysis['action'] = 'NEUTRAL'
+                analysis['notes'] = 'Spread terlalu besar untuk scalping'
+                analysis['score'] = 0
+        
+        # Tambahkan probabilitas untuk scalping
+        score = analysis.get('score', 0)
+        if score >= 4:
+            analysis['confidence_level'] = 'HIGH'
+            analysis['probabilities'] = {'LONG': 0.7, 'SHORT': 0.1, 'NEUTRAL': 0.2} if analysis['action'] == 'LONG' else {'LONG': 0.1, 'SHORT': 0.7, 'NEUTRAL': 0.2}
+        elif score >= 2:
+            analysis['confidence_level'] = 'MEDIUM'
+            analysis['probabilities'] = {'LONG': 0.6, 'SHORT': 0.2, 'NEUTRAL': 0.2} if analysis['action'] == 'LONG' else {'LONG': 0.2, 'SHORT': 0.6, 'NEUTRAL': 0.2}
+        else:
+            analysis['confidence_level'] = 'LOW'
+            analysis['probabilities'] = {'LONG': 0.4, 'SHORT': 0.4, 'NEUTRAL': 0.2}
+        
+        return analysis
+
 # =============================================
 # EMERGENCY IMPORT FIX - UNTUK STRUKTUR FOLDER BOT
 # =============================================
@@ -282,6 +322,7 @@ print("="*60)
 
 # Initialize all imports to None
 TechnicalAnalysisStrategy = None
+SignalFilter = None
 UnifiedDataProvider = None
 EnhancedYFinanceDataProvider = None
 DataProviderMonitor = None
@@ -301,8 +342,9 @@ NonCryptoAssetsProvider = None  # New import
 
 try:
     print("✅ Mencoba import strategies...")
-    from strategies import TechnicalAnalysisStrategy, get_trading_data, create_strategy_for_symbol
+    from strategies import TechnicalAnalysisStrategy, SignalFilter, get_trading_data, create_strategy_for_symbol
     print("  ✅ TechnicalAnalysisStrategy berhasil diimport")
+    print("  ✅ SignalFilter berhasil diimport")
     print("  ✅ get_trading_data dan create_strategy_for_symbol berhasil diimport")
 except ImportError as e1:
     print(f"  ❌ Gagal import strategies: {e1}")
@@ -312,6 +354,13 @@ except ImportError as e1:
             logger.warning("TechnicalAnalysisStrategy dummy digunakan")
         def analyze(self, *args, **kwargs):
             return {'action': 'NEUTRAL', 'score': 0}
+        def analyze_enhanced(self, *args, **kwargs):
+            return {'action': 'NEUTRAL', 'score': 0}
+    
+    class SignalFilter:
+        @staticmethod
+        def should_trade(signal):
+            return True, "OK"
     
     def get_trading_data(symbol, provider=None):
         logger.warning("get_trading_data dummy digunakan")
@@ -582,8 +631,8 @@ class BacktestEngine:
                 current_price = df['close'].iloc[i]
                 current_time = df.index[i] if hasattr(df.index, 'iloc') else i
                 
-                # Get strategy analysis
-                analysis = strategy.analyze(current_data)
+                # Get strategy analysis - GUNAKAN ANALISIS ENHANCED
+                analysis = strategy.analyze_enhanced(current_data) if hasattr(strategy, 'analyze_enhanced') else strategy.analyze(current_data)
                 
                 if analysis and analysis['action'] in ['LONG', 'SHORT']:
                     current_trade = None
@@ -643,10 +692,10 @@ class BacktestEngine:
                         current_equity = balance + unrealized_pnl
                     else:
                         current_equity = balance
-                else:
-                    current_equity = balance
                     
-                equity_curve.append(current_equity)
+                    equity_curve.append(current_equity)
+                else:
+                    equity_curve.append(balance)
             
             self.results = self._calculate_comprehensive_performance_metrics(trades, equity_curve)
             return self.results
@@ -3212,7 +3261,7 @@ class EnhancedTradingBot:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit semua tasks
                 future_to_asset = {
-                    executor.submit(self._analyze_single_asset, asset, i, len(assets_to_process)): asset 
+                    executor.submit(self._analyze_single_asset_enhanced, asset, i, len(assets_to_process)): asset 
                     for i, asset in enumerate(assets_to_process)
                 }
                 
@@ -3247,7 +3296,7 @@ class EnhancedTradingBot:
                 for i, signal in enumerate(signals[:top_n]):
                     # Tandai sinyal SHORT dengan warna berbeda (hanya untuk info)
                     short_marker = "🚫" if signal['action'] == 'SHORT' and self.mode == 'saham_id' else ""
-                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} {short_marker} | Score: {signal['score']}")
+                    logger.info(f"  {i+1}. {signal['symbol']} | {signal['action']} {short_marker} | Score: {signal['score']} | Confidence: {signal.get('confidence_level', 'LOW')}")
             else:
                 logger.info("ℹ️ No signals found with current criteria")
             
@@ -3261,8 +3310,8 @@ class EnhancedTradingBot:
             self.scanning_in_progress = False
             self.current_scan_task = None
 
-    def _analyze_single_asset(self, asset, index, total):
-        """Helper method untuk menganalisis single asset (untuk threading)"""
+    def _analyze_single_asset_enhanced(self, asset, index, total):
+        """Helper method untuk menganalisis single asset dengan analisis enhanced (untuk threading)"""
         try:
             symbol = asset.get('symbol')
             asset_name = asset.get('name', symbol)
@@ -3347,8 +3396,14 @@ class EnhancedTradingBot:
                 strategy = self._create_spot_strategy()
                 leverage = 1  # No leverage untuk spot
             
-            # Analyze dengan strategy
-            analysis = strategy.analyze(df, symbol)
+            # Analyze dengan strategy ENHANCED - GUNAKAN ANALISIS ENHANCED
+            if hasattr(strategy, 'analyze_enhanced'):
+                logger.info(f"    🔍 Menggunakan analyze_enhanced untuk {symbol}")
+                analysis = strategy.analyze_enhanced(df, symbol)
+            else:
+                logger.info(f"    ⚠️ analyze_enhanced tidak tersedia, menggunakan analyze biasa")
+                analysis = strategy.analyze(df, symbol)
+            
             if not analysis:
                 logger.info(f"    ⚠️ No analysis for {symbol}")
                 return None
@@ -3365,7 +3420,28 @@ class EnhancedTradingBot:
             # Gunakan min_score yang berbeda berdasarkan market type dan action
             min_score = self._get_market_min_score(self.mode, action)
             
-            # Check jika signal valid
+            # **PERBAIKAN: Terapkan filter sinyal tambahan menggunakan SignalFilter**
+            if action != 'NEUTRAL' and abs(score) >= min_score:
+                # Buat sinyal sementara untuk filtering
+                temp_signal = {
+                    'symbol': formatted_symbol,
+                    'action': action,
+                    'score': score,
+                    'probabilities': analysis.get('probabilities', {'LONG': 0.4, 'SHORT': 0.4, 'NEUTRAL': 0.2}),
+                    'confidence_level': analysis.get('confidence_level', 'LOW'),
+                    'rsi': analysis.get('rsi', 50),
+                    'volume_ratio': analysis.get('volume_ratio', 1),
+                    'volatility': analysis.get('volatility', 0.02)
+                }
+                
+                # Terapkan filter sinyal
+                should_trade, reason = SignalFilter.should_trade(temp_signal)
+                
+                if not should_trade:
+                    logger.info(f"    ⛔ Signal filter rejected {symbol}: {reason}")
+                    return None
+            
+            # Check jika signal valid setelah filter
             if abs(score) >= min_score and action != 'NEUTRAL':
                 signal_data = {
                     'symbol': formatted_symbol,
@@ -3387,10 +3463,14 @@ class EnhancedTradingBot:
                     'asset_type': detected_type,
                     'leverage': leverage,
                     'strategy': 'scalping' if self.scalping_mode else 'standard',
-                    'short_allowed': self._is_short_allowed(self.mode, symbol)
+                    'short_allowed': self._is_short_allowed(self.mode, symbol),
+                    # Tambahan untuk enhanced analysis
+                    'probabilities': analysis.get('probabilities', {'LONG': 0.4, 'SHORT': 0.4, 'NEUTRAL': 0.2}),
+                    'confidence_level': analysis.get('confidence_level', 'LOW'),
+                    'filter_reason': analysis.get('notes', '')
                 }
                 
-                logger.info(f"✅ Signal: {formatted_symbol} | {action} | Score: {score:.2f} | Type: {detected_type} | Strategy: {'SCALPING' if self.scalping_mode else 'STANDARD'} | Short Allowed: {self._is_short_allowed(self.mode, symbol)}")
+                logger.info(f"✅ Signal: {formatted_symbol} | {action} | Score: {score:.2f} | Type: {detected_type} | Strategy: {'SCALPING' if self.scalping_mode else 'STANDARD'} | Short Allowed: {self._is_short_allowed(self.mode, symbol)} | Confidence: {signal_data['confidence_level']}")
                 return signal_data
             else:
                 return None
@@ -3398,6 +3478,10 @@ class EnhancedTradingBot:
         except Exception as e:
             logger.error(f"❌ Error analyzing {asset.get('symbol', 'unknown')}: {str(e)[:100]}")
             return None
+
+    def _analyze_single_asset(self, asset, index, total):
+        """Backward compatibility - gunakan enhanced version"""
+        return self._analyze_single_asset_enhanced(asset, index, total)
 
     def _apply_market_constraints(self, analysis: dict, detected_type: str = "spot") -> dict:
         """Apply market constraints berdasarkan detected type - DIPERBAIKI UNTUK NON-CRYPTO"""
@@ -3452,8 +3536,12 @@ class EnhancedTradingBot:
             else:
                 strategy = self._create_spot_strategy()
             
-            # Technical analysis
-            analysis = strategy.analyze(df)
+            # Technical analysis ENHANCED
+            if hasattr(strategy, 'analyze_enhanced'):
+                analysis = strategy.analyze_enhanced(df)
+            else:
+                analysis = strategy.analyze(df)
+                
             if not analysis:
                 return {'error': 'Analysis failed'}
             
@@ -3688,8 +3776,11 @@ class EnhancedTradingBot:
             else:
                 strategy = self._create_spot_strategy()
             
-            # Calculate menggunakan strategy
-            analysis = strategy.analyze(df)
+            # Calculate menggunakan strategy ENHANCED
+            if hasattr(strategy, 'analyze_enhanced'):
+                analysis = strategy.analyze_enhanced(df)
+            else:
+                analysis = strategy.analyze(df)
             
             if analysis and 'tp1' in analysis and 'sl' in analysis:
                 # Dapatkan current_price dari data terbaru
@@ -4034,6 +4125,8 @@ class TradingCore:
             class DummyStrategy:
                 def analyze(self, *args, **kwargs):
                     return {'action': 'NEUTRAL', 'score': 0}
+                def analyze_enhanced(self, *args, **kwargs):
+                    return {'action': 'NEUTRAL', 'score': 0}
             self.strategy = DummyStrategy()
         
         logger.info(f"🚀 TradingCore initialized | Mode: {self.trading_type}")
@@ -4170,7 +4263,7 @@ class TradingCore:
                 future_to_asset = {}
                 for asset in assets[:25]:  # **PERBAIKAN: Maksimal 25 assets untuk scanning cepat**
                     symbol = asset['symbol'] if isinstance(asset, dict) else asset
-                    future_to_asset[executor.submit(self._analyze_symbol, symbol, timeframe, lookback, market_type)] = symbol
+                    future_to_asset[executor.submit(self._analyze_symbol_enhanced, symbol, timeframe, lookback, market_type)] = symbol
                 
                 for future in concurrent.futures.as_completed(future_to_asset):
                     symbol = future_to_asset[future]
@@ -4194,8 +4287,8 @@ class TradingCore:
             logger.error(f"❌ Market scan failed: {e}")
             return []
     
-    def _analyze_symbol(self, symbol, timeframe, lookback, market_type):
-        """Helper untuk analisis per symbol"""
+    def _analyze_symbol_enhanced(self, symbol, timeframe, lookback, market_type):
+        """Helper untuk analisis per symbol dengan enhanced analysis"""
         try:
             time.sleep(1)  # Delay untuk rate limit
             
@@ -4235,19 +4328,47 @@ class TradingCore:
                         entry_range_pct=0.02
                     )
             
-            signal = strategy.analyze(df, symbol)
+            # Gunakan analisis enhanced jika tersedia
+            if hasattr(strategy, 'analyze_enhanced'):
+                signal = strategy.analyze_enhanced(df, symbol)
+            else:
+                signal = strategy.analyze(df, symbol)
+            
+            # Terapkan filter sinyal tambahan
+            if signal and signal.get('action') != 'NEUTRAL':
+                temp_signal = {
+                    'symbol': symbol,
+                    'action': signal['action'],
+                    'score': signal.get('score', 0),
+                    'probabilities': signal.get('probabilities', {'LONG': 0.4, 'SHORT': 0.4, 'NEUTRAL': 0.2}),
+                    'confidence_level': signal.get('confidence_level', 'LOW'),
+                    'rsi': signal.get('rsi', 50),
+                    'volume_ratio': signal.get('volume_ratio', 1),
+                    'volatility': signal.get('volatility', 0.02)
+                }
+                
+                should_trade, reason = SignalFilter.should_trade(temp_signal)
+                if not should_trade:
+                    signal['action'] = 'NEUTRAL'
+                    signal['notes'] = reason
             
             return {
                 'symbol': symbol,
                 'action': signal.get('action', 'NEUTRAL'),
                 'score': signal.get('score', 0),
                 'price': df['close'].iloc[-1] if len(df) > 0 else 0,
-                'data_points': len(df)
+                'data_points': len(df),
+                'probabilities': signal.get('probabilities', {}),
+                'confidence_level': signal.get('confidence_level', 'LOW')
             }
             
         except Exception as e:
             logger.debug(f"❌ Failed to analyze {symbol}: {e}")
             return None
+    
+    def _analyze_symbol(self, symbol, timeframe, lookback, market_type):
+        """Backward compatibility"""
+        return self._analyze_symbol_enhanced(symbol, timeframe, lookback, market_type)
     
     def get_health_status(self):
         """Get health status dari provider"""
@@ -4296,7 +4417,7 @@ def test_universal_provider():
         
         if signals:
             for i, signal in enumerate(signals[:10]):
-                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Type: {signal.get('trading_mode', 'N/A')}, Leverage: {signal.get('leverage', 1)}x)")
+                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Type: {signal.get('trading_mode', 'N/A')}, Leverage: {signal.get('leverage', 1)}x, Confidence: {signal.get('confidence_level', 'LOW')})")
         else:
             print("   ℹ️ No signals found - this is normal with real data")
     
@@ -4320,7 +4441,7 @@ def test_universal_provider():
         
         if signals:
             for i, signal in enumerate(signals[:10]):
-                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']})")
+                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Confidence: {signal.get('confidence_level', 'LOW')})")
                 # Pastikan tidak ada sinyal SHORT untuk saham Indonesia
                 if signal['action'] == 'SHORT':
                     print(f"     ⚠️ ERROR: SHORT signal found for Indonesian stock!")
@@ -4341,12 +4462,12 @@ def test_universal_provider():
         
         if signals:
             for i, signal in enumerate(signals[:5]):
-                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Strategy: {signal.get('strategy', 'N/A')})")
+                print(f"   {i+1}. {signal['symbol']}: {signal['action']} (Score: {signal['score']}, Strategy: {signal.get('strategy', 'N/A')}, Confidence: {signal.get('confidence_level', 'LOW')})")
         else:
             print("   ℹ️ No scalping signals found - this is normal with strict filters")
     
     print("\n" + "="*60)
-    print("✅ Test completed - Bot menggunakan Universal Provider dengan auto-detection")
+    print("✅ Test completed - Bot menggunakan Universal Provider dengan enhanced analysis")
     print("   Auto-detect spot/futures dari simbol")
     print("   Leverage auto-detection (1x spot, 5x futures)")
     print("   Menggunakan get_trading_data untuk membersihkan data")
@@ -4355,6 +4476,10 @@ def test_universal_provider():
     print("   SHORT TIDAK diizinkan untuk Saham Indonesia (sesuai regulasi IDX)")
     print("   SCALPING mode dengan filter ketat dan timeframe 5m")
     print("   SUPPORT 500+ ASSETS untuk non-crypto markets")
+    print("   ✅ ENHANCED ANALYSIS: Menggunakan analyze_enhanced untuk analisis lebih baik")
+    print("   ✅ SIGNAL FILTER: Terapkan filter sinyal tambahan")
+    print("   ✅ CONFIDENCE LEVEL: HIGH/MEDIUM/LOW berdasarkan score")
+    print("   ✅ PROBABILITIES: Probabilitas LONG/SHORT/NEUTRAL")
     print("   ✅ PERBAIKAN: Menggunakan get_active_assets() untuk efisiensi scanning")
     print("   ✅ PERBAIKAN: Timeframe='1d' untuk saham_id")
     print("   ✅ PERBAIKAN: Multi-threading untuk scan 25 saham cepat")
@@ -4446,6 +4571,8 @@ def test_non_crypto_assets_500():
     print("   Cache 3 hari untuk mengurangi API calls")
     print("   Fallback ke list statis jika provider gagal")
     print("   Multi-threading untuk scanning cepat")
+    print("   ✅ ENHANCED ANALYSIS: Menggunakan analyze_enhanced")
+    print("   ✅ SIGNAL FILTER: Filter sinyal lebih realistis")
     print("   ✅ PERBAIKAN: Menggunakan get_active_assets() untuk efisiensi scanning")
     print("   ✅ PERBAIKAN: Timeframe='1d' untuk saham_id")
     print("   ✅ PERBAIKAN: Multi-threading untuk scan 25 saham cepat")
@@ -4507,4 +4634,10 @@ if __name__ == "__main__":
     print("   - Sesuai regulasi IDX (tidak mengizinkan short selling)")
     print("   - Semua sinyal SHORT diubah menjadi NEUTRAL")
     print("   - Pesan jelas bahwa SHORT tidak diizinkan")
+    print("🎯 **ENHANCED ANALYSIS DAN SIGNAL FILTER**")
+    print("   - Menggunakan analyze_enhanced untuk analisis lebih baik")
+    print("   - SignalFilter untuk filter sinyal realistis")
+    print("   - Confidence level: HIGH/MEDIUM/LOW")
+    print("   - Probabilities untuk LONG/SHORT/NEUTRAL")
+    print("   - Backward compatibility dengan method lama")
     print("="*60)
