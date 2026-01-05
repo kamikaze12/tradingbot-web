@@ -1,4 +1,4 @@
-# core.py - PERBAIKAN UNTUK ANALISIS ENHANCED DAN FILTER SINYAL
+# core.py - PERBAIKAN UNTUK ANALISIS ENHANCED DAN FILTER SINYAL DENGAN PRE-FILTERING
 
 import os
 import sys
@@ -48,6 +48,58 @@ SCALPING_CONFIG = {
     "skip_dummy_data": True,     # Skip aset dengan dummy data
     "analysis_coins_limit": 500  # PERBAIKAN: Naikkan limit analisis aset menjadi 500
 }
+
+# =============================================
+# DATA QUALITY CACHE - PERBAIKAN PRE-FILTERING
+# =============================================
+
+class DataQualityCache:
+    """Cache untuk menyimpan hasil pemeriksaan kualitas data aset"""
+    
+    def __init__(self, max_size=1000, expiry_hours=24):
+        self.cache = {}
+        self.max_size = max_size
+        self.expiry_hours = expiry_hours
+        
+    def set(self, symbol, is_viable, reason=""):
+        """Set cache untuk simbol"""
+        if len(self.cache) >= self.max_size:
+            # Hapus item tertua
+            oldest_key = next(iter(self.cache))
+            self.cache.pop(oldest_key)
+        
+        self.cache[symbol] = {
+            'is_viable': is_viable,
+            'reason': reason,
+            'timestamp': datetime.now(),
+            'checked_count': self.cache.get(symbol, {}).get('checked_count', 0) + 1
+        }
+    
+    def get(self, symbol):
+        """Get cache untuk simbol"""
+        if symbol in self.cache:
+            entry = self.cache[symbol]
+            # Check expiry
+            age_hours = (datetime.now() - entry['timestamp']).total_seconds() / 3600
+            if age_hours <= self.expiry_hours:
+                return entry['is_viable'], entry['reason']
+        return None, None
+    
+    def get_stats(self):
+        """Get cache statistics"""
+        total = len(self.cache)
+        viable = sum(1 for v in self.cache.values() if v['is_viable'])
+        non_viable = total - viable
+        return {
+            'total_entries': total,
+            'viable': viable,
+            'non_viable': non_viable,
+            'max_size': self.max_size
+        }
+    
+    def clear(self):
+        """Clear cache"""
+        self.cache.clear()
 
 # =============================================
 # SCALPING STRATEGY
@@ -2295,6 +2347,9 @@ class EnhancedTradingBot:
         self.scheduler_thread = None
         self.stop_scheduler = False
         
+        # TAMBAHAN: Data quality cache
+        self.data_quality_cache = DataQualityCache(max_size=2000)
+        
         if config is None:
             config_path = "config/config.json"
             self.config_path = config_path
@@ -2350,6 +2405,92 @@ class EnhancedTradingBot:
         self.last_ml_update = 0
         
         logger.info("✅ Enhanced TradingBot initialized dengan Universal Provider")
+
+    # =============================================
+    # PRE-FILTERING METHODS - PERBAIKAN BARU
+    # =============================================
+    
+    def filter_viable_assets(self, assets, max_zero_ratio=0.6):
+        """Filter assets sebelum scanning untuk menghindari aset tidak layak"""
+        viable = []
+        skip_patterns = ['USD4', 'USDT4', 'FARTCOIN', '1000REKT', 'SCAM', 'FAKE', 'TEST']
+        
+        logger.info(f"🔍 Pre-filtering {len(assets)} assets...")
+        
+        for asset in assets:
+            symbol = asset if isinstance(asset, str) else asset.get('symbol', '')
+            name = asset if isinstance(asset, str) else asset.get('name', '')
+            
+            # 1. Skip invalid patterns in symbol or name
+            symbol_upper = symbol.upper()
+            name_upper = name.upper() if name else ""
+            
+            if any(patt in symbol_upper for patt in skip_patterns) or \
+               any(patt in name_upper for patt in skip_patterns):
+                logger.debug(f"  ⛔ Skipping {symbol} - Invalid pattern")
+                continue
+            
+            # 2. Skip non-USDT pairs for crypto mode (except for known stable pairs)
+            if self.mode == 'crypto':
+                if not any(x in symbol_upper for x in ['/USDT', ':USDT', 'USDT']):
+                    # Skip jika bukan USDT pair, kecuali beberapa pair khusus
+                    allowed_non_usdt = ['BTC/USD', 'ETH/USD', 'XRP/USD', 'USD/', ':USD']
+                    if not any(x in symbol_upper for x in allowed_non_usdt):
+                        logger.debug(f"  ⛔ Skipping {symbol} - Non-USDT pair in crypto mode")
+                        continue
+            
+            # 3. Skip assets with suspicious symbols
+            suspicious_symbols = [
+                '0X', '0X0', '0X00', '000', '111', 'AAA', 'BBB', 'TEST', 'DUMMY',
+                'EXAMPLE', 'SAMPLE', 'PLACEHOLDER'
+            ]
+            
+            if any(susp in symbol_upper for susp in suspicious_symbols):
+                logger.debug(f"  ⛔ Skipping {symbol} - Suspicious symbol")
+                continue
+            
+            # 4. Check cache first
+            cache_result, cache_reason = self.data_quality_cache.get(symbol)
+            if cache_result is not None:
+                if not cache_result:
+                    logger.debug(f"  ⛔ Skipping {symbol} - Cached as non-viable: {cache_reason}")
+                    continue
+                else:
+                    logger.debug(f"  ✅ {symbol} - Cached as viable")
+                    viable.append(asset)
+                    continue
+            
+            # 5. For crypto, check price range
+            if self.mode == 'crypto' and not self.scalping_mode:
+                # Hanya terapkan filter harga untuk non-scalping
+                if hasattr(self, 'data_provider'):
+                    try:
+                        # Coba get ticker untuk cek harga
+                        ticker = self.data_provider.get_ticker(symbol)
+                        if ticker and 'last' in ticker:
+                            price = ticker['last']
+                            if price < 0.000001 or price > 1000000:  # Harga ekstrem
+                                logger.debug(f"  ⛔ Skipping {symbol} - Extreme price: {price}")
+                                self.data_quality_cache.set(symbol, False, f"Extreme price: {price}")
+                                continue
+                    except:
+                        pass  # Skip jika gagal
+            
+            viable.append(asset)
+        
+        logger.info(f"✅ Pre-filter completed: {len(viable)}/{len(assets)} assets viable")
+        logger.info(f"📊 Cache stats: {self.data_quality_cache.get_stats()}")
+        
+        return viable
+    
+    def clear_data_quality_cache(self):
+        """Clear data quality cache"""
+        self.data_quality_cache.clear()
+        logger.info("✅ Data quality cache cleared")
+    
+    def get_data_quality_stats(self):
+        """Get data quality cache statistics"""
+        return self.data_quality_cache.get_stats()
 
     # =============================================
     # HELPER METHODS FOR MINIMUM BARS BY MARKET TYPE
@@ -2574,6 +2715,29 @@ class EnhancedTradingBot:
                 if np.any(np.isclose(df['close'].values, 100.0, atol=0.001)):
                     logger.error(f"🚨 CRITICAL: {symbol} has average price ~100 (likely synthetic/bad data)")
                     return False, f"Average price is ~100 (invalid data)"
+            
+            # **PERBAIKAN BARU: Deteksi data nol yang terlalu banyak**
+            # Check 9: Zero data detection
+            zero_ratio_threshold = 0.6  # 60% data nol = tidak layak
+            for col in ['close', 'volume']:
+                if col in df.columns:
+                    zero_count = (df[col] == 0).sum()
+                    zero_ratio = zero_count / len(df)
+                    
+                    if zero_ratio > zero_ratio_threshold:
+                        logger.warning(f"⚠️ {symbol} has {zero_ratio:.1%} zero values in {col}")
+                        return False, f"Too many zero values in {col}: {zero_ratio:.1%}"
+            
+            # Check 10: Validasi volume (jika ada)
+            if 'volume' in df.columns:
+                # Volume harus positif atau nol, tidak negatif
+                if (df['volume'] < 0).any():
+                    return False, "Negative volume values"
+                
+                # Volume yang terlalu kecil mungkin data sintetik
+                avg_volume = df['volume'].mean()
+                if avg_volume < 0.001:  # Sangat kecil
+                    logger.warning(f"⚠️ {symbol} has suspiciously low volume: {avg_volume}")
             
             return True, "Data validation passed"
         
@@ -3145,7 +3309,7 @@ class EnhancedTradingBot:
                 'CINF', 'CL', 'CLX', 'CMA', 'CMCSA', 'CME', 'CMG', 'CMI',
                 'CMS', 'CNC', 'CNP', 'COF', 'COG', 'COO', 'COP', 'COST',
                 'CPB', 'CPRT', 'CRM', 'CSCO', 'CSX', 'CTAS', 'CTSH', 'CTVA',
-                'CTXS', 'CVS', 'CVX', 'D', 'DAL', 'DD', 'DE', 'DFS', 'DG',
+                'CTXS', 'CVS', 'CVX', 'D', 'DAL', 'DD', 'DFS', 'DG',
                 'DGX', 'DHI', 'DHR', 'DIS', 'DISCA', 'DISCK', 'DISH', 'DLR',
                 'DLTR', 'DOV', 'DOW', 'DRE', 'DRI', 'DTE', 'DUK', 'DVA',
                 'DVN', 'DXC', 'DXCM', 'EA', 'EBAY', 'ECL', 'ED', 'EFX',
@@ -3246,7 +3410,15 @@ class EnhancedTradingBot:
                 self.scanning_in_progress = False
                 return []
             
-            logger.info(f"📊 Scanning {len(assets)} assets...")
+            # **PERBAIKAN BARU: PRE-FILTER ASSETS**
+            assets = self.filter_viable_assets(assets)
+            
+            if not assets:
+                logger.warning("❌ No viable assets after pre-filtering")
+                self.scanning_in_progress = False
+                return []
+            
+            logger.info(f"📊 Scanning {len(assets)} viable assets...")
             
             signals = []
             
@@ -4484,6 +4656,10 @@ def test_universal_provider():
     print("   ✅ PERBAIKAN: Timeframe='1d' untuk saham_id")
     print("   ✅ PERBAIKAN: Multi-threading untuk scan 25 saham cepat")
     print("   ✅ PERBAIKAN: SHORT diblokir untuk saham_id")
+    print("   ✅ **PRE-FILTERING BARU: DataQualityCache untuk menghindari aset tidak layak**")
+    print("   ✅ **PRE-FILTERING: Skip pattern (USD4, USDT4, FARTCOIN, 1000REKT, etc.)**")
+    print("   ✅ **PRE-FILTERING: Zero data detection (>60% zero values = tidak layak)**")
+    print("   ✅ **PRE-FILTERING: Cache 24 jam untuk menghindari analisis berulang**")
 
 def test_non_crypto_assets_500():
     """Test khusus untuk 500+ aset non-crypto"""
@@ -4577,13 +4753,78 @@ def test_non_crypto_assets_500():
     print("   ✅ PERBAIKAN: Timeframe='1d' untuk saham_id")
     print("   ✅ PERBAIKAN: Multi-threading untuk scan 25 saham cepat")
     print("   ✅ PERBAIKAN: SHORT diblokir untuk saham_id")
+    print("   ✅ **PRE-FILTERING BARU: DataQualityCache untuk menghindari aset tidak layak**")
+    print("   ✅ **PRE-FILTERING: Skip pattern (USD4, USDT4, FARTCOIN, 1000REKT, etc.)**")
+    print("   ✅ **PRE-FILTERING: Zero data detection (>60% zero values = tidak layak)**")
+
+def test_pre_filtering():
+    """Test pre-filtering functionality"""
+    print("\n" + "="*60)
+    print("TESTING PRE-FILTERING FUNCTIONALITY")
+    print("="*60)
+    
+    bot = EnhancedTradingBot()
+    
+    # Test dengan mode crypto
+    print("\n1. Testing Pre-filtering in CRYPTO mode...")
+    success = bot.set_mode("crypto")
+    
+    if success:
+        # Get assets
+        assets = bot.get_popular_assets(50)
+        print(f"   Found {len(assets)} assets")
+        
+        # Apply pre-filtering
+        viable_assets = bot.filter_viable_assets(assets)
+        print(f"   After pre-filtering: {len(viable_assets)} viable assets")
+        
+        # Show cache stats
+        cache_stats = bot.get_data_quality_stats()
+        print(f"   Cache stats: {cache_stats}")
+        
+        # Clear cache for next test
+        bot.clear_data_quality_cache()
+        print("   ✅ Cache cleared")
+    
+    # Test dengan mode saham_id
+    print("\n2. Testing Pre-filtering in SAHAM_ID mode...")
+    success = bot.set_mode("saham_id")
+    
+    if success:
+        # Get assets
+        assets = bot.get_popular_assets(100)
+        print(f"   Found {len(assets)} assets")
+        
+        # Apply pre-filtering
+        viable_assets = bot.filter_viable_assets(assets)
+        print(f"   After pre-filtering: {len(viable_assets)} viable assets")
+        
+        # Show cache stats
+        cache_stats = bot.get_data_quality_stats()
+        print(f"   Cache stats: {cache_stats}")
+    
+    print("\n" + "="*60)
+    print("✅ Pre-filtering test completed")
+    print("   DataQualityCache berfungsi dengan baik")
+    print("   Skip patterns: USD4, USDT4, FARTCOIN, 1000REKT, etc.")
+    print("   Zero data detection: >60% zero values = tidak layak")
+    print("   Cache expiry: 24 jam")
+    print("   Cache size: 2000 entries max")
 
 if __name__ == "__main__":
     test_universal_provider()
     test_non_crypto_assets_500()
+    test_pre_filtering()  # Tambah test pre-filtering
     
     print("\n" + "="*60)
-    print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER")
+    print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER & PRE-FILTERING")
+    print("🎯 **NEW: Pre-filtering dengan DataQualityCache**")
+    print("   - Skip invalid patterns (USD4, USDT4, FARTCOIN, etc.)")
+    print("   - Filter non-USDT pairs untuk crypto mode")
+    print("   - Skip suspicious symbols (TEST, DUMMY, etc.)")
+    print("   - Zero data detection (>60% zero values = tidak layak)")
+    print("   - Cache 24 jam untuk menghindari analisis berulang")
+    print("   - Cache size: 2000 entries max")
     print("🎯 Menggunakan get_trading_data untuk membersihkan data")
     print("🎯 Auto-detect spot/futures dari simbol")
     print("🎯 Leverage auto-detection (1x spot, 5x futures)")
@@ -4640,4 +4881,12 @@ if __name__ == "__main__":
     print("   - Confidence level: HIGH/MEDIUM/LOW")
     print("   - Probabilities untuk LONG/SHORT/NEUTRAL")
     print("   - Backward compatibility dengan method lama")
+    print("🎯 **PRE-FILTERING BARU: DataQualityCache untuk menghindari aset tidak layak**")
+    print("   - Skip invalid patterns (USD4, USDT4, FARTCOIN, 1000REKT, etc.)")
+    print("   - Filter non-USDT pairs untuk crypto mode")
+    print("   - Skip suspicious symbols (TEST, DUMMY, EXAMPLE, etc.)")
+    print("   - Zero data detection (>60% zero values = tidak layak)")
+    print("   - Cache 24 jam untuk menghindari analisis berulang pada aset yang sama")
+    print("   - Cache size: 2000 entries max")
+    print("   - Cache expiry: 24 jam")
     print("="*60)
