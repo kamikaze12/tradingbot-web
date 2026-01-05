@@ -107,7 +107,11 @@ ohlcv_cache = OHLcvCache()
 def validate_data_quality(df: pd.DataFrame, symbol: str, scalping_mode: bool = False) -> bool:
     """Validasi kualitas data sebelum digunakan untuk trading"""
     try:
-        if df is None or df.empty:
+        if df is None or not isinstance(df, pd.DataFrame):
+            logger.warning(f"Data quality check failed for {symbol}: Not a DataFrame")
+            return False
+        
+        if df.empty:
             logger.warning(f"Data quality check failed for {symbol}: Empty DataFrame")
             return False
         
@@ -204,7 +208,12 @@ def validate_data_quality(df: pd.DataFrame, symbol: str, scalping_mode: bool = F
 def pre_filter_trading_data(symbol: str, df: pd.DataFrame, scalping_mode: bool = False) -> bool:
     """Pre-filter data sebelum digunakan untuk analisis trading"""
     try:
-        if df is None or df.empty:
+        if df is None or not isinstance(df, pd.DataFrame):
+            logger.warning(f"Pre-filter failed for {symbol}: Not a DataFrame")
+            return False
+            
+        if df.empty:
+            logger.warning(f"Pre-filter failed for {symbol}: Empty DataFrame")
             return False
         
         market_type = detect_market_type(symbol)
@@ -215,7 +224,11 @@ def pre_filter_trading_data(symbol: str, df: pd.DataFrame, scalping_mode: bool =
             return False
         
         # 2. Price validation
-        current_price = df['close'].iloc[-1] if 'close' in df.columns else 0
+        if 'close' not in df.columns:
+            logger.debug(f"Pre-filter failed for {symbol}: No close column")
+            return False
+            
+        current_price = df['close'].iloc[-1] if len(df) > 0 else 0
         if current_price <= 0 or current_price > 1000000:
             logger.debug(f"Pre-filter failed for {symbol}: Invalid price ({current_price})")
             return False
@@ -451,6 +464,9 @@ MARKET_CONFIGS = {
 
 def detect_market_type(symbol: str) -> str:
     """Auto-detect market type berdasarkan symbol"""
+    if symbol is None:
+        return "crypto"
+    
     symbol_upper = symbol.upper()
     
     # Deteksi saham Indonesia
@@ -756,8 +772,12 @@ def get_trading_data(symbol: str, provider=None, scalping_mode: bool = False,
             df = get_clean_data(symbol, provider, scalping_mode=scalping_mode)
         
         # Validasi data
-        if df is None or df.empty:
-            logger.warning(f"No data available for {symbol}")
+        if df is None or not isinstance(df, pd.DataFrame):
+            logger.warning(f"No DataFrame available for {symbol}")
+            return None
+            
+        if df.empty:
+            logger.warning(f"Empty DataFrame for {symbol}")
             return None
         
         # Pastikan ini adalah DataFrame
@@ -900,36 +920,65 @@ class TradingStrategy(ABC):
         """Analyze market data and return trading signals"""
         pass
     
-    def analyze_enhanced(self, symbol: str, data: pd.DataFrame, timeframe: str = '1h') -> Dict[str, Any]:
+    def analyze_enhanced(self, symbol: str, data: Any, timeframe: str = '1h') -> Dict[str, Any]:
         """
         Enhanced analysis dengan fallback yang aman untuk semua kemungkinan error
         FIXED: sl_distance selalu memiliki nilai default
         """
+        # PERBAIKAN UTAMA: Validasi input data bukan DataFrame
+        if not isinstance(data, pd.DataFrame):
+            logger.error(f"❌ Data for {symbol} is not a DataFrame, type: {type(data)}")
+            return {
+                'action': 'NEUTRAL',
+                'score': 0,
+                'sl_distance': 0.02,
+                'tp_distance': 0.04,
+                'error': f'Data is not a DataFrame (type: {type(data)})'
+            }
+        
         # INISIALISASI DEFAULT VALUE UNTUK SEMUA VARIABEL
         sl_distance = 0.02  # Default value 2%
         tp_distance = 0.04  # Default value 4%
-        signal = 'NEUTRAL'
-        score = 0.0
         
         try:
             # 1. Validasi data
-            if data is None or data.empty:
-                logger.warning(f"Enhanced analysis: Empty data for {symbol}")
+            if data is None:
+                logger.warning(f"Enhanced analysis: Data is None for {symbol}")
                 return {
-                    'signal': 'NEUTRAL',
+                    'action': 'NEUTRAL',
                     'score': 0,
                     'sl_distance': sl_distance,
                     'tp_distance': tp_distance,
-                    'error': 'Empty data'
+                    'error': 'Data is None'
+                }
+            
+            if not isinstance(data, pd.DataFrame):
+                logger.warning(f"Enhanced analysis: Data is not DataFrame for {symbol}")
+                return {
+                    'action': 'NEUTRAL',
+                    'score': 0,
+                    'sl_distance': sl_distance,
+                    'tp_distance': tp_distance,
+                    'error': 'Data is not DataFrame'
+                }
+                
+            if data.empty:
+                logger.warning(f"Enhanced analysis: Empty DataFrame for {symbol}")
+                return {
+                    'action': 'NEUTRAL',
+                    'score': 0,
+                    'sl_distance': sl_distance,
+                    'tp_distance': tp_distance,
+                    'error': 'Empty DataFrame'
                 }
             
             # 2. Preprocess data
             data = self._preprocess_and_validate(data, symbol, self.market_type)
             
-            if data is None or data.empty:
+            if data is None or not isinstance(data, pd.DataFrame) or data.empty:
                 logger.warning(f"Enhanced analysis: Data validation failed for {symbol}")
                 return {
-                    'signal': 'NEUTRAL',
+                    'action': 'NEUTRAL',
                     'score': 0,
                     'sl_distance': sl_distance,
                     'tp_distance': tp_distance,
@@ -940,7 +989,7 @@ class TradingStrategy(ABC):
             if self._should_skip_symbol(data, symbol):
                 logger.info(f"Enhanced analysis: Skipping {symbol} due to data quality")
                 return {
-                    'signal': 'NEUTRAL',
+                    'action': 'NEUTRAL',
                     'score': 0,
                     'sl_distance': sl_distance,
                     'tp_distance': tp_distance,
@@ -953,7 +1002,7 @@ class TradingStrategy(ABC):
             if analysis_result is None:
                 logger.warning(f"Enhanced analysis: Analysis returned None for {symbol}")
                 return {
-                    'signal': 'NEUTRAL',
+                    'action': 'NEUTRAL',
                     'score': 0,
                     'sl_distance': sl_distance,
                     'tp_distance': tp_distance,
@@ -988,7 +1037,7 @@ class TradingStrategy(ABC):
             
             # 8. Return hasil
             return {
-                'signal': signal,
+                'action': signal,
                 'score': score,
                 'sl_distance': sl_distance,
                 'tp_distance': tp_distance,
@@ -1000,7 +1049,7 @@ class TradingStrategy(ABC):
             logger.error(f"Enhanced analysis error for {symbol}: {str(e)}")
             # RETURN DEFAULT VALUE dengan sl_distance yang aman
             return {
-                'signal': 'NEUTRAL',
+                'action': 'NEUTRAL',
                 'score': 0,
                 'sl_distance': 0.02,  # Default 2%
                 'tp_distance': 0.04,  # Default 4%
@@ -1014,8 +1063,12 @@ class TradingStrategy(ABC):
             market_type = detect_market_type(symbol)
         
         # 1. Cek data kosong
-        if df is None or df.empty:
-            logger.error(f"Empty data for {symbol}")
+        if df is None or not isinstance(df, pd.DataFrame):
+            logger.error(f"Empty or invalid data for {symbol}")
+            return self._get_fallback_data(symbol, market_type)
+        
+        if df.empty:
+            logger.error(f"Empty DataFrame for {symbol}")
             return self._get_fallback_data(symbol, market_type)
         
         # 2. Cek kolom yang diperlukan
@@ -1465,6 +1518,9 @@ class TradingStrategy(ABC):
 
     def _estimate_realistic_price(self, symbol):
         """Estimate realistic price based on symbol - UPDATED WITH FUTURES"""
+        if symbol is None:
+            return 100.0
+            
         price_estimates = {
             # Crypto Spot
             'BTC/USDT': 50000.0, 'ETH/USDT': 3000.0, 'BNB/USDT': 500.0,
@@ -1612,7 +1668,7 @@ class TradingStrategy(ABC):
 
 🛑 Stop Loss: {analysis.get('sl', 0):.5f}
 
-{futires_info}
+{futures_info}
 📈 Analytics:
    Confidence: {confidence:.1f}%
    Range Size: ±{range_pct:.1f}%
@@ -2659,7 +2715,11 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def _get_valid_current_price(self, df: pd.DataFrame) -> float:
         """Get valid current price from DataFrame with validation"""
         try:
-            if df is None or df.empty:
+            if df is None or not isinstance(df, pd.DataFrame):
+                logger.warning("Not a DataFrame in _get_valid_current_price")
+                return 0.0
+            
+            if df.empty:
                 logger.warning("Empty DataFrame in _get_valid_current_price")
                 return 0.0
             
@@ -2683,7 +2743,12 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def _safe_data_validation(self, df: pd.DataFrame, symbol: str, market_type: str = None) -> bool:
         """Validasi data dengan cara yang aman dari ambiguous truth value"""
         try:
-            if df is None or df.empty:
+            if df is None or not isinstance(df, pd.DataFrame):
+                logger.warning(f"Not a DataFrame for {symbol}")
+                return False
+            
+            if df.empty:
+                logger.warning(f"Empty DataFrame for {symbol}")
                 return False
             
             # Auto-detect market type jika tidak diberikan
@@ -2728,8 +2793,16 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
 
     def _should_skip_symbol(self, df, symbol):
         """Skip logic yang lebih pintar untuk scalping - DIPERBAIKI"""
-        if df is None or df.empty or len(df) < 10:
-            logger.debug(f"Skipping {symbol}: data too short ({len(df) if df is not None else 0} bars)")
+        if df is None or not isinstance(df, pd.DataFrame):
+            logger.debug(f"Skipping {symbol}: not a DataFrame")
+            return True
+            
+        if df.empty:
+            logger.debug(f"Skipping {symbol}: empty DataFrame")
+            return True
+            
+        if len(df) < 10:
+            logger.debug(f"Skipping {symbol}: data too short ({len(df)} bars)")
             return True
         
         # Deteksi market type
@@ -2838,12 +2911,17 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
         """Enhanced analysis dengan sistem robust scoring dan filter sinyal"""
         try:
+            # PERBAIKAN UTAMA: Validasi input df adalah DataFrame
+            if df is None or not isinstance(df, pd.DataFrame):
+                logger.warning(f"Data is not a DataFrame for {symbol}")
+                return self._get_default_analysis(symbol)
+            
             # Update market type berdasarkan symbol
             if symbol is not None:
                 self.market_type = detect_market_type(symbol)
             
             # 1. Validasi data dasar
-            if df is None or df.empty:
+            if df.empty:
                 logger.warning(f"Data insufficient for {symbol}: empty DataFrame")
                 return self._get_default_analysis(symbol)
             
@@ -3057,7 +3135,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             original_atr_multiplier = self.atr_multiplier
             original_entry_range = self.entry_range_pct
             
-            if df is not None:
+            if df is not None and not df.empty:
                 adaptive_indicators = self._calculate_adaptive_indicators(df)
                 regime = adaptive_indicators.get('market_regime', 'UNKNOWN')
                 adx = adaptive_indicators.get('adx', 20)
@@ -3080,7 +3158,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             self.entry_range_pct = original_entry_range
             
             # Add regime info to result
-            if df is not None:
+            if df is not None and not df.empty:
                 adaptive_indicators = self._calculate_adaptive_indicators(df)
                 result['market_regime'] = adaptive_indicators.get('market_regime', 'UNKNOWN')
                 result['adx_value'] = adaptive_indicators.get('adx', 20)
@@ -3374,8 +3452,15 @@ class ScalpingStrategy(EnhancedTechnicalAnalysisStrategy):
     def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
         """Override untuk scalping dengan validasi tambahan"""
         
+        # PERBAIKAN: Validasi input df adalah DataFrame
+        if df is None or not isinstance(df, pd.DataFrame):
+            return self._get_safe_neutral_signal(symbol)
+            
+        if df.empty:
+            return self._get_safe_neutral_signal(symbol)
+        
         # 1. Validasi khusus untuk scalping
-        if df is None or df.empty:
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
             return self._get_safe_neutral_signal(symbol)
         
         # 2. Gunakan validasi data yang aman
@@ -3441,6 +3526,9 @@ def auto_detect_trading_type_and_format(symbol: str) -> Tuple[str, str]:
     Auto-detect trading type dan konversi format secara otomatis.
     Returns: (trading_type, formatted_symbol)
     """
+    if symbol is None:
+        return "spot", "UNKNOWN"
+        
     symbol_upper = symbol.upper()
     
     # Deteksi futures
@@ -3479,6 +3567,9 @@ def convert_symbol_format(symbol: str, target_type: str = "spot") -> str:
     """
     Convert symbol between spot and futures format
     """
+    if symbol is None:
+        return "UNKNOWN"
+        
     if target_type == "futures":
         # Convert spot to futures format
         if ':USDT' not in symbol.upper():
@@ -3504,6 +3595,9 @@ def auto_suggest_leverage(symbol: str, market_type: str = "crypto", scalping_mod
     """
     Auto-suggest leverage based on symbol and market type
     """
+    if symbol is None:
+        return 1
+    
     # 🆕 SCALPING LEVERAGE LEBIH RENDAH
     if scalping_mode:
         leverage_map = {
@@ -3572,6 +3666,9 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
     """
     Create appropriate strategy based on symbol auto-detection dengan scalping support
     """
+    if symbol is None:
+        symbol = "UNKNOWN"
+    
     # Auto-detect market type jika tidak ditentukan atau "auto"
     if market_type == "auto":
         market_type = detect_market_type(symbol)
