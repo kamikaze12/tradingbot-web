@@ -338,7 +338,7 @@ class NonCryptoAssetsProvider:
             
             # 5. PRICE LEVEL BONUS (0-5)
             current_price = close_prices.iloc[-1]
-            if current_price > 1000:  > 1000 = blue chip
+            if current_price > 1000:  # > 1000 = blue chip
                 price_bonus = 5
             elif current_price > 500:
                 price_bonus = 4
