@@ -101,6 +101,161 @@ class OHLcvCache:
 ohlcv_cache = OHLcvCache()
 
 # =============================================
+# DATA QUALITY VALIDATION FUNCTIONS
+# =============================================
+
+def validate_data_quality(df: pd.DataFrame, symbol: str, scalping_mode: bool = False) -> bool:
+    """Validasi kualitas data sebelum digunakan untuk trading"""
+    try:
+        if df is None or df.empty:
+            logger.warning(f"Data quality check failed for {symbol}: Empty DataFrame")
+            return False
+        
+        # 1. Minimum bars requirement
+        min_bars = 100 if scalping_mode else 50
+        if len(df) < min_bars:
+            logger.warning(f"Data quality check failed for {symbol}: Insufficient bars ({len(df)} < {min_bars})")
+            return False
+        
+        # 2. Check for missing values
+        required_columns = ['open', 'high', 'low', 'close', 'volume']
+        for col in required_columns:
+            if col not in df.columns:
+                logger.warning(f"Data quality check failed for {symbol}: Missing column {col}")
+                return False
+            
+            null_count = df[col].isnull().sum()
+            if null_count > len(df) * 0.1:  # More than 10% null values
+                logger.warning(f"Data quality check failed for {symbol}: Too many null values in {col} ({null_count})")
+                return False
+        
+        # 3. Check for unrealistic price values
+        if 'close' in df.columns:
+            close_series = df['close']
+            
+            # Check for zero or negative prices
+            if (close_series <= 0).any():
+                logger.warning(f"Data quality check failed for {symbol}: Zero or negative prices detected")
+                return False
+            
+            # Check for price stuck at 100
+            price_100_count = (np.isclose(close_series.values, 100.0, atol=0.001)).sum()
+            if price_100_count > len(df) * 0.2:  # More than 20% of prices at 100
+                logger.warning(f"Data quality check failed for {symbol}: Too many prices stuck at 100 ({price_100_count})")
+                return False
+            
+            # Check for unrealistic price jumps
+            if len(df) > 1:
+                price_changes = close_series.pct_change().abs()
+                extreme_jumps = (price_changes > 0.5).sum()  # More than 50% price jumps
+                if extreme_jumps > len(df) * 0.1:  # More than 10% extreme jumps
+                    logger.warning(f"Data quality check failed for {symbol}: Too many extreme price jumps ({extreme_jumps})")
+                    return False
+        
+        # 4. Check volume data
+        if 'volume' in df.columns:
+            volume_series = df['volume']
+            zero_volume_count = (volume_series == 0).sum()
+            if zero_volume_count > len(df) * 0.5:  # More than 50% zero volume
+                logger.warning(f"Data quality check failed for {symbol}: Too many zero volume bars ({zero_volume_count})")
+                return False
+        
+        # 5. Check for data consistency (high >= low)
+        if all(col in df.columns for col in ['high', 'low']):
+            invalid_bars = (df['high'] < df['low']).sum()
+            if invalid_bars > 0:
+                logger.warning(f"Data quality check failed for {symbol}: Invalid bars (high < low): {invalid_bars}")
+                return False
+        
+        # 6. Check for flatline data (no price movement)
+        if len(df) > 10:
+            unique_prices = df['close'].nunique()
+            if unique_prices < len(df) * 0.1:  # Less than 10% unique prices
+                logger.warning(f"Data quality check failed for {symbol}: Too few unique prices ({unique_prices})")
+                return False
+        
+        # 7. Special checks for scalping mode
+        if scalping_mode:
+            # Check volatility range for scalping
+            if len(df) > 1:
+                volatility = df['close'].pct_change().std() * np.sqrt(252)
+                if volatility < 0.005 or volatility > 0.15:
+                    logger.warning(f"Data quality check failed for {symbol}: Volatility {volatility:.3f} not suitable for scalping")
+                    return False
+                
+                # Check average volume for scalping
+                if 'volume' in df.columns:
+                    avg_volume = df['volume'].mean()
+                    if avg_volume < 100000:
+                        logger.warning(f"Data quality check failed for {symbol}: Volume too low for scalping ({avg_volume:.0f})")
+                        return False
+        
+        logger.info(f"✅ Data quality check passed for {symbol}: {len(df)} bars")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error in data quality validation for {symbol}: {e}")
+        return False
+
+# =============================================
+# PRE-FILTERING FOR TRADING DATA
+# =============================================
+
+def pre_filter_trading_data(symbol: str, df: pd.DataFrame, scalping_mode: bool = False) -> bool:
+    """Pre-filter data sebelum digunakan untuk analisis trading"""
+    try:
+        if df is None or df.empty:
+            return False
+        
+        market_type = detect_market_type(symbol)
+        
+        # 1. Basic data validation
+        if len(df) < 20:
+            logger.debug(f"Pre-filter failed for {symbol}: Not enough data ({len(df)} bars)")
+            return False
+        
+        # 2. Price validation
+        current_price = df['close'].iloc[-1] if 'close' in df.columns else 0
+        if current_price <= 0 or current_price > 1000000:
+            logger.debug(f"Pre-filter failed for {symbol}: Invalid price ({current_price})")
+            return False
+        
+        # 3. Volume validation (except for Indonesia stocks)
+        if market_type != "indonesia_stocks" and 'volume' in df.columns:
+            avg_volume = df['volume'].mean()
+            if avg_volume < 1000:
+                logger.debug(f"Pre-filter failed for {symbol}: Low volume ({avg_volume:.0f})")
+                return False
+        
+        # 4. Price movement validation
+        if len(df) > 5:
+            price_range = df['close'].max() - df['close'].min()
+            price_change_pct = price_range / df['close'].mean() if df['close'].mean() > 0 else 0
+            
+            if price_change_pct < 0.001:  # Less than 0.1% movement
+                logger.debug(f"Pre-filter failed for {symbol}: No price movement ({price_change_pct:.4%})")
+                return False
+        
+        # 5. Scalping-specific filters
+        if scalping_mode:
+            if current_price < 0.01 or current_price > 500:
+                logger.debug(f"Pre-filter failed for {symbol}: Price outside scalping range (${current_price:.4f})")
+                return False
+            
+            if len(df) > 1:
+                volatility = df['close'].pct_change().std() * np.sqrt(252)
+                if volatility < 0.005 or volatility > 0.15:
+                    logger.debug(f"Pre-filter failed for {symbol}: Volatility unsuitable for scalping ({volatility:.3f})")
+                    return False
+        
+        logger.debug(f"✅ Pre-filter passed for {symbol}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error in pre-filter for {symbol}: {e}")
+        return False
+
+# =============================================
 # PROBABILITY CALCULATOR
 # =============================================
 
@@ -616,6 +771,20 @@ def get_trading_data(symbol: str, provider=None, scalping_mode: bool = False,
             return None
         
         # =============================================
+        # PRE-FILTERING: Validasi awal sebelum analisis mendalam
+        # =============================================
+        if not pre_filter_trading_data(symbol, df, scalping_mode):
+            logger.warning(f"⚠️ {symbol} failed pre-filtering, rejecting data")
+            return None
+        
+        # =============================================
+        # DATA QUALITY VALIDATION: Validasi kualitas data mendalam
+        # =============================================
+        if not validate_data_quality(df, symbol, scalping_mode):
+            logger.error(f"❌ {symbol} failed data quality validation, rejecting data")
+            return None
+        
+        # =============================================
         # FILTER KHUSUS UNTUK SCALPING MODE
         # =============================================
         if scalping_mode:
@@ -731,6 +900,113 @@ class TradingStrategy(ABC):
         """Analyze market data and return trading signals"""
         pass
     
+    def analyze_enhanced(self, symbol: str, data: pd.DataFrame, timeframe: str = '1h') -> Dict[str, Any]:
+        """
+        Enhanced analysis dengan fallback yang aman untuk semua kemungkinan error
+        FIXED: sl_distance selalu memiliki nilai default
+        """
+        # INISIALISASI DEFAULT VALUE UNTUK SEMUA VARIABEL
+        sl_distance = 0.02  # Default value 2%
+        tp_distance = 0.04  # Default value 4%
+        signal = 'NEUTRAL'
+        score = 0.0
+        
+        try:
+            # 1. Validasi data
+            if data is None or data.empty:
+                logger.warning(f"Enhanced analysis: Empty data for {symbol}")
+                return {
+                    'signal': 'NEUTRAL',
+                    'score': 0,
+                    'sl_distance': sl_distance,
+                    'tp_distance': tp_distance,
+                    'error': 'Empty data'
+                }
+            
+            # 2. Preprocess data
+            data = self._preprocess_and_validate(data, symbol, self.market_type)
+            
+            if data is None or data.empty:
+                logger.warning(f"Enhanced analysis: Data validation failed for {symbol}")
+                return {
+                    'signal': 'NEUTRAL',
+                    'score': 0,
+                    'sl_distance': sl_distance,
+                    'tp_distance': tp_distance,
+                    'error': 'Data validation failed'
+                }
+            
+            # 3. Skip jika data tidak valid untuk trading
+            if self._should_skip_symbol(data, symbol):
+                logger.info(f"Enhanced analysis: Skipping {symbol} due to data quality")
+                return {
+                    'signal': 'NEUTRAL',
+                    'score': 0,
+                    'sl_distance': sl_distance,
+                    'tp_distance': tp_distance,
+                    'error': 'Data quality check failed'
+                }
+            
+            # 4. Lakukan analisis utama
+            analysis_result = self.analyze(data, symbol)
+            
+            if analysis_result is None:
+                logger.warning(f"Enhanced analysis: Analysis returned None for {symbol}")
+                return {
+                    'signal': 'NEUTRAL',
+                    'score': 0,
+                    'sl_distance': sl_distance,
+                    'tp_distance': tp_distance,
+                    'error': 'Analysis returned None'
+                }
+            
+            # 5. Extract values dari hasil analisis
+            signal = analysis_result.get('action', 'NEUTRAL')
+            score = analysis_result.get('score', 0.0)
+            
+            # 6. Hitung sl_distance dan tp_distance berdasarkan hasil analisis
+            if signal != 'NEUTRAL':
+                current_price = analysis_result.get('current_price', 0)
+                sl_price = analysis_result.get('sl', 0)
+                tp1_price = analysis_result.get('tp1', 0)
+                
+                if current_price > 0 and sl_price > 0:
+                    if signal == 'LONG':
+                        sl_distance = abs(current_price - sl_price) / current_price
+                    elif signal == 'SHORT':
+                        sl_distance = abs(sl_price - current_price) / current_price
+                
+                if current_price > 0 and tp1_price > 0:
+                    if signal == 'LONG':
+                        tp_distance = abs(tp1_price - current_price) / current_price
+                    elif signal == 'SHORT':
+                        tp_distance = abs(current_price - tp1_price) / current_price
+            
+            # 7. Pastikan sl_distance dan tp_distance tidak nol
+            sl_distance = max(sl_distance, 0.01)  # Minimal 1%
+            tp_distance = max(tp_distance, 0.02)  # Minimal 2%
+            
+            # 8. Return hasil
+            return {
+                'signal': signal,
+                'score': score,
+                'sl_distance': sl_distance,
+                'tp_distance': tp_distance,
+                'analysis_result': analysis_result,
+                'error': None
+            }
+            
+        except Exception as e:
+            logger.error(f"Enhanced analysis error for {symbol}: {str(e)}")
+            # RETURN DEFAULT VALUE dengan sl_distance yang aman
+            return {
+                'signal': 'NEUTRAL',
+                'score': 0,
+                'sl_distance': 0.02,  # Default 2%
+                'tp_distance': 0.04,  # Default 4%
+                'error': str(e)
+            }
+    
     def _preprocess_and_validate(self, df: pd.DataFrame, symbol: str, market_type: str = None) -> pd.DataFrame:
         """Preprocess data dan validasi kualitas dengan market type awareness"""
         
@@ -759,13 +1035,13 @@ class TradingStrategy(ABC):
             logger.warning(f"Price stuck detected for {symbol}, using synthetic data")
             df = self._synthesize_movement(df, symbol, market_type)
         
-        # 4. Cek harga tidak valid (<= 0) - PERBAIKAN: GUNAKAN .values
-        if (df['close'].values <= 0).any():
+        # 4. Cek harga tidak valid (<= 0) - PERBAIKAN: GUNAKAN .any()
+        if (df['close'] <= 0).any():
             logger.warning(f"Invalid price (<=0) detected for {symbol}, using synthetic data")
             df = self._synthesize_movement(df, symbol, market_type)
         
-        # 5. Cek high < low - PERBAIKAN: GUNAKAN .values
-        if (df['high'].values < df['low'].values).any():
+        # 5. Cek high < low - PERBAIKAN: GUNAKAN .any()
+        if (df['high'] < df['low']).any():
             logger.warning(f"High < Low detected for {symbol}, using synthetic data")
             df = self._synthesize_movement(df, symbol, market_type)
         
@@ -2421,13 +2697,13 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                     logger.warning(f"Missing column {col} in {symbol}")
                     return False
             
-            # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek harga
-            if (df['close'].values <= 0).any():
+            # ✅ PERBAIKAN: Gunakan .any() untuk cek harga
+            if (df['close'] <= 0).any():
                 logger.warning(f"Invalid price (<=0) detected for {symbol}")
                 return False
             
-            # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek high >= low
-            if (df['high'].values < df['low'].values).any():
+            # ✅ PERBAIKAN: Gunakan .any() untuk cek high >= low
+            if (df['high'] < df['low']).any():
                 logger.warning(f"High < Low detected for {symbol}")
                 return False
             
@@ -2499,13 +2775,13 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             logger.warning(f"Skipping {symbol}: has NaN values")
             return True
         
-        # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek harga
-        if (df['close'].values <= 0).any() or (df['close'].values > 100000000).any():
+        # ✅ PERBAIKAN: Gunakan .any() untuk cek harga
+        if (df['close'] <= 0).any() or (df['close'] > 100000000).any():
             logger.warning(f"Skipping {symbol}: invalid price range")
             return True
         
-        # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek high >= low
-        if (df['high'].values < df['low'].values).any():
+        # ✅ PERBAIKAN: Gunakan .any() untuk cek high >= low
+        if (df['high'] < df['low']).any():
             logger.warning(f"Skipping {symbol}: High < Low")
             return True
         
@@ -2527,6 +2803,11 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         # 🆕 CEK VOLATILITY TERLALU TINGGI UNTUK SCALPING
         if self.scalping_mode and volatility > SCALPING_CONFIG["max_volatility"]:
             logger.debug(f"Skipping {symbol}: too volatile for scalping {volatility:.3f}")
+            return True
+        
+        # 🆕 DATA QUALITY VALIDATION: Tambahkan validasi kualitas data
+        if not validate_data_quality(df, symbol, self.scalping_mode):
+            logger.warning(f"Skipping {symbol}: failed data quality validation")
             return True
         
         return False
@@ -3552,6 +3833,52 @@ def test_signal_filter():
     
     return True
 
+def test_data_quality_validation():
+    """Test data quality validation"""
+    print("\n" + "=" * 60)
+    print("🧪 TESTING DATA QUALITY VALIDATION")
+    print("=" * 60)
+    
+    # Create test data
+    dates = pd.date_range('2023-01-01', periods=100, freq='D')
+    
+    # Good data
+    good_data = pd.DataFrame({
+        'open': np.random.normal(100, 5, 100),
+        'high': np.random.normal(105, 5, 100),
+        'low': np.random.normal(95, 5, 100),
+        'close': np.random.normal(100, 5, 100),
+        'volume': np.random.normal(1000000, 100000, 100)
+    }, index=dates)
+    
+    # Bad data (flatline)
+    bad_data = pd.DataFrame({
+        'open': [100] * 100,
+        'high': [100] * 100,
+        'low': [100] * 100,
+        'close': [100] * 100,
+        'volume': [0] * 100
+    }, index=dates)
+    
+    # Test good data
+    print("\n1. Testing good data:")
+    result_good = validate_data_quality(good_data, "TEST_GOOD", False)
+    print(f"   Result: {result_good}")
+    
+    # Test bad data
+    print("\n2. Testing bad data (flatline):")
+    result_bad = validate_data_quality(bad_data, "TEST_BAD", False)
+    print(f"   Result: {result_bad}")
+    
+    # Test pre-filtering
+    print("\n3. Testing pre-filtering:")
+    prefilter_good = pre_filter_trading_data("TEST_GOOD", good_data, False)
+    prefilter_bad = pre_filter_trading_data("TEST_BAD", bad_data, False)
+    print(f"   Good data pre-filter: {prefilter_good}")
+    print(f"   Bad data pre-filter: {prefilter_bad}")
+    
+    return True
+
 if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("STRATEGIES.PY - ENHANCED VERSION WITH ALL IMPROVEMENTS")
@@ -3563,6 +3890,8 @@ if __name__ == "__main__":
     print("✅ Robust Scoring: New scoring system dengan dynamic threshold")
     print("✅ Signal Filter: Integrated filtering untuk semua sinyal")
     print("✅ Probability Calculator: Realistic probabilities")
+    print("✅ Data Quality Validation: Active untuk semua data")
+    print("✅ Pre-Filtering: Active sebelum analisis mendalam")
     print("=" * 60)
     
     # Jalankan test
@@ -3570,6 +3899,7 @@ if __name__ == "__main__":
     test_indonesia_stocks()
     test_robust_scoring_system()
     test_signal_filter()
+    test_data_quality_validation()
     
     print("\n" + "=" * 60)
     print("✅ SEMUA SYSTEM READY DAN TERINTEGRASI!")
@@ -3579,4 +3909,6 @@ if __name__ == "__main__":
     print("✅ Long bias tetap 0.0 (NEUTRAL)")
     print("✅ Robust scoring dengan dynamic threshold aktif")
     print("✅ Signal filter terintegrasi ke dalam strategi")
+    print("✅ Data quality validation aktif")
+    print("✅ Pre-filtering aktif untuk reject data buruk")
     print("=" * 60)
