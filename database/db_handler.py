@@ -590,6 +590,14 @@ class DatabaseHandler:
             try:
                 converted_data = self._convert_numpy_types(data)
                 
+                # FIX: Konversi symbol dan market_type ke string
+                symbol = self._ensure_string(converted_data.get("symbol"))
+                market_type = self._ensure_string(converted_data.get("market_type", "unknown"))
+                
+                if not symbol:
+                    logger.error("❌ Symbol cannot be None or empty")
+                    return None
+                
                 pattern_details = converted_data.get('pattern_details', {})
                 pattern_details_json = json.dumps(pattern_details) if isinstance(pattern_details, dict) else '{}'
                 
@@ -614,8 +622,8 @@ class DatabaseHandler:
                     )
                     RETURNING id
                 """, (
-                    converted_data.get("symbol"),
-                    converted_data.get("market_type", "unknown"),
+                    symbol,
+                    market_type,
                     converted_data.get("action"),
                     float(converted_data.get("entry_low")) if converted_data.get("entry_low") is not None else None,
                     float(converted_data.get("entry_high")) if converted_data.get("entry_high") is not None else None,
@@ -648,7 +656,7 @@ class DatabaseHandler:
                 signal_id = cursor.fetchone()[0]
                 conn.commit()
                 
-                logger.info(f"Signal saved with ID: {signal_id} for {converted_data.get('symbol')}")
+                logger.info(f"Signal saved with ID: {signal_id} for {symbol}")
                 return signal_id
                 
             except Exception as e:
@@ -722,6 +730,14 @@ class DatabaseHandler:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
+                # FIX: Konversi symbol dan market_type ke string
+                symbol = self._ensure_string(symbol)
+                market_type = self._ensure_string(market_type)
+                
+                if not symbol:
+                    logger.error("❌ Symbol cannot be None or empty")
+                    return None
+                
                 # Konversi semua nilai float ke Python native float
                 entry_price = float(entry_price) if entry_price is not None else None
                 tp1 = float(tp1) if tp1 is not None else None
@@ -999,20 +1015,32 @@ class DatabaseHandler:
 
     def update_position_current_price(self, symbol: str, current_price: float) -> bool:
         """Update current price untuk ALL active positions dengan simbol tertentu"""
+        logger.info(f"🔍 DEBUG: update_position_current_price called with symbol='{symbol}' (type: {type(symbol)})")
+        
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
+                # FIX: Validasi symbol HARUS string
+                if symbol is None:
+                    logger.error("❌ Symbol cannot be None")
+                    return False
+                
+                # FIX: Konversi symbol ke string jika bukan string
+                if not isinstance(symbol, str):
+                    symbol = str(symbol)
+                    logger.warning(f"⚠️ Symbol {type(symbol)} converted to string: '{symbol}'")
+                
                 # Konversi current_price ke float
                 current_price = float(current_price) if current_price is not None else None
                 
                 if current_price is None:
-                    logger.error(f"Invalid current_price for {symbol}")
+                    logger.error(f"❌ Invalid current_price for '{symbol}'")
                     return False
                 
                 # Dapatkan semua posisi aktif dengan simbol ini
                 cursor.execute(
                     "SELECT id FROM positions WHERE symbol = %s AND status = 'active'",
-                    (symbol,)
+                    (symbol,)  # <-- SEKARANG pasti string
                 )
                 positions = cursor.fetchall()
                 
@@ -1094,6 +1122,12 @@ class DatabaseHandler:
                     position_id = update.get('position_id')
                     current_price = update.get('current_price')
                     symbol = update.get('symbol')
+                    
+                    # FIX: Validasi dan konversi symbol ke string
+                    if symbol and not isinstance(symbol, str):
+                        symbol = str(symbol)
+                        update['symbol'] = symbol  # Update untuk logging
+                        logger.warning(f"⚠️ Symbol converted to string: '{symbol}'")
                     
                     if not position_id or current_price is None:
                         results['failed'] += 1
@@ -1620,6 +1654,18 @@ class DatabaseHandler:
                 return data
         else:
             return data
+
+    def _ensure_string(self, value):
+        """Convert value to string if it's not None and not already string."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        try:
+            return str(value)
+        except Exception as e:
+            logger.warning(f"Could not convert {type(value)} to string: {e}")
+            return value
 
     def _update_performance_metrics(self):
         """Update daily performance metrics"""
