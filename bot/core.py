@@ -1,5 +1,3 @@
-# core.py - PERBAIKAN UNTUK ANALISIS ENHANCED DAN FILTER SINYAL DENGAN PRE-FILTERING
-
 import os
 import sys
 import time
@@ -302,10 +300,32 @@ class ScalpingStrategy:
 
     def analyze_enhanced(self, df, symbol=None):
         """Enhanced analysis untuk scalping dengan filter tambahan"""
+        # PERBAIKAN: Validasi tipe data
+        if df is None:
+            return {'action': 'NEUTRAL', 'score': 0, 'error': 'No data provided'}
+        
+        # PERBAIKAN: Konversi string atau tipe lain ke DataFrame jika diperlukan
+        if isinstance(df, str):
+            logger.warning(f"⚠️ Data is string for {symbol}, attempting to convert")
+            try:
+                # Coba parse string ke JSON/dict
+                import ast
+                data_dict = ast.literal_eval(df)
+                df = pd.DataFrame(data_dict)
+            except:
+                return {'action': 'NEUTRAL', 'score': 0, 'error': 'Invalid data format (string)'}
+        
+        if not isinstance(df, pd.DataFrame):
+            logger.error(f"❌ Invalid data type for {symbol}: {type(df)}")
+            return {'action': 'NEUTRAL', 'score': 0, 'error': f'Invalid data type: {type(df)}'}
+        
+        if df.empty:
+            return {'action': 'NEUTRAL', 'score': 0, 'error': 'Empty DataFrame'}
+        
         # Panggil analisis standar
         analysis = self.analyze(df, symbol)
         if not analysis:
-            return None
+            return {'action': 'NEUTRAL', 'score': 0, 'error': 'Analysis failed'}
         
         # Tambahkan filter tambahan untuk scalping
         current_price = df['close'].iloc[-1] if len(df) > 0 else 0
@@ -684,7 +704,10 @@ class BacktestEngine:
                 current_time = df.index[i] if hasattr(df.index, 'iloc') else i
                 
                 # Get strategy analysis - GUNAKAN ANALISIS ENHANCED
-                analysis = strategy.analyze_enhanced(current_data) if hasattr(strategy, 'analyze_enhanced') else strategy.analyze(current_data)
+                if hasattr(strategy, 'analyze_enhanced'):
+                    analysis = strategy.analyze_enhanced(current_data)
+                else:
+                    analysis = strategy.analyze(current_data)
                 
                 if analysis and analysis['action'] in ['LONG', 'SHORT']:
                     current_trade = None
@@ -2407,6 +2430,55 @@ class EnhancedTradingBot:
         logger.info("✅ Enhanced TradingBot initialized dengan Universal Provider")
 
     # =============================================
+    # HELPER METHODS FOR DATA VALIDATION AND CONVERSION
+    # =============================================
+    
+    def _validate_and_fix_data(self, data, symbol=None):
+        """Validasi dan perbaiki tipe data jika diperlukan"""
+        if data is None:
+            logger.warning(f"⚠️ Data is None for {symbol}")
+            return None
+        
+        # Jika data sudah DataFrame, return
+        if isinstance(data, pd.DataFrame):
+            return data
+        
+        # Jika data string, coba konversi ke DataFrame
+        if isinstance(data, str):
+            logger.warning(f"⚠️ Data is string for {symbol}, attempting conversion")
+            try:
+                # Coba parse JSON
+                import json as json_module
+                parsed = json_module.loads(data)
+                if isinstance(parsed, dict):
+                    return pd.DataFrame([parsed])
+                elif isinstance(parsed, list):
+                    return pd.DataFrame(parsed)
+            except:
+                # Coba eval
+                try:
+                    import ast
+                    parsed = ast.literal_eval(data)
+                    if isinstance(parsed, dict):
+                        return pd.DataFrame([parsed])
+                    elif isinstance(parsed, list):
+                        return pd.DataFrame(parsed)
+                except:
+                    logger.error(f"❌ Failed to convert string to DataFrame for {symbol}")
+                    return None
+        
+        # Jika data dict, konversi ke DataFrame
+        if isinstance(data, dict):
+            return pd.DataFrame([data])
+        
+        # Jika data list, konversi ke DataFrame
+        if isinstance(data, list):
+            return pd.DataFrame(data)
+        
+        logger.error(f"❌ Unknown data type for {symbol}: {type(data)}")
+        return None
+
+    # =============================================
     # PRE-FILTERING METHODS - PERBAIKAN BARU
     # =============================================
     
@@ -3499,7 +3571,15 @@ class EnhancedTradingBot:
                 limit = self.scalping_config.get("lookback", 150)
                 
                 logger.info(f"    ⚡ Scalping mode: {timeframe} timeframe, {limit} bars")
-                df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
+                
+                # PERBAIKAN: Validasi data setelah mendapatkan
+                if get_trading_data is not None:
+                    df = get_trading_data(formatted_symbol, self.data_provider)
+                else:
+                    df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
+                
+                # PERBAIKAN: Validasi dan konversi data
+                df = self._validate_and_fix_data(df, symbol)
                 
                 # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
                 # Gunakan minimum bars yang sesuai dengan market type
@@ -3540,6 +3620,9 @@ class EnhancedTradingBot:
                 else:
                     logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
                     df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
+                
+                # PERBAIKAN: Validasi dan konversi data
+                df = self._validate_and_fix_data(df, symbol)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
@@ -3568,6 +3651,11 @@ class EnhancedTradingBot:
                 strategy = self._create_spot_strategy()
                 leverage = 1  # No leverage untuk spot
             
+            # PERBAIKAN UTAMA: Validasi data sebelum analyze_enhanced
+            if df is None or df.empty:
+                logger.warning(f"    ⚠️ Skipping {symbol}: invalid data")
+                return None
+            
             # Analyze dengan strategy ENHANCED - GUNAKAN ANALISIS ENHANCED
             if hasattr(strategy, 'analyze_enhanced'):
                 logger.info(f"    🔍 Menggunakan analyze_enhanced untuk {symbol}")
@@ -3580,8 +3668,13 @@ class EnhancedTradingBot:
                 logger.info(f"    ⚠️ No analysis for {symbol}")
                 return None
             
+            # PERBAIKAN: Tangani error dari analyze_enhanced
+            if isinstance(analysis, dict) and 'error' in analysis:
+                logger.warning(f"    ⚠️ Analysis error for {symbol}: {analysis['error']}")
+                return None
+            
             # **PERBAIKAN PENTING: Filter SHORT untuk market yang tidak mengizinkan**
-            if analysis['action'] == "SHORT" and not self._is_short_allowed(self.mode, symbol):
+            if analysis.get('action') == "SHORT" and not self._is_short_allowed(self.mode, symbol):
                 logger.info(f"    ⛔ SHORT tidak diizinkan untuk {self.mode}, mengubah menjadi NEUTRAL")
                 analysis['action'] = 'NEUTRAL'
                 analysis['score'] = 0
@@ -3691,6 +3784,9 @@ class EnhancedTradingBot:
                 logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
             
+            # PERBAIKAN: Validasi dan konversi data
+            df = self._validate_and_fix_data(df, symbol)
+            
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
             min_bars = self._get_min_bars()
@@ -3751,6 +3847,9 @@ class EnhancedTradingBot:
             else:
                 logger.info(f"  🔧 Menggunakan provider {self.data_provider.__class__.__name__}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
+            
+            # PERBAIKAN: Validasi dan konversi data
+            df = self._validate_and_fix_data(df, symbol)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
@@ -3914,6 +4013,9 @@ class EnhancedTradingBot:
             else:
                 logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk {formatted_symbol}")
                 df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
+            
+            # PERBAIKAN: Validasi dan konversi data
+            df = self._validate_and_fix_data(df, symbol)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             if df is None or df.empty or len(df) < 20:
@@ -4240,6 +4342,8 @@ class EnhancedTradingBot:
                     df = self.data_provider.get_ohlcv(test_symbol, timeframe, lookback)
                 
                 # Validasi data
+                df = self._validate_and_fix_data(df, test_symbol)
+                
                 if df is not None and not df.empty:
                     is_valid, msg = self.validate_market_data(df, test_symbol, debug_mode=True)
                     if is_valid:
@@ -4410,16 +4514,8 @@ class TradingCore:
             # PERBAIKAN: Gunakan active assets dari provider untuk saham_id dengan multi-threading
             if market_type == 'saham_id':
                 # **PERBAIKAN: Gunakan get_active_assets() untuk efisiensi**
-                if hasattr(self, 'non_crypto_provider') and hasattr(self.non_crypto_provider, 'get_active_assets'):
-                    symbols = self.non_crypto_provider.get_active_assets(
-                        category='indonesia_stocks',
-                        min_volume=1000000,
-                        min_volatility=0.025,
-                        limit=25  # **PERBAIKAN: Scan 25 saham cepat**
-                    )
-                    assets = [{'symbol': s} for s in symbols]
-                else:
-                    assets = self.data_provider.get_popular_assets(limit=25)
+                # Catatan: NonCryptoAssetsProvider tidak tersedia di TradingCore, jadi gunakan provider biasa
+                assets = self.data_provider.get_popular_assets(limit=25)
             else:
                 assets = self.data_provider.get_popular_assets(limit=limit)
             
@@ -4470,7 +4566,15 @@ class TradingCore:
             else:
                 df = self.data_provider.get_ohlcv(symbol, timeframe, lookback)
             
-            if df is None or df.empty or len(df) < 40:
+            # PERBAIKAN: Validasi dan konversi data
+            if df is None:
+                return None
+            
+            if isinstance(df, str):
+                logger.warning(f"⚠️ Data is string for {symbol}, skipping")
+                return None
+            
+            if df.empty or len(df) < 40:
                 return None
             
             # Buat strategy berdasarkan market type
@@ -4500,11 +4604,20 @@ class TradingCore:
                         entry_range_pct=0.02
                     )
             
+            # PERBAIKAN: Validasi data sebelum analisis
+            if df is None or df.empty:
+                return None
+            
             # Gunakan analisis enhanced jika tersedia
             if hasattr(strategy, 'analyze_enhanced'):
                 signal = strategy.analyze_enhanced(df, symbol)
             else:
                 signal = strategy.analyze(df, symbol)
+            
+            # Tangani error dari analyze_enhanced
+            if isinstance(signal, dict) and 'error' in signal:
+                logger.debug(f"⚠️ Analysis error for {symbol}: {signal['error']}")
+                return None
             
             # Terapkan filter sinyal tambahan
             if signal and signal.get('action') != 'NEUTRAL':
@@ -4640,6 +4753,7 @@ def test_universal_provider():
     
     print("\n" + "="*60)
     print("✅ Test completed - Bot menggunakan Universal Provider dengan enhanced analysis")
+    print("   **PERBAIKAN UTAMA: Validasi dan konversi tipe data**")
     print("   Auto-detect spot/futures dari simbol")
     print("   Leverage auto-detection (1x spot, 5x futures)")
     print("   Menggunakan get_trading_data untuk membersihkan data")
@@ -4659,7 +4773,8 @@ def test_universal_provider():
     print("   ✅ **PRE-FILTERING BARU: DataQualityCache untuk menghindari aset tidak layak**")
     print("   ✅ **PRE-FILTERING: Skip pattern (USD4, USDT4, FARTCOIN, 1000REKT, etc.)**")
     print("   ✅ **PRE-FILTERING: Zero data detection (>60% zero values = tidak layak)**")
-    print("   ✅ **PRE-FILTERING: Cache 24 jam untuk menghindari analisis berulang**")
+    print("   ✅ **PERBAIKAN UTAMA: _validate_and_fix_data() untuk konversi tipe data aman**")
+    print("   ✅ **PERBAIKAN UTAMA: Tangani error dari analyze_enhanced dengan baik**")
 
 def test_non_crypto_assets_500():
     """Test khusus untuk 500+ aset non-crypto"""
@@ -4753,9 +4868,7 @@ def test_non_crypto_assets_500():
     print("   ✅ PERBAIKAN: Timeframe='1d' untuk saham_id")
     print("   ✅ PERBAIKAN: Multi-threading untuk scan 25 saham cepat")
     print("   ✅ PERBAIKAN: SHORT diblokir untuk saham_id")
-    print("   ✅ **PRE-FILTERING BARU: DataQualityCache untuk menghindari aset tidak layak**")
-    print("   ✅ **PRE-FILTERING: Skip pattern (USD4, USDT4, FARTCOIN, 1000REKT, etc.)**")
-    print("   ✅ **PRE-FILTERING: Zero data detection (>60% zero values = tidak layak)**")
+    print("   ✅ **PERBAIKAN UTAMA: _validate_and_fix_data() untuk konversi tipe data aman**")
 
 def test_pre_filtering():
     """Test pre-filtering functionality"""
@@ -4818,6 +4931,10 @@ if __name__ == "__main__":
     
     print("\n" + "="*60)
     print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER & PRE-FILTERING")
+    print("🎯 **PERBAIKAN UTAMA: Validasi dan konversi tipe data**")
+    print("   - _validate_and_fix_data() untuk konversi string ke DataFrame")
+    print("   - Tangani error dari analyze_enhanced dengan baik")
+    print("   - Skip data invalid sebelum analisis")
     print("🎯 **NEW: Pre-filtering dengan DataQualityCache**")
     print("   - Skip invalid patterns (USD4, USDT4, FARTCOIN, etc.)")
     print("   - Filter non-USDT pairs untuk crypto mode")
@@ -4881,12 +4998,12 @@ if __name__ == "__main__":
     print("   - Confidence level: HIGH/MEDIUM/LOW")
     print("   - Probabilities untuk LONG/SHORT/NEUTRAL")
     print("   - Backward compatibility dengan method lama")
-    print("🎯 **PRE-FILTERING BARU: DataQualityCache untuk menghindari aset tidak layak**")
-    print("   - Skip invalid patterns (USD4, USDT4, FARTCOIN, 1000REKT, etc.)")
-    print("   - Filter non-USDT pairs untuk crypto mode")
-    print("   - Skip suspicious symbols (TEST, DUMMY, EXAMPLE, etc.)")
-    print("   - Zero data detection (>60% zero values = tidak layak)")
-    print("   - Cache 24 jam untuk menghindari analisis berulang pada aset yang sama")
-    print("   - Cache size: 2000 entries max")
-    print("   - Cache expiry: 24 jam")
+    print("🎯 **PERBAIKAN UTAMA: _validate_and_fix_data() untuk validasi tipe data**")
+    print("   - Konversi string ke DataFrame secara aman")
+    print("   - Tangani dict dan list sebagai data input")
+    print("   - Return None jika konversi gagal")
+    print("🎯 **PERBAIKAN UTAMA: Tangani error dari analyze_enhanced**")
+    print("   - Cek 'error' key dalam hasil analyze_enhanced")
+    print("   - Skip analisis jika ada error")
+    print("   - Log error untuk debugging")
     print("="*60)
