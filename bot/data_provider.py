@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Optional, Tuple, Any
 import time
+import json
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -22,7 +23,8 @@ class EnhancedDataProvider:
         self.api_calls = 0
         self.errors = 0
         self.last_success = None
-        self.skip_errors = True  # Tambahkan flag untuk skip errors
+        self.skip_errors = True
+        self.logger = logger
         
     def _safe_api_call(self, func):
         """Safe wrapper for API calls"""
@@ -35,13 +37,67 @@ class EnhancedDataProvider:
             self.errors += 1
             if self.skip_errors:
                 logger.warning(f"API call failed, skipping: {e}")
-                return None  # Return None untuk di-skip
+                return None
             else:
                 logger.error(f"API call failed: {e}")
                 raise
     
+    def _validate_and_fix_data(self, data: Any) -> Optional[pd.DataFrame]:
+        """
+        Validasi dan konversi data ke DataFrame dengan aman.
+        Return None jika konversi gagal.
+        """
+        if data is None:
+            return None
+        
+        # Jika sudah DataFrame, return langsung
+        if isinstance(data, pd.DataFrame):
+            if data.empty:
+                logger.warning("DataFrame is empty")
+                return None
+            return data
+        
+        # Jika string, coba parse JSON atau eval
+        elif isinstance(data, str):
+            try:
+                # Coba parse JSON
+                data_dict = json.loads(data)
+                df = pd.DataFrame(data_dict)
+                logger.info(f"Converted string to DataFrame: {len(df)} rows")
+                return df
+            except json.JSONDecodeError:
+                try:
+                    # Coba eval untuk list/dict
+                    import ast
+                    data_eval = ast.literal_eval(data)
+                    df = pd.DataFrame(data_eval)
+                    logger.info(f"Converted string to DataFrame via eval: {len(df)} rows")
+                    return df
+                except:
+                    logger.error(f"Cannot convert string to DataFrame: {data[:100]}...")
+                    return None
+        
+        # Jika dict atau list, coba konversi ke DataFrame
+        elif isinstance(data, (dict, list)):
+            try:
+                df = pd.DataFrame(data)
+                logger.info(f"Converted {type(data).__name__} to DataFrame: {len(df)} rows")
+                return df
+            except Exception as e:
+                logger.error(f"Cannot convert {type(data).__name__} to DataFrame: {e}")
+                return None
+        
+        # Tipe data tidak dikenal
+        else:
+            logger.error(f"Unsupported data type: {type(data)}")
+            return None
+    
     def validate_market_data(self, df: pd.DataFrame, symbol: str) -> Tuple[bool, str]:
         """Validate market data quality"""
+        # Pastikan df adalah DataFrame
+        if not isinstance(df, pd.DataFrame):
+            return False, f"Data is not DataFrame: {type(df)}"
+        
         if df.empty:
             return False, "Empty DataFrame"
         
@@ -73,6 +129,10 @@ class EnhancedDataProvider:
     
     def validate_market_data_without_volume(self, df: pd.DataFrame, symbol: str) -> Tuple[bool, str]:
         """Validate market data TANPA cek volume (untuk YFinance)"""
+        # Pastikan df adalah DataFrame
+        if not isinstance(df, pd.DataFrame):
+            return False, f"Data is not DataFrame: {type(df)}"
+        
         if df.empty:
             return False, "Empty DataFrame"
         
@@ -179,6 +239,11 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                         logger.warning(f"❌ No data for {symbol}")
                         return None
                 
+                # PASTIKAN data adalah list of lists
+                if not isinstance(ohlcv, list) or len(ohlcv) == 0:
+                    logger.warning(f"❌ Invalid OHLCV data format for {symbol}: {type(ohlcv)}")
+                    return None
+                
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 
@@ -210,7 +275,11 @@ class EnhancedCCXTDataProvider(EnhancedDataProvider):
                 logger.warning(f"❌ CCXT failed for {symbol}: {str(e)}")
                 return None
 
-        return self._safe_api_call(fetch_ccxt_data)
+        result = self._safe_api_call(fetch_ccxt_data)
+        # PASTIKAN return DataFrame atau None
+        if result is None:
+            return None
+        return self._validate_and_fix_data(result)
     
     def get_ticker(self, symbol: str) -> Optional[Dict]:
         """Get ticker data - UNIVERSAL, return None jika error"""
@@ -451,7 +520,11 @@ class EnhancedYFinanceDataProvider(EnhancedDataProvider):
                 logger.warning(f"❌ YFinance error for {symbol}: {str(e)}")
                 return None
 
-        return self._safe_api_call(fetch_yfinance_data)
+        result = self._safe_api_call(fetch_yfinance_data)
+        # PASTIKAN return DataFrame atau None
+        if result is None:
+            return None
+        return self._validate_and_fix_data(result)
     
     def get_ticker(self, symbol: str) -> Optional[Dict]:
         """Get ticker data from Yahoo Finance - UNIVERSAL, return None jika error"""
@@ -657,22 +730,26 @@ class UnifiedDataProvider(EnhancedDataProvider):
         try:
             result = self.primary_provider.get_ohlcv(symbol, timeframe, limit)
             
-            if result is not None and not result.empty and len(result) >= 10:
-                # 🚨 Filter harga 100
-                if 'close' in result.columns:
-                    mask_100 = abs(result['close'] - 100.0) < 0.001
-                    count_100 = mask_100.sum()
-                    if count_100 > 0:
-                        result = result[~mask_100].copy()
-                        logger.warning(f"🚨 Removed {count_100} bars with price 100 for {symbol}")
+            if result is not None:
+                # PASTIKAN result adalah DataFrame
+                result = self._validate_and_fix_data(result)
                 
-                # Validasi
-                is_valid, msg = self.validate_market_data(result, symbol)
-                if is_valid:
-                    logger.info(f"✅ Valid data from primary provider: {len(result)} bars")
-                    return result
-                else:
-                    logger.warning(f"⚠️ Primary provider data invalid: {msg}")
+                if result is not None and not result.empty and len(result) >= 10:
+                    # 🚨 Filter harga 100
+                    if 'close' in result.columns:
+                        mask_100 = abs(result['close'] - 100.0) < 0.001
+                        count_100 = mask_100.sum()
+                        if count_100 > 0:
+                            result = result[~mask_100].copy()
+                            logger.warning(f"🚨 Removed {count_100} bars with price 100 for {symbol}")
+                    
+                    # Validasi
+                    is_valid, msg = self.validate_market_data(result, symbol)
+                    if is_valid:
+                        logger.info(f"✅ Valid data from primary provider: {len(result)} bars")
+                        return result
+                    else:
+                        logger.warning(f"⚠️ Primary provider data invalid: {msg}")
         except Exception as e:
             logger.warning(f"⚠️ Primary provider failed: {e}")
         
@@ -682,22 +759,26 @@ class UnifiedDataProvider(EnhancedDataProvider):
         try:
             result = self.fallback_provider.get_ohlcv(symbol, timeframe, limit)
             
-            if result is not None and not result.empty and len(result) >= 10:
-                # 🚨 Filter harga 100
-                if 'close' in result.columns:
-                    mask_100 = abs(result['close'] - 100.0) < 0.001
-                    count_100 = mask_100.sum()
-                    if count_100 > 0:
-                        result = result[~mask_100].copy()
-                        logger.warning(f"🚨 Removed {count_100} bars with price 100 for {symbol}")
+            if result is not None:
+                # PASTIKAN result adalah DataFrame
+                result = self._validate_and_fix_data(result)
                 
-                # Validasi
-                is_valid, msg = self.validate_market_data_without_volume(result, symbol)
-                if is_valid:
-                    logger.info(f"✅ Valid data from fallback provider: {len(result)} bars")
-                    return result
-                else:
-                    logger.warning(f"⚠️ Fallback provider data invalid: {msg}")
+                if result is not None and not result.empty and len(result) >= 10:
+                    # 🚨 Filter harga 100
+                    if 'close' in result.columns:
+                        mask_100 = abs(result['close'] - 100.0) < 0.001
+                        count_100 = mask_100.sum()
+                        if count_100 > 0:
+                            result = result[~mask_100].copy()
+                            logger.warning(f"🚨 Removed {count_100} bars with price 100 for {symbol}")
+                    
+                    # Validasi
+                    is_valid, msg = self.validate_market_data_without_volume(result, symbol)
+                    if is_valid:
+                        logger.info(f"✅ Valid data from fallback provider: {len(result)} bars")
+                        return result
+                    else:
+                        logger.warning(f"⚠️ Fallback provider data invalid: {msg}")
         except Exception as e:
             logger.warning(f"⚠️ Fallback provider failed: {e}")
         
@@ -939,6 +1020,9 @@ class SmartChainDataProvider(EnhancedDataProvider):
                 else:
                     df = self._get_ccxt_ohlcv(exchange_id, symbol, timeframe, limit)
                 
+                # PASTIKAN df adalah DataFrame atau None
+                df = self._validate_and_fix_data(df)
+                
                 if df is not None and not df.empty and len(df) >= 10:
                     # Validasi data
                     is_valid, msg = self.validate_market_data(df, symbol)
@@ -979,13 +1063,11 @@ class SmartChainDataProvider(EnhancedDataProvider):
             # Get data
             df = provider.get_ohlcv(formatted_symbol, timeframe, limit)
             
-            if df is not None and not df.empty:
-                # Pastikan index timestamp
-                if 'timestamp' in df.columns:
-                    df.set_index('timestamp', inplace=True)
-                return df
-            else:
-                return None
+            # PASTIKAN return DataFrame atau None
+            if df is not None:
+                df = self._validate_and_fix_data(df)
+                
+            return df
             
         except Exception as e:
             logger.debug(f"CCXT {exchange_id} error: {e}")
@@ -1006,6 +1088,10 @@ class SmartChainDataProvider(EnhancedDataProvider):
             # Get data
             df = provider.get_ohlcv(yf_symbol, timeframe, limit)
             
+            # PASTIKAN return DataFrame atau None
+            if df is not None:
+                df = self._validate_and_fix_data(df)
+                
             return df
             
         except Exception as e:
@@ -1083,11 +1169,7 @@ class SmartChainDataProvider(EnhancedDataProvider):
             provider = EnhancedCCXTDataProvider(exchange_id=exchange_id, skip_errors=True)
             ticker = provider.get_ticker(formatted_symbol)
             
-            if ticker:
-                ticker['source'] = exchange_id
-                return ticker
-            else:
-                return None
+            return ticker
             
         except Exception as e:
             logger.debug(f"CCXT ticker error: {e}")
@@ -1103,11 +1185,7 @@ class SmartChainDataProvider(EnhancedDataProvider):
             provider = EnhancedYFinanceDataProvider(skip_errors=True)
             ticker = provider.get_ticker(yf_symbol)
             
-            if ticker:
-                ticker['source'] = 'yfinance'
-                return ticker
-            else:
-                return None
+            return ticker
             
         except Exception as e:
             logger.debug(f"YFinance ticker error: {e}")
@@ -1276,6 +1354,10 @@ class DynamicDataProvider(EnhancedDataProvider):
             method = getattr(self.primary_provider, method_name)
             result = method(*args, **kwargs)
             
+            # Untuk OHLCV, PASTIKAN result adalah DataFrame
+            if method_name == 'get_ohlcv' and result is not None:
+                result = self._validate_and_fix_data(result)
+            
             # Validasi result
             if self._validate_result(result, method_name):
                 return result
@@ -1289,6 +1371,10 @@ class DynamicDataProvider(EnhancedDataProvider):
             try:
                 method = getattr(self.fallback_provider, method_name)
                 result = method(*args, **kwargs)
+                
+                # Untuk OHLCV, PASTIKAN result adalah DataFrame
+                if method_name == 'get_ohlcv' and result is not None:
+                    result = self._validate_and_fix_data(result)
                 
                 if self._validate_result(result, method_name):
                     logger.info(f"✅ Fallback successful for {method_name}")
@@ -1356,6 +1442,11 @@ class BatchDataFetcher:
             try:
                 logger.info(f"🔄 Fetching {symbol}...")
                 data = self.provider.get_ohlcv(symbol, timeframe, limit)
+                
+                # PASTIKAN data adalah DataFrame
+                if data is not None:
+                    # Gunakan validasi dan konversi dari base class
+                    data = self.provider._validate_and_fix_data(data)
                 
                 if data is not None and not data.empty and len(data) >= min_bars:
                     results[symbol] = data
