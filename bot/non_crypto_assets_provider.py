@@ -5,7 +5,7 @@ import logging
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set, Tuple, Optional, Any, Union
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -37,6 +37,63 @@ class NonCryptoAssetsProvider:
         
         # Inisialisasi blacklist saham sampah
         self._init_stock_blacklist()
+    
+    def _validate_and_fix_data(self, data: Any) -> Optional[pd.DataFrame]:
+        """
+        Validasi dan konversi data ke DataFrame dengan aman.
+        Mencegah error 'ambiguous truth value' untuk DataFrame.
+        """
+        try:
+            if data is None:
+                logger.debug("❌ Data is None")
+                return None
+            
+            # Jika sudah DataFrame
+            if isinstance(data, pd.DataFrame):
+                if data.empty:
+                    logger.debug("⚠️ DataFrame is empty")
+                    return None
+                return data
+            
+            # Jika string, coba parse
+            if isinstance(data, str):
+                try:
+                    # Coba parse JSON string
+                    parsed = json.loads(data)
+                    if isinstance(parsed, dict) and 'data' in parsed:
+                        df = pd.DataFrame(parsed['data'])
+                    elif isinstance(parsed, list):
+                        df = pd.DataFrame(parsed)
+                    else:
+                        df = pd.DataFrame([parsed])
+                    
+                    if df.empty:
+                        return None
+                    return df
+                except json.JSONDecodeError:
+                    # Jika bukan JSON, coba eval (hati-hati!)
+                    try:
+                        df = pd.DataFrame(eval(data))
+                        if df.empty:
+                            return None
+                        return df
+                    except:
+                        logger.warning(f"❌ Cannot parse string data: {data[:100]}...")
+                        return None
+            
+            # Jika dict atau list
+            if isinstance(data, (dict, list)):
+                df = pd.DataFrame(data)
+                if df.empty:
+                    return None
+                return df
+            
+            logger.warning(f"❌ Unsupported data type: {type(data)}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error in data validation: {str(e)}")
+            return None
     
     def _init_stock_blacklist(self):
         """Inisialisasi blacklist saham yang diketahui stagnan/sampah."""
@@ -247,7 +304,7 @@ class NonCryptoAssetsProvider:
         
         return qualified_stocks
     
-    def _evaluate_stock(self, symbol: str) -> Dict:
+    def _evaluate_stock(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Evaluasi single stock dengan multiple criteria."""
         
         if symbol in self.invalid_symbols:
@@ -257,8 +314,16 @@ class NonCryptoAssetsProvider:
             ticker = yf.Ticker(symbol)
             hist = ticker.history(period="90d")
             
+            # Validasi data dengan fungsi baru
+            hist = self._validate_and_fix_data(hist)
+            
             # FILTER 1: Data availability
-            if hist.empty or len(hist) < 30:
+            if hist is None or len(hist) < 30:
+                self.invalid_symbols.add(symbol)
+                return None
+            
+            # Pastikan kolom ada
+            if 'Close' not in hist.columns or 'Volume' not in hist.columns:
                 self.invalid_symbols.add(symbol)
                 return None
             
@@ -266,14 +331,29 @@ class NonCryptoAssetsProvider:
             volumes = hist['Volume']
             
             # FILTER 2: Price range (hindari saham flat)
-            price_range_pct = ((close_prices.max() - close_prices.min()) / close_prices.min()) * 100
+            if len(close_prices) == 0:
+                self.stagnant_symbols.add(symbol)
+                return None
+            
+            price_min = float(close_prices.min())
+            price_max = float(close_prices.max())
+            
+            if price_min > 0:
+                price_range_pct = ((price_max - price_min) / price_min) * 100
+            else:
+                price_range_pct = 0
+            
             if price_range_pct < 3:  # Range harga kurang dari 3% dalam 90 hari
                 self.stagnant_symbols.add(symbol)
                 logger.debug(f"❌ {symbol}: Price too flat ({price_range_pct:.1f}%)")
                 return None
             
             # FILTER 3: Volume (hindari illiquid)
-            avg_volume = volumes.mean()
+            if len(volumes) > 0:
+                avg_volume = float(volumes.mean())
+            else:
+                avg_volume = 0
+            
             if avg_volume < 100000:  # Volume rata-rata kurang dari 100k
                 self.stagnant_symbols.add(symbol)
                 logger.debug(f"❌ {symbol}: Volume too low ({avg_volume:,.0f})")
@@ -373,30 +453,93 @@ class NonCryptoAssetsProvider:
             logger.debug(f"⚠️ {symbol}: Error in evaluation - {str(e)[:50]}")
             return None
     
-    def get_stock_quality_report(self, symbol: str) -> Dict:
+    def get_stock_quality_report(self, symbol: str) -> Dict[str, Any]:
         """Dapatkan laporan kualitas untuk stock tertentu."""
         try:
             ticker = yf.Ticker(symbol)
             hist = ticker.history(period="90d")
             
-            if hist.empty:
-                return {'error': 'No data available'}
+            # Validasi data dengan fungsi baru
+            hist = self._validate_and_fix_data(hist)
+            if hist is None:
+                return {
+                    'error': 'No data available',
+                    'symbol': symbol,
+                    'quality_score': -100,
+                    'is_stagnant': True,
+                    'issues': ['No historical data'],
+                    'strengths': []
+                }
             
             close_prices = hist['Close']
             volumes = hist['Volume']
             
-            # Calculate metrics
+            # Validasi data series
+            if len(close_prices) == 0 or len(volumes) == 0:
+                return {
+                    'error': 'Insufficient data',
+                    'symbol': symbol,
+                    'quality_score': -100,
+                    'is_stagnant': True,
+                    'issues': ['Insufficient data points'],
+                    'strengths': []
+                }
+            
+            # Calculate metrics dengan error handling
+            try:
+                current_price = float(close_prices.iloc[-1]) if len(close_prices) > 0 else 0
+                price_high = float(close_prices.max())
+                price_low = float(close_prices.min())
+                
+                # Hindari division by zero
+                if price_low > 0:
+                    price_range_pct = ((price_high - price_low) / price_low) * 100
+                else:
+                    price_range_pct = 0
+                
+                avg_volume = float(volumes.mean()) if len(volumes) > 0 else 0
+                max_volume = float(volumes.max()) if len(volumes) > 0 else 0
+                
+                # Volume consistency
+                if avg_volume > 0:
+                    volume_consistency = (volumes > avg_volume * 0.3).mean() * 100
+                else:
+                    volume_consistency = 0
+                
+                # Returns
+                if len(close_prices) >= 2 and close_prices.iloc[0] > 0:
+                    returns_90d = ((close_prices.iloc[-1] - close_prices.iloc[0]) / close_prices.iloc[0]) * 100
+                else:
+                    returns_90d = 0
+                
+                # Volatility
+                if len(close_prices) > 1:
+                    volatility = close_prices.pct_change().std() * 100
+                else:
+                    volatility = 0
+                
+            except Exception as calc_error:
+                logger.error(f"Error calculating metrics for {symbol}: {str(calc_error)}")
+                return {
+                    'error': f'Calculation error: {str(calc_error)}',
+                    'symbol': symbol,
+                    'quality_score': -50,
+                    'is_stagnant': True,
+                    'issues': ['Error in metric calculation'],
+                    'strengths': []
+                }
+            
             metrics = {
                 'symbol': symbol,
-                'current_price': close_prices.iloc[-1],
-                'price_90d_high': close_prices.max(),
-                'price_90d_low': close_prices.min(),
-                'price_range_pct': ((close_prices.max() - close_prices.min()) / close_prices.min()) * 100,
-                'avg_volume': volumes.mean(),
-                'max_volume': volumes.max(),
-                'volume_consistency': (volumes > volumes.mean() * 0.3).mean() * 100,
-                'returns_90d': ((close_prices.iloc[-1] - close_prices.iloc[0]) / close_prices.iloc[0]) * 100,
-                'volatility': close_prices.pct_change().std() * 100,
+                'current_price': current_price,
+                'price_90d_high': price_high,
+                'price_90d_low': price_low,
+                'price_range_pct': price_range_pct,
+                'avg_volume': avg_volume,
+                'max_volume': max_volume,
+                'volume_consistency': volume_consistency,
+                'returns_90d': returns_90d,
+                'volatility': volatility,
                 'data_points': len(hist)
             }
             
@@ -405,21 +548,21 @@ class NonCryptoAssetsProvider:
             issues = []
             strengths = []
             
-            if metrics['price_range_pct'] < 3:
+            if price_range_pct < 3:
                 issues.append('Harga terlalu flat (range < 3%)')
                 quality_score -= 30
-            elif metrics['price_range_pct'] > 20:
+            elif price_range_pct > 20:
                 strengths.append('Pergerakan harga baik')
                 quality_score += 20
             
-            if metrics['avg_volume'] < 100000:
+            if avg_volume < 100000:
                 issues.append('Volume sangat rendah')
                 quality_score -= 30
-            elif metrics['avg_volume'] > 1000000:
+            elif avg_volume > 1000000:
                 strengths.append('Likuiditas baik')
                 quality_score += 20
             
-            if metrics['volume_consistency'] < 30:
+            if volume_consistency < 30:
                 issues.append('Volume tidak konsisten')
                 quality_score -= 10
             
@@ -427,11 +570,20 @@ class NonCryptoAssetsProvider:
             metrics['issues'] = issues
             metrics['strengths'] = strengths
             metrics['is_stagnant'] = quality_score < 0
+            metrics['error'] = None  # Explicitly set to None jika tidak ada error
             
             return metrics
             
         except Exception as e:
-            return {'error': str(e)}
+            logger.error(f"Error in get_stock_quality_report for {symbol}: {str(e)}")
+            return {
+                'error': str(e),
+                'symbol': symbol,
+                'quality_score': -100,
+                'is_stagnant': True,
+                'issues': ['System error'],
+                'strengths': []
+            }
     
     def get_assets(self, category: str, limit: int = 200, force_update: bool = False) -> List[str]:
         """Dapatkan list simbol aset untuk kategori tertentu."""
@@ -490,7 +642,16 @@ class NonCryptoAssetsProvider:
                 ticker = yf.Ticker(symbol)
                 hist = ticker.history(period="90d", interval="1d")
                 
+                # Validasi data
+                hist = self._validate_and_fix_data(hist)
+                if hist is None:
+                    continue
+                
                 if len(hist) < 30:
+                    continue
+                
+                # Pastikan kolom ada
+                if 'Close' not in hist.columns or 'Volume' not in hist.columns:
                     continue
                 
                 avg_volume = hist['Volume'].mean()
@@ -553,7 +714,7 @@ class NonCryptoAssetsProvider:
     def generate_trading_signals(self, symbols: List[str] = None,
                                min_bars: int = 40,
                                rsi_oversold: int = 30,
-                               rsi_overbought: int = 70) -> List[Dict]:
+                               rsi_overbought: int = 70) -> List[Dict[str, Any]]:
         """Generate trading signals dengan filter kualitas."""
         
         if symbols is None:
@@ -568,6 +729,16 @@ class NonCryptoAssetsProvider:
             try:
                 # Cek kualitas stock sebelum analisa
                 quality_report = self.get_stock_quality_report(symbol)
+                
+                # Validasi hasil quality report
+                if not isinstance(quality_report, dict):
+                    print(f"  ⚠️ {symbol}: Invalid quality report type - skipped")
+                    continue
+                
+                if 'error' in quality_report and quality_report['error']:
+                    print(f"  ⚠️ {symbol}: Error in quality check - {quality_report.get('error', 'Unknown')}")
+                    continue
+                
                 if quality_report.get('is_stagnant', False):
                     print(f"  ⚠️ {symbol}: Saham stagnan - skipped")
                     continue
@@ -577,29 +748,58 @@ class NonCryptoAssetsProvider:
                 ticker = yf.Ticker(symbol)
                 hist = ticker.history(period="90d", interval="1d")
                 
+                # Validasi data historis
+                hist = self._validate_and_fix_data(hist)
+                if hist is None:
+                    print(f"    ⚠️ Tidak ada data historis yang valid")
+                    continue
+                
                 if len(hist) < min_bars:
                     print(f"    ⚠️ Data tidak cukup: {len(hist)} < {min_bars} bars")
                     continue
                 
-                # Analisis teknikal
-                delta = hist['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                rsi = 100 - (100 / (1 + rs))
+                # Pastikan kolom ada
+                required_columns = ['Close', 'Volume']
+                for col in required_columns:
+                    if col not in hist.columns:
+                        print(f"    ⚠️ Kolom {col} tidak ditemukan")
+                        continue
                 
-                sma_20 = hist['Close'].rolling(window=20).mean()
-                sma_50 = hist['Close'].rolling(window=50).mean()
-                
-                exp12 = hist['Close'].ewm(span=12, adjust=False).mean()
-                exp26 = hist['Close'].ewm(span=26, adjust=False).mean()
-                macd = exp12 - exp26
-                signal_line = macd.ewm(span=9, adjust=False).mean()
-                
-                current_price = hist['Close'].iloc[-1]
-                current_rsi = rsi.iloc[-1]
-                current_macd = macd.iloc[-1]
-                current_signal = signal_line.iloc[-1]
+                # Analisis teknikal dengan error handling
+                try:
+                    close_series = hist['Close']
+                    volume_series = hist['Volume']
+                    
+                    # RSI Calculation
+                    delta = close_series.diff()
+                    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                    
+                    # Hindari division by zero
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        rs = gain / loss
+                        rs = rs.replace([np.inf, -np.inf], np.nan).fillna(0)
+                        rsi = 100 - (100 / (1 + rs))
+                    
+                    # Moving Averages
+                    sma_20 = close_series.rolling(window=20).mean()
+                    sma_50 = close_series.rolling(window=50).mean()
+                    
+                    # MACD
+                    exp12 = close_series.ewm(span=12, adjust=False).mean()
+                    exp26 = close_series.ewm(span=26, adjust=False).mean()
+                    macd = exp12 - exp26
+                    signal_line = macd.ewm(span=9, adjust=False).mean()
+                    
+                    # Get current values
+                    current_price = float(close_series.iloc[-1]) if len(close_series) > 0 else 0
+                    current_rsi = float(rsi.iloc[-1]) if len(rsi) > 0 else 50
+                    current_macd = float(macd.iloc[-1]) if len(macd) > 0 else 0
+                    current_signal = float(signal_line.iloc[-1]) if len(signal_line) > 0 else 0
+                    
+                except Exception as calc_error:
+                    print(f"    ❌ Error dalam kalkulasi indikator: {str(calc_error)}")
+                    continue
                 
                 # Generate signals
                 signal_strength = 0
@@ -617,31 +817,38 @@ class NonCryptoAssetsProvider:
                     signal_type = "SELL"
                 
                 # MACD Crossover
-                if current_macd > current_signal and macd.iloc[-2] <= signal_line.iloc[-2]:
-                    signal_strength += 2
-                    signal_reasons.append("MACD bullish crossover")
-                    if signal_type == "HOLD":
-                        signal_type = "BUY"
-                elif current_macd < current_signal and macd.iloc[-2] >= signal_line.iloc[-2]:
-                    signal_strength += 2
-                    signal_reasons.append("MACD bearish crossover")
-                    if signal_type == "HOLD":
-                        signal_type = "SELL"
+                if len(macd) >= 2 and len(signal_line) >= 2:
+                    if current_macd > current_signal and macd.iloc[-2] <= signal_line.iloc[-2]:
+                        signal_strength += 2
+                        signal_reasons.append("MACD bullish crossover")
+                        if signal_type == "HOLD":
+                            signal_type = "BUY"
+                    elif current_macd < current_signal and macd.iloc[-2] >= signal_line.iloc[-2]:
+                        signal_strength += 2
+                        signal_reasons.append("MACD bearish crossover")
+                        if signal_type == "HOLD":
+                            signal_type = "SELL"
                 
                 # Moving Average Crossover
-                if sma_20.iloc[-1] > sma_50.iloc[-1] and sma_20.iloc[-2] <= sma_50.iloc[-2]:
-                    signal_strength += 3
-                    signal_reasons.append("Golden Cross (SMA20 > SMA50)")
-                    signal_type = "BUY"
-                elif sma_20.iloc[-1] < sma_50.iloc[-1] and sma_20.iloc[-2] >= sma_50.iloc[-2]:
-                    signal_strength += 3
-                    signal_reasons.append("Death Cross (SMA20 < SMA50)")
-                    signal_type = "SELL"
+                if len(sma_20) >= 2 and len(sma_50) >= 2:
+                    if sma_20.iloc[-1] > sma_50.iloc[-1] and sma_20.iloc[-2] <= sma_50.iloc[-2]:
+                        signal_strength += 3
+                        signal_reasons.append("Golden Cross (SMA20 > SMA50)")
+                        signal_type = "BUY"
+                    elif sma_20.iloc[-1] < sma_50.iloc[-1] and sma_20.iloc[-2] >= sma_50.iloc[-2]:
+                        signal_strength += 3
+                        signal_reasons.append("Death Cross (SMA20 < SMA50)")
+                        signal_type = "SELL"
                 
                 # Volume Confirmation
-                volume_sma = hist['Volume'].rolling(window=20).mean()
-                current_volume = hist['Volume'].iloc[-1]
-                volume_ratio = current_volume / volume_sma.iloc[-1] if volume_sma.iloc[-1] > 0 else 1
+                volume_sma = volume_series.rolling(window=20).mean()
+                current_volume = float(volume_series.iloc[-1]) if len(volume_series) > 0 else 0
+                volume_sma_last = float(volume_sma.iloc[-1]) if len(volume_sma) > 0 and not pd.isna(volume_sma.iloc[-1]) else 1
+                
+                if volume_sma_last > 0:
+                    volume_ratio = current_volume / volume_sma_last
+                else:
+                    volume_ratio = 1
                 
                 if volume_ratio > 1.5 and signal_type != "HOLD":
                     signal_strength += 1
@@ -649,7 +856,7 @@ class NonCryptoAssetsProvider:
                 
                 # Final decision
                 if signal_strength >= 4 and signal_type != "HOLD":
-                    signals.append({
+                    signal_data = {
                         'symbol': symbol,
                         'signal': signal_type,
                         'strength': signal_strength,
@@ -658,11 +865,12 @@ class NonCryptoAssetsProvider:
                         'rsi': current_rsi,
                         'volume_ratio': volume_ratio,
                         'data_points': len(hist),
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'error': None  # Explicitly set
+                    }
                     
+                    signals.append(signal_data)
                     print(f"    ✅ {signal_type} (Strength: {signal_strength}/10)")
-                
                 else:
                     print(f"    ⚪ HOLD (Strength: {signal_strength}/10)")
                 
@@ -670,12 +878,28 @@ class NonCryptoAssetsProvider:
                 
             except Exception as e:
                 print(f"    ❌ Error: {str(e)[:50]}")
+                # Tambahkan signal error untuk tracking
+                error_signal = {
+                    'symbol': symbol,
+                    'signal': 'ERROR',
+                    'strength': 0,
+                    'reasons': [f'Error: {str(e)[:100]}'],
+                    'price': 0,
+                    'rsi': 50,
+                    'volume_ratio': 1,
+                    'data_points': 0,
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'error': str(e)
+                }
+                signals.append(error_signal)
                 continue
         
-        signals.sort(key=lambda x: x['strength'], reverse=True)
+        # Filter out error signals jika ingin
+        valid_signals = [s for s in signals if s.get('error') is None]
+        valid_signals.sort(key=lambda x: x['strength'], reverse=True)
         
-        print(f"\n📊 Signal Summary: {len(signals)} signals generated")
-        return signals
+        print(f"\n📊 Signal Summary: {len(valid_signals)} valid signals generated")
+        return valid_signals
     
     # Helper methods (sebelumnya ada di code asli)
     def _get_predefined_active(self, category: str, limit: int) -> List[str]:
@@ -739,7 +963,7 @@ if __name__ == "__main__":
     
     for stock in test_stocks:
         report = provider.get_stock_quality_report(stock)
-        if 'error' not in report:
+        if 'error' not in report or report['error'] is None:
             status = "✅ BAIK" if not report.get('is_stagnant') else "❌ STAGNAN"
             print(f"  {stock}: {status} | Range: {report['price_range_pct']:.1f}% | Volume: {report['avg_volume']:,.0f}")
         else:
@@ -783,4 +1007,5 @@ if __name__ == "__main__":
     print("   • Volume & price movement validation")
     print("   • Multi-threading untuk screening cepat")
     print("   • Quality report untuk tiap saham")
+    print("   • Data validation system untuk hindari ambiguous errors")
     print("\n✅ Sistem filter cerdas telah aktif!")
