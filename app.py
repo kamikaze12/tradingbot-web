@@ -58,7 +58,7 @@ def import_trading_bot():
         traceback.print_exc()
         
         # Last resort: buat dummy class dengan database connection
-        print("⚠️ Creating TradingBotWithDB - limited functionality")
+        print("⚠️ Creating TradingBot with database connection")
         class TradingBotWithDB:
             def __init__(self, *args, **kwargs):
                 self.mode = "crypto"
@@ -848,35 +848,6 @@ def validate_and_fix_price_levels(analysis, symbol=None, bot=None, is_scalping=F
                     tp_levels[i] = tp_levels[i-1] - min_diff
             analysis['tp1'], analysis['tp2'], analysis['tp3'] = tp_levels
     
-    # Tambahkan probabilitas TP dan confidence level
-    if action in ["LONG", "SHORT"]:
-        # Hitung probabilitas TP
-        tp_probabilities = calculate_tp_probability(
-            current_price, 
-            analysis['tp1'], 
-            analysis['tp2'], 
-            analysis['tp3'], 
-            analysis['sl'], 
-            action,
-            analysis.get('volatility', 0.02)
-        )
-        analysis['tp_probabilities'] = tp_probabilities
-        
-        # Tentukan confidence level berdasarkan score dan probabilitas
-        score = abs(analysis.get('score', 0))
-        avg_prob = (tp_probabilities.get('tp1', 0) + tp_probabilities.get('tp2', 0) + tp_probabilities.get('tp3', 0)) / 3
-        
-        if score >= 4.0 and avg_prob >= 0.6:
-            confidence = "HIGH"
-        elif score >= 3.0 and avg_prob >= 0.5:
-            confidence = "MEDIUM"
-        elif score >= 2.0 and avg_prob >= 0.4:
-            confidence = "LOW"
-        else:
-            confidence = "VERY LOW"
-        
-        analysis['confidence_level'] = confidence
-    
     return analysis
 
 def calculate_tp_probability(current_price, tp1, tp2, tp3, sl, action, volatility=0.02):
@@ -1089,31 +1060,25 @@ def filter_for_scalping(assets, bot):
     return sorted(filtered, key=lambda x: abs(x.get('score', 0)), reverse=True)
 
 def display_scalping_signal(signal, index):
-    """Display scalping signal - IMPROVED with probabilities"""
+    """Display scalping signal - IMPROVED without bias"""
     symbol = signal.get('symbol', 'UNKNOWN')
     action = signal.get('action', 'NEUTRAL')
-    score = signal.get('score', 0)
+    score = signal.get('score', 0)  # 🔥 Gunakan score asli, bukan + bias
     scalping_score = signal.get('scalping_score', 0)
-    confidence = signal.get('confidence_level', 'MEDIUM')
+    confidence = signal.get('confidence', 0.5)
     
-    # Probabilitas
-    probabilities = signal.get('tp_probabilities', {})
-    tp1_prob = probabilities.get('tp1', 0) * 100
-    tp2_prob = probabilities.get('tp2', 0) * 100
-    tp3_prob = probabilities.get('tp3', 0) * 100
-    
-    # Warna berdasarkan score
+    # Warna berdasarkan score asli (negative = SHORT)
     if score >= 3.0:
-        color = "🟢"
+        color = "🟢"  # Strong LONG
         emoji = "🚀"
     elif score >= 2.0:
-        color = "🟡"
+        color = "🟡"  # Moderate LONG
         emoji = "📈"
     elif score <= -3.0:
-        color = "🔴"
+        color = "🔴"  # Strong SHORT
         emoji = "💣"
     elif score <= -2.0:
-        color = "🟠"
+        color = "🟠"  # Moderate SHORT
         emoji = "📉"
     else:
         color = "⚪"
@@ -1123,8 +1088,7 @@ def display_scalping_signal(signal, index):
     
     with col1:
         st.write(f"{index}. {color} {emoji} **{symbol}**")
-        st.write(f"Action: `{action}` | Score: `{score:+.1f}`")
-        st.write(f"Confidence: `{confidence}`")
+        st.write(f"   Action: `{action}` | Score: `{score:+.1f}`")  # 🔥 Tampilkan +/- untuk score
     
     with col2:
         current_price = get_valid_price(signal, symbol, st.session_state.bot_instance)
@@ -1153,14 +1117,15 @@ def display_scalping_signal(signal, index):
             tp_emoji = "📉"
             risk_reward = (current_price - tp1) / (sl - current_price) if (sl - current_price) > 0 else 0
         
-        st.write(f"{tp_emoji} TP1: `{format_currency(tp1, market)}` ({tp1_prob:.1f}%)")
-        st.write(f"{tp_emoji} TP2: `{format_currency(tp2, market)}` ({tp2_prob:.1f}%)")
-        st.write(f"{tp_emoji} TP3: `{format_currency(tp3, market)}` ({tp3_prob:.1f}%)")
+        st.write(f"{tp_emoji} TP1: `{format_currency(tp1, market)}`")
+        st.write(f"{tp_emoji} TP2: `{format_currency(tp2, market)}`")
+        st.write(f"{tp_emoji} TP3: `{format_currency(tp3, market)}`")
         st.write(f"📊 R/R: `{risk_reward:.2f}`")
     
     with col4:
         # Scalping specific info
         st.write(f"⚡ Scalping Score: `{scalping_score}/7`")
+        st.write(f"🎯 Confidence: `{confidence:.1%}`")
         st.write(f"🛑 SL: `{format_currency(sl, market)}`")
         
         if signal.get('scalping_suitable', False):
@@ -1177,82 +1142,17 @@ def display_scalping_signal(signal, index):
     return False
 
 # ====================================
-# PERBAIKAN: Signal Filter untuk check sebelum open position
-# ====================================
-
-class SignalFilter:
-    """Filter untuk mengecek sinyal sebelum membuka posisi"""
-    
-    @staticmethod
-    def should_trade(signal_data):
-        """Cek apakah sinyal layak untuk trading"""
-        try:
-            # Validasi data dasar
-            if not isinstance(signal_data, dict):
-                return False, "Invalid signal data"
-            
-            symbol = signal_data.get('symbol', '')
-            action = signal_data.get('action', '')
-            score = signal_data.get('score', 0)
-            
-            if not symbol or action not in ['LONG', 'SHORT']:
-                return False, "Invalid symbol or action"
-            
-            # Check minimum score
-            min_score = st.session_state.current_config.get('min_score', 2.0)
-            if abs(score) < min_score:
-                return False, f"Score too low ({score:.1f} < {min_score})"
-            
-            # Check confidence level
-            confidence = signal_data.get('confidence_level', 'LOW')
-            if confidence == 'VERY LOW':
-                return False, "Confidence level is VERY LOW"
-            
-            # Check probabilitas TP1 minimal 40%
-            probabilities = signal_data.get('tp_probabilities', {})
-            tp1_prob = probabilities.get('tp1', 0)
-            if tp1_prob < 0.4:
-                return False, f"TP1 probability too low ({tp1_prob*100:.1f}% < 40%)"
-            
-            # Check jika ada risk management issues
-            current_price = signal_data.get('current_price', 0)
-            sl = signal_data.get('sl', 0)
-            
-            if current_price > 0 and sl > 0:
-                if action == 'LONG' and sl >= current_price:
-                    return False, "Stop loss invalid (SL >= Entry)"
-                elif action == 'SHORT' and sl <= current_price:
-                    return False, "Stop loss invalid (SL <= Entry)"
-            
-            return True, "Signal passed all filters"
-            
-        except Exception as e:
-            return False, f"Filter error: {str(e)}"
-
-# ====================================
-# PERBAIKAN 2: Fungsi Open Position - ENHANCED dengan filter check
+# PERBAIKAN 2: Fungsi Open Position - ENHANCED
 # ====================================
 def open_position(symbol, action, entry_price=None, tp1=None, tp2=None, tp3=None, sl=None, 
                   position_size=100, risk_percent=None):
-    """Open a new position dengan real-time price dan filter check"""
+    """Open a new position dengan real-time price jika tidak ada entry_price"""
     try:
         bot = st.session_state.bot_instance
         
         if bot is None:
             st.error("❌ Bot is not initialized")
             return False
-        
-        # Cek apakah ada data sinyal di selected_for_entry untuk filter check
-        signal_data = None
-        if symbol in st.session_state.selected_for_entry:
-            signal_data = st.session_state.selected_for_entry[symbol]
-        
-        # Jika ada data sinyal, lakukan filter check
-        if signal_data:
-            should_trade, reason = SignalFilter.should_trade(signal_data)
-            if not should_trade:
-                st.error(f"❌ Signal filter check failed: {reason}")
-                return False
         
         # Jika entry_price tidak diberikan, ambil harga real-time
         if entry_price is None or entry_price <= 0:
@@ -1262,8 +1162,9 @@ def open_position(symbol, action, entry_price=None, tp1=None, tp2=None, tp3=None
                 print(f"✅ Using real-time price for {symbol}: {entry_price}")
             else:
                 # Ambil dari analysis data jika ada
-                if signal_data:
-                    entry_price = get_valid_price(signal_data, symbol, bot)
+                if symbol in st.session_state.selected_for_entry:
+                    analysis = st.session_state.selected_for_entry[symbol]
+                    entry_price = get_valid_price(analysis, symbol, bot)
         
         # Jika masih tidak valid, gunakan harga default
         if entry_price is None or entry_price <= 0:
@@ -1424,7 +1325,7 @@ def update_all_positions_prices(bot):
         return updated_count
 
 # ====================================
-# Main App - SIMPLIFIED VERSION dengan perbaikan
+# Main App - SIMPLIFIED VERSION
 # ====================================
 def main_app():
     st.title("🚀 TradingBot Pro - Enhanced Dashboard with Scalping Support")
@@ -1600,15 +1501,6 @@ def main_app():
                 st.success(f"✅ {display_symbol}")
                 st.write(f"Action: {data.get('action', 'N/A')}")
                 st.write(f"Score: {data.get('score', 0)}")
-                st.write(f"Confidence: {data.get('confidence_level', 'N/A')}")
-                
-                # Tampilkan probabilitas
-                probabilities = data.get('tp_probabilities', {})
-                if probabilities:
-                    st.write(f"TP1: {probabilities.get('tp1', 0)*100:.1f}%")
-                    st.write(f"TP2: {probabilities.get('tp2', 0)*100:.1f}%")
-                    st.write(f"TP3: {probabilities.get('tp3', 0)*100:.1f}%")
-                
                 market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
                 st.write(f"Price: {format_currency(data.get('current_price', 0), market)}")
             
@@ -1902,7 +1794,7 @@ def main_app():
         "🤖 ML Backtest", "⚖️ Portfolio"
     ])
 
-    # Tab 1: Scan Assets (Regular) - PERBAIKAN dengan probabilitas
+    # Tab 1: Scan Assets (Regular) - PERBAIKAN
     with tab1:
         st.subheader("📊 Scan Potential Assets")
         
@@ -1966,14 +1858,6 @@ def main_app():
                     market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
                     st.success(f"✅ **{display_symbol}** - {data.get('action', 'N/A')} (Score: {data.get('score', 0)})")
                     st.write(f"💰 Price: `{format_currency(data.get('current_price', 0), market)}` | Entry Range: `{format_currency(data.get('entry_range_low', 0), market)} - {format_currency(data.get('entry_range_high', 0), market)}`")
-                    
-                    # Tampilkan confidence dan probabilitas
-                    confidence = data.get('confidence_level', 'N/A')
-                    probabilities = data.get('tp_probabilities', {})
-                    if confidence and probabilities:
-                        st.write(f"🔍 Confidence: `{confidence}`")
-                        st.write(f"📊 Probabilities: TP1 `{probabilities.get('tp1', 0)*100:.1f}%` | TP2 `{probabilities.get('tp2', 0)*100:.1f}%` | TP3 `{probabilities.get('tp3', 0)*100:.1f}%`")
-                
                 with col_sel2:
                     if st.button(f"❌ Remove", key=f"remove_{symbol}"):
                         del st.session_state.selected_for_entry[symbol]
@@ -2126,7 +2010,6 @@ def main_app():
                             "Symbol": symbol,
                             "Score": f"{score:+.1f}",
                             "Action": action,
-                            "Confidence": res.get('confidence_level', 'N/A'),
                             "Price": format_currency(price, market),
                             "Scalping?": "✅" if res.get('scalping_suitable', False) else "❌"
                         })
@@ -2165,10 +2048,6 @@ def main_app():
                         )
                         
                         st.write(f"{i}. {action_color} **{display_symbol}** - {action} (Score: {safe_get(res, 'score', 0)})")
-                        
-                        # Tampilkan confidence dan probabilitas
-                        confidence = res.get('confidence_level', 'N/A')
-                        st.write(f"🔍 Confidence: `{confidence}`")
                         
                         current_price = get_valid_price(res, symbol, bot)
                         market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
@@ -2226,7 +2105,6 @@ def main_app():
                         st.info(f"**Symbol:** {display_symbol}")
                         st.info(f"**Recommended Action:** {data.get('action', 'LONG')}")
                         st.info(f"**Analysis Score:** {data.get('score', 0):.1f}")
-                        st.info(f"**Confidence:** {data.get('confidence_level', 'N/A')}")
                     
                     with col_info2:
                         current_price = get_valid_price(data, symbol, bot)
@@ -2384,18 +2262,12 @@ def main_app():
                             
                             st.metric("Risk Amount", f"{format_currency(risk, st.session_state.current_market)}", f"{risk/entry_price*100:.1f}%")
                     
-                    # Tombol Open Position dengan filter check
+                    # Tombol Open Position
                     st.divider()
                     col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
                     
                     with col_btn1:
                         if st.button(f"📈 OPEN POSITION", key=f"open_position_tab1_{symbol}", type="primary"):
-                            # Check filter sebelum open position
-                            should_trade, reason = SignalFilter.should_trade(data)
-                            if not should_trade:
-                                st.error(f"❌ Cannot open position: {reason}")
-                                return
-                            
                             # Save parameters to session
                             st.session_state[f'manual_entry_{symbol}'] = entry_price
                             st.session_state[f'use_risk_{symbol}'] = use_risk
@@ -2448,7 +2320,7 @@ def main_app():
                             del st.session_state.selected_for_entry[symbol]
                             st.rerun()
 
-    # Tab 2: Scalping Mode (NEW) - PERBAIKAN dengan probabilitas
+    # Tab 2: Scalping Mode (NEW) - PERBAIKAN
     with tab2:
         st.subheader("⚡ Scalping Mode - 3-5 Minute Trading")
         
@@ -2545,7 +2417,7 @@ def main_app():
                     st.session_state.scalping_results = []
                     st.rerun()
             
-            # Display Scalping Results dengan probabilitas
+            # Display Scalping Results
             if st.session_state.scalping_results:
                 st.subheader(f"⚡ Active Scalping Signals ({len(st.session_state.scalping_results)} found)")
                 
@@ -2561,13 +2433,6 @@ def main_app():
                             symbol = signal.get('symbol', 'UNKNOWN')
                             action = signal.get('action', 'NEUTRAL')
                             score = signal.get('score', 0)
-                            confidence = signal.get('confidence_level', 'MEDIUM')
-                            
-                            # Probabilitas
-                            probabilities = signal.get('tp_probabilities', {})
-                            tp1_prob = probabilities.get('tp1', 0) * 100
-                            tp2_prob = probabilities.get('tp2', 0) * 100
-                            tp3_prob = probabilities.get('tp3', 0) * 100
                             
                             # Warna berdasarkan score
                             if score >= 3.0:
@@ -2583,8 +2448,6 @@ def main_app():
                             
                             st.write(f"{emoji} **{symbol}**")
                             st.write(f"Action: `{action}` | Score: `{score:+.1f}`")
-                            st.write(f"Confidence: `{confidence}`")
-                            st.write(f"Probabilities: TP1 `{tp1_prob:.1f}%` | TP2 `{tp2_prob:.1f}%` | TP3 `{tp3_prob:.1f}%`")
                         
                         with col_s2:
                             current_price = get_valid_price(signal, symbol, bot)
@@ -2645,7 +2508,7 @@ def main_app():
                 - Large asset pool (500+ assets recommended)
                 """)
 
-    # Tab 3: Analyze Asset - FIXED VERSION dengan probabilitas
+    # Tab 3: Analyze Asset - FIXED VERSION
     with tab3:
         st.subheader("🔍 Analyze Specific Asset")
         
@@ -2832,7 +2695,6 @@ def main_app():
                 action_color = "🟢" if action == "LONG" else "🔴" if action == "SHORT" else "⚪"
                 st.metric("Action", f"{action_color} {action}")
                 st.metric("Score", safe_get(analysis, 'score', 0))
-                st.metric("Confidence", safe_get(analysis, 'confidence_level', 'N/A'))
                 
                 current_price = get_valid_price(analysis, analysis.get('symbol'), bot)
                 market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
@@ -2848,8 +2710,6 @@ def main_app():
                 if 'tp_probabilities' in analysis:
                     probs = analysis['tp_probabilities']
                     st.metric("TP1 Probability", f"{probs.get('tp1', 0)*100:.1f}%")
-                    st.metric("TP2 Probability", f"{probs.get('tp2', 0)*100:.1f}%")
-                    st.metric("TP3 Probability", f"{probs.get('tp3', 0)*100:.1f}%")
             
             # Entry Range Details
             st.subheader("🎯 Entry Range & TP/SL Levels")
@@ -2895,7 +2755,7 @@ def main_app():
                 with prob_col3:
                     st.progress(probs.get('tp3', 0), text=f"TP3: {probs.get('tp3', 0)*100:.1f}%")
 
-    # Tab 4: Custom Entry & Open Position - ENHANCED VERSION dengan filter check
+    # Tab 4: Custom Entry & Open Position - ENHANCED VERSION
     with tab4:
         st.subheader("🎯 Custom Entry & Open Position")
         
@@ -2935,15 +2795,9 @@ def main_app():
             with col_info1:
                 st.success(f"✅ Using: **{symbol_selected}**")
                 st.write(f"Action: `{action_selected}` | Score: `{analysis.get('score', 0):.1f}`")
-                st.write(f"Confidence: `{analysis.get('confidence_level', 'N/A')}`")
                 market = st.session_state.current_market if hasattr(st.session_state, 'current_market') else "Crypto"
                 st.write(f"Current Price: {format_currency(entry_price, market)}")
                 st.write(f"Entry Range: {format_currency(analysis.get('entry_range_low', 0), market)} - {format_currency(analysis.get('entry_range_high', 0), market)}")
-                
-                # Tampilkan probabilitas
-                probabilities = analysis.get('tp_probabilities', {})
-                if probabilities:
-                    st.write(f"Probabilities: TP1 {probabilities.get('tp1', 0)*100:.1f}% | TP2 {probabilities.get('tp2', 0)*100:.1f}% | TP3 {probabilities.get('tp3', 0)*100:.1f}%")
             
             with col_info2:
                 if st.button("📌 Use This", key="use_analysis_btn"):
@@ -3193,21 +3047,13 @@ def main_app():
         st.divider()
         
         # ============================================
-        # STEP 4: Open Position dengan Filter Check
+        # STEP 4: Open Position
         # ============================================
         st.subheader("🚀 Step 4: Open Position")
         
         if st.button("📈 OPEN POSITION", key="open_position_btn_tab4", type="primary", use_container_width=True):
             if symbol_custom and entry_price_custom > 0:
                 with st.spinner("Opening position..."):
-                    # Check jika menggunakan existing analysis
-                    if use_existing and st.session_state.selected_analysis:
-                        # Check filter sebelum open position
-                        should_trade, reason = SignalFilter.should_trade(st.session_state.selected_analysis)
-                        if not should_trade:
-                            st.error(f"❌ Cannot open position: {reason}")
-                            return
-                    
                     # Create position data
                     position_data = {
                         'symbol': symbol_custom,
