@@ -88,7 +88,7 @@ class OHLcvCache:
                 'timestamp': datetime.now().isoformat(),
                 'data': df.to_json(orient='split')
             }
-            # Simpan hanya 100 entry terbaru untuk hindari memory issue
+            # Simpan hanya 100 entry terbaruk untuk hindari memory issue
             if len(self.cache) > 100:
                 # Hapus entry tertua
                 oldest_key = list(self.cache.keys())[0]
@@ -101,290 +101,13 @@ class OHLcvCache:
 ohlcv_cache = OHLcvCache()
 
 # =============================================
-# DATA QUALITY VALIDATION FUNCTIONS
-# =============================================
-
-def validate_data_quality(df: pd.DataFrame, symbol: str, scalping_mode: bool = False) -> bool:
-    """Validasi kualitas data sebelum digunakan untuk trading"""
-    try:
-        if df is None or not isinstance(df, pd.DataFrame):
-            logger.warning(f"Data quality check failed for {symbol}: Not a DataFrame")
-            return False
-        
-        if df.empty:
-            logger.warning(f"Data quality check failed for {symbol}: Empty DataFrame")
-            return False
-        
-        # 1. Minimum bars requirement
-        min_bars = 100 if scalping_mode else 50
-        if len(df) < min_bars:
-            logger.warning(f"Data quality check failed for {symbol}: Insufficient bars ({len(df)} < {min_bars})")
-            return False
-        
-        # 2. Check for missing values
-        required_columns = ['open', 'high', 'low', 'close', 'volume']
-        for col in required_columns:
-            if col not in df.columns:
-                logger.warning(f"Data quality check failed for {symbol}: Missing column {col}")
-                return False
-            
-            null_count = df[col].isnull().sum()
-            if null_count > len(df) * 0.1:  # More than 10% null values
-                logger.warning(f"Data quality check failed for {symbol}: Too many null values in {col} ({null_count})")
-                return False
-        
-        # 3. Check for unrealistic price values
-        if 'close' in df.columns:
-            close_series = df['close']
-            
-            # Check for zero or negative prices
-            if (close_series <= 0).any():
-                logger.warning(f"Data quality check failed for {symbol}: Zero or negative prices detected")
-                return False
-            
-            # Check for price stuck at 100
-            price_100_count = (np.abs(close_series.values - 100.0) < 0.001).sum()
-            if price_100_count > len(df) * 0.2:  # More than 20% of prices at 100
-                logger.warning(f"Data quality check failed for {symbol}: Too many prices stuck at 100 ({price_100_count})")
-                return False
-            
-            # Check for unrealistic price jumps
-            if len(df) > 1:
-                price_changes = close_series.pct_change().abs()
-                extreme_jumps = (price_changes > 0.5).sum()  # More than 50% price jumps
-                if extreme_jumps > len(df) * 0.1:  # More than 10% extreme jumps
-                    logger.warning(f"Data quality check failed for {symbol}: Too many extreme price jumps ({extreme_jumps})")
-                    return False
-        
-        # 4. Check volume data
-        if 'volume' in df.columns:
-            volume_series = df['volume']
-            zero_volume_count = (volume_series == 0).sum()
-            if zero_volume_count > len(df) * 0.5:  # More than 50% zero volume
-                logger.warning(f"Data quality check failed for {symbol}: Too many zero volume bars ({zero_volume_count})")
-                return False
-        
-        # 5. Check for data consistency (high >= low)
-        if all(col in df.columns for col in ['high', 'low']):
-            invalid_bars = (df['high'] < df['low']).sum()
-            if invalid_bars > 0:
-                logger.warning(f"Data quality check failed for {symbol}: Invalid bars (high < low): {invalid_bars}")
-                return False
-        
-        # 6. Check for flatline data (no price movement)
-        if len(df) > 10:
-            unique_prices = df['close'].nunique()
-            if unique_prices < len(df) * 0.1:  # Less than 10% unique prices
-                logger.warning(f"Data quality check failed for {symbol}: Too few unique prices ({unique_prices})")
-                return False
-        
-        # 7. Special checks for scalping mode
-        if scalping_mode:
-            # Check volatility range for scalping
-            if len(df) > 1:
-                volatility = df['close'].pct_change().std() * np.sqrt(252)
-                if volatility < 0.005 or volatility > 0.15:
-                    logger.warning(f"Data quality check failed for {symbol}: Volatility {volatility:.3f} not suitable for scalping")
-                    return False
-                
-                # Check average volume for scalping
-                if 'volume' in df.columns:
-                    avg_volume = df['volume'].mean()
-                    if avg_volume < 100000:
-                        logger.warning(f"Data quality check failed for {symbol}: Volume too low for scalping ({avg_volume:.0f})")
-                        return False
-        
-        logger.info(f"✅ Data quality check passed for {symbol}: {len(df)} bars")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error in data quality validation for {symbol}: {e}")
-        return False
-
-# =============================================
-# PRE-FILTERING FOR TRADING DATA
-# =============================================
-
-def pre_filter_trading_data(symbol: str, df: pd.DataFrame, scalping_mode: bool = False) -> bool:
-    """Pre-filter data sebelum digunakan untuk analisis trading"""
-    try:
-        if df is None or not isinstance(df, pd.DataFrame):
-            logger.warning(f"Pre-filter failed for {symbol}: Not a DataFrame")
-            return False
-            
-        if df.empty:
-            logger.warning(f"Pre-filter failed for {symbol}: Empty DataFrame")
-            return False
-        
-        market_type = detect_market_type(symbol)
-        
-        # 1. Basic data validation
-        if len(df) < 20:
-            logger.debug(f"Pre-filter failed for {symbol}: Not enough data ({len(df)} bars)")
-            return False
-        
-        # 2. Price validation
-        if 'close' not in df.columns:
-            logger.debug(f"Pre-filter failed for {symbol}: No close column")
-            return False
-            
-        current_price = df['close'].iloc[-1] if len(df) > 0 else 0
-        if current_price <= 0 or current_price > 1000000:
-            logger.debug(f"Pre-filter failed for {symbol}: Invalid price ({current_price})")
-            return False
-        
-        # 3. Volume validation (except for Indonesia stocks)
-        if market_type != "indonesia_stocks" and 'volume' in df.columns:
-            avg_volume = df['volume'].mean()
-            if avg_volume < 1000:
-                logger.debug(f"Pre-filter failed for {symbol}: Low volume ({avg_volume:.0f})")
-                return False
-        
-        # 4. Price movement validation
-        if len(df) > 5:
-            price_range = df['close'].max() - df['close'].min()
-            price_change_pct = price_range / df['close'].mean() if df['close'].mean() > 0 else 0
-            
-            if price_change_pct < 0.001:  # Less than 0.1% movement
-                logger.debug(f"Pre-filter failed for {symbol}: No price movement ({price_change_pct:.4%})")
-                return False
-        
-        # 5. Scalping-specific filters
-        if scalping_mode:
-            if current_price < 0.01 or current_price > 500:
-                logger.debug(f"Pre-filter failed for {symbol}: Price outside scalping range (${current_price:.4f})")
-                return False
-            
-            if len(df) > 1:
-                volatility = df['close'].pct_change().std() * np.sqrt(252)
-                if volatility < 0.005 or volatility > 0.15:
-                    logger.debug(f"Pre-filter failed for {symbol}: Volatility unsuitable for scalping ({volatility:.3f})")
-                    return False
-        
-        logger.debug(f"✅ Pre-filter passed for {symbol}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error in pre-filter for {symbol}: {e}")
-        return False
-
-# =============================================
-# PROBABILITY CALCULATOR
-# =============================================
-
-class ProbabilityCalculator:
-    """Calculator probabilitas berdasarkan multiple factors"""
-    
-    @staticmethod
-    def calculate_probabilities(df, action, score, indicators):
-        """Hitung probabilitas TP yang realistis"""
-        
-        base_prob = {
-            'LONG': {'TP1': 45, 'TP2': 30, 'TP3': 20},
-            'SHORT': {'TP1': 40, 'TP2': 25, 'TP3': 15}
-        }[action]
-        
-        # Factor 1: Score strength
-        score_factor = min(abs(score) / 10.0, 1.5)  # Max 1.5x
-        for key in base_prob:
-            base_prob[key] = int(base_prob[key] * score_factor)
-        
-        # Factor 2: Volume confirmation
-        vol_ratio = indicators.get('volume_ratio', 1.0)
-        if vol_ratio > 1.5:
-            for key in base_prob:
-                base_prob[key] += 10
-        elif vol_ratio < 0.7:
-            for key in base_prob:
-                base_prob[key] -= 15
-        
-        # Factor 3: Trend alignment
-        trend = indicators.get('trend_strength', 0)
-        if (action == "LONG" and trend > 0.2) or (action == "SHORT" and trend < -0.2):
-            for key in base_prob:
-                base_prob[key] += 15
-        elif (action == "LONG" and trend < -0.2) or (action == "SHORT" and trend > 0.2):
-            for key in base_prob:
-                base_prob[key] -= 20  # Strong penalty for counter-trend
-        
-        # Factor 4: Market regime
-        regime = indicators.get('market_regime', 'UNKNOWN')
-        if regime == 'BULL_TREND' and action == "LONG":
-            for key in base_prob:
-                base_prob[key] += 10
-        elif regime == 'BEAR_TREND' and action == "SHORT":
-            for key in base_prob:
-                base_prob[key] += 10
-        
-        # Clamp values
-        for key in base_prob:
-            base_prob[key] = max(5, min(base_prob[key], 85))
-        
-        return base_prob
-
-# =============================================
-# SIGNAL FILTER
-# =============================================
-
-class SignalFilter:
-    """Filter sinyal sebelum dikirim ke trading - INTEGRATED"""
-    
-    MIN_PROBABILITY = 40  # Minimal 40% untuk TP1
-    MIN_RR_RATIO = 1.5    # Minimal RR 1:1.5
-    MIN_SCORE = 6.0       # Minimal score 6.0
-    
-    @staticmethod
-    def should_trade(signal):
-        """Cek apakah sinyal layak ditrading"""
-        
-        # Skip jika NEUTRAL
-        if signal.get('action') == 'NEUTRAL':
-            return False, "Neutral signal"
-        
-        # 1. Cek probabilitas
-        prob_tp1 = signal.get('prob_tp1', 0)
-        if prob_tp1 < SignalFilter.MIN_PROBABILITY:
-            return False, f"Probability too low: {prob_tp1}%"
-        
-        # 2. Cek RR ratio
-        rr_ratio = signal.get('rr_ratio_tp1', 0)
-        if rr_ratio < SignalFilter.MIN_RR_RATIO:
-            return False, f"RR ratio too low: {rr_ratio:.2f}"
-        
-        # 3. Cek score
-        score = abs(signal.get('score', 0))
-        if score < SignalFilter.MIN_SCORE:
-            return False, f"Score too low: {score:.1f}"
-        
-        # 4. Cek volume (kecuali untuk futures dan saham Indonesia)
-        volume_ratio = signal.get('volume_ratio', 1.0)
-        market_type = signal.get('market_type', 'crypto')
-        
-        if market_type != "indonesia_stocks" and volume_ratio < 0.8:
-            return False, f"Volume too low: {volume_ratio:.1f}x"
-        
-        # 5. Cek trend alignment untuk short
-        if signal['action'] == 'SHORT':
-            trend = signal.get('trend_strength', 0)
-            if trend > 0.3:  # Strong uptrend
-                return False, "Avoid short in strong uptrend"
-        
-        # 6. Cek volatilitas untuk scalping
-        if signal.get('scalping_mode', False):
-            volatility = signal.get('volatility', 0)
-            if volatility < 0.005 or volatility > 0.15:
-                return False, f"Volatility not suitable for scalping: {volatility:.3%}"
-        
-        return True, "Signal approved"
-
-# =============================================
 # SCALPING CONFIGURATION - UNTUK PERBAIKAN BIAS SHORT
 # =============================================
 
 SCALPING_CONFIG = {
     "timeframe": "5m",            # 5 menit untuk scalping
     "lookback": 150,              # ~12.5 jam data
-    "min_score_threshold": 6.0,   # 🔥 PERBAIKAN: dari 4.0 ke 6.0
+    "min_score_threshold": 4.0,   # Minimal absolute score untuk trigger sinyal
     "long_bias": 0.0,            # 🔥 UBAH: dari 0.3 ke 0.0 (NEUTRAL)
     "entry_range_pct": 0.008,     # 0.8% lebih ketat untuk scalping
     "atr_multiplier": 0.7,        # TP/SL lebih ketat untuk scalping
@@ -464,9 +187,6 @@ MARKET_CONFIGS = {
 
 def detect_market_type(symbol: str) -> str:
     """Auto-detect market type berdasarkan symbol"""
-    if symbol is None:
-        return "crypto"
-    
     symbol_upper = symbol.upper()
     
     # Deteksi saham Indonesia
@@ -632,11 +352,11 @@ def get_clean_data(symbol: str, provider=None, timeframe: str = None,
                     else:
                         df[col] = 100  # Fallback
         
-        # 🚨 **CEK DAN PERBAIKI HARGA 100** - PERBAIKAN: gunakan np.abs bukan np.isclose
+        # 🚨 **CEK DAN PERBAIKI HARGA 100** - GUNAKAN numpy.isclose
         if 'close' in df.columns:
-            # Deteksi harga stuck di 100
+            # Deteksi harga stuck di 100 - GUNAKAN numpy.isclose
             close_values = df['close'].values
-            is_close_to_100 = np.abs(close_values - 100.0) < 0.001
+            is_close_to_100 = np.isclose(close_values, 100.0, atol=0.001)
             
             if np.any(is_close_to_100):
                 count_100 = np.sum(is_close_to_100)
@@ -655,7 +375,7 @@ def get_clean_data(symbol: str, provider=None, timeframe: str = None,
         if 'close' in df.columns:
             close_values = df['close'].values
             
-            # Hapus baris dengan harga <= 0
+            # Hapus baris dengan harga <= 0 - GUNAKAN BOOLEAN INDEXING dengan .values
             mask_positive = close_values > 0
             if not np.all(mask_positive):
                 df = df[mask_positive].copy()
@@ -681,10 +401,11 @@ def get_clean_data(symbol: str, provider=None, timeframe: str = None,
                 logger.error(f"❌ Data tidak cukup untuk saham Indonesia: {len(df)} bars")
                 return pd.DataFrame()
         
-        # Final check: pastikan TIDAK ADA harga 100 - PERBAIKAN: gunakan np.abs
+        # Final check: pastikan TIDAK ADA harga 100 - GUNAKAN np.isclose
         if 'close' in df.columns:
+            # GUNAKAN numpy.isclose untuk array
             close_values_final = df['close'].values
-            is_close_to_100_final = np.abs(close_values_final - 100.0) < 0.001
+            is_close_to_100_final = np.isclose(close_values_final, 100.0, atol=0.001)
             
             if np.any(is_close_to_100_final):
                 logger.error(f"🚨 {symbol} still has price 100 after cleaning!")
@@ -707,127 +428,150 @@ def get_trading_data(symbol: str, provider=None, scalping_mode: bool = False,
     HANYA return data jika benar-benar bersih.
     """
     try:
-        logger.info(f"🔍 DEBUG get_trading_data for {symbol}: START")
+        # Dapatkan konfigurasi market
+        market_config = get_market_config(symbol, scalping_mode)
+        market_type = detect_market_type(symbol)
         
-        # 🔥 PERBAIKAN 1: Validasi symbol
-        if symbol is None or not isinstance(symbol, str):
-            logger.error(f"❌ Invalid symbol: {symbol}")
-            return None
+        logger.info(f"🔍 Getting trading data for {symbol} (Market: {market_type})")
         
-        # 🔥 PERBAIKAN 2: Initialize dengan DataFrame kosong
-        df = pd.DataFrame()
-        
-        # 🔥 PERBAIKAN 3: Cek provider dengan validasi ketat
+        # 🚨 **PERBAIKAN: Gunakan provider langsung jika tersedia**
         if provider is not None and hasattr(provider, 'get_ohlcv'):
             try:
                 logger.info(f"📡 Getting OHLCV for {symbol} from {provider.__class__.__name__}")
                 
-                market_config = get_market_config(symbol, scalping_mode)
+                # Gunakan timeframe yang sesuai
                 timeframe = SCALPING_CONFIG["timeframe"] if scalping_mode else market_config["default_timeframe"]
                 limit = SCALPING_CONFIG["lookback"] if scalping_mode else market_config["lookback_days"] * 24
                 
-                data_from_provider = provider.get_ohlcv(symbol, timeframe, limit)
+                df = provider.get_ohlcv(symbol, timeframe, limit)
                 
-                # 🔥 PERBAIKAN KRITIS: Cek tipe data dari provider
-                if data_from_provider is None:
-                    logger.warning(f"Provider returned None for {symbol}")
-                elif isinstance(data_from_provider, str):
-                    logger.error(f"❌ CRITICAL: Provider returned STRING for {symbol}")
-                    logger.error(f"String preview: {data_from_provider[:200] if len(data_from_provider) > 200 else data_from_provider}")
-                    data_from_provider = None
-                elif not isinstance(data_from_provider, pd.DataFrame):
-                    logger.error(f"❌ Provider returned non-DataFrame: {type(data_from_provider)}")
-                    data_from_provider = None
-                elif data_from_provider.empty:
-                    logger.warning(f"Provider returned empty DataFrame for {symbol}")
-                    data_from_provider = None
+                if df is None or df.empty:
+                    logger.warning(f"Provider returned no data for {symbol}")
+                    # Fallback ke get_clean_data
+                    df = get_clean_data(symbol, provider, scalping_mode=scalping_mode)
                 else:
-                    logger.info(f"✅ Valid DataFrame from provider: {data_from_provider.shape}")
-                    df = data_from_provider
+                    # Standardize column names
+                    column_mapping = {
+                        'Open': 'open',
+                        'High': 'high', 
+                        'Low': 'low',
+                        'Close': 'close',
+                        'Volume': 'volume'
+                    }
+                    
+                    for old, new in column_mapping.items():
+                        if old in df.columns:
+                            df = df.rename(columns={old: new})
+                    
+                    # 🔥 PERBAIKAN KETAT: Cek dan bersihkan harga 100 secara eksplisit
+                    if 'close' in df.columns:
+                        # Debug logging
+                        logger.debug(f"🔍 {symbol}: Checking for price 100, current range: {df['close'].min():.4f}-{df['close'].max():.4f}")
+                        
+                        # Method 1: Direct check dengan numpy
+                        close_values = df['close'].values
+                        price_100_count = np.sum(np.isclose(close_values, 100.0, atol=0.001))
+                        if price_100_count > 0:
+                            logger.error(f"🚨 {symbol}: Found {price_100_count} bars with price ~100, rejecting!")
+                            return None
+                        
+                        # Method 2: Filter jika terlalu banyak harga sama
+                        unique_prices = len(np.unique(close_values))
+                        if unique_prices < 3 and len(df) > 10:
+                            logger.warning(f"⚠️ {symbol}: Too few unique prices ({unique_prices}), possibly stuck at 100")
+                            return None
+                    
+                    logger.info(f"✅ Valid data from provider for {symbol}: {len(df)} bars")
                     
             except Exception as e:
-                logger.error(f"❌ Error getting data from provider: {e}")
-                df = pd.DataFrame()
-        
-        # 🔥 PERBAIKAN 4: Jika provider gagal, gunakan get_clean_data
-        if df.empty:
-            logger.info(f"🔄 Falling back to get_clean_data for {symbol}")
+                logger.error(f"Error getting data from provider: {e}")
+                # Fallback ke get_clean_data
+                df = get_clean_data(symbol, provider, scalping_mode=scalping_mode)
+        else:
+            # Langsung gunakan get_clean_data
             df = get_clean_data(symbol, provider, scalping_mode=scalping_mode)
         
-        # 🔥 PERBAIKAN 5: Validasi final - pastikan DataFrame
-        if not isinstance(df, pd.DataFrame):
-            logger.error(f"❌ Final data is not DataFrame: {type(df)}")
+        # Validasi data
+        if df is None or df.empty:
+            logger.warning(f"No data available for {symbol}")
             return None
         
-        if df.empty:
-            logger.warning(f"⚠️ Empty DataFrame for {symbol}")
+        # Pastikan ini adalah DataFrame
+        if isinstance(df, pd.Series):
+            df = df.to_frame().T
+        
+        # Cek minimal bars berdasarkan market type
+        min_bars = market_config["min_bars"]
+        if len(df) < min_bars:
+            logger.warning(f"⚠️ {symbol} insufficient data: {len(df)} < {min_bars} bars required for {market_type}")
             return None
         
-        # 🔥 PERBAIKAN 6: Log final result
-        logger.info(f"✅ get_trading_data SUCCESS for {symbol}: {df.shape}")
+        # =============================================
+        # FILTER KHUSUS UNTUK SCALPING MODE
+        # =============================================
+        if scalping_mode:
+            # 1. Cek volatilitas (minimal movement untuk scalping)
+            if len(df) > 1:
+                price_changes = df['close'].pct_change().abs().mean()
+                if price_changes < 0.0005:  # Kurang dari 0.05% average movement
+                    logger.warning(f"⚠️ {symbol} too flat for scalping: {price_changes*100:.3f}% avg change")
+                    return None
+            
+            # 2. Cek volume (harus cukup liquid untuk scalping)
+            if 'volume' in df.columns:
+                avg_volume = df['volume'].mean()
+                if avg_volume < 100000:  # Minimal volume untuk scalping
+                    logger.warning(f"⚠️ {symbol} volume too low for scalping: {avg_volume:.0f}")
+                    return None
+            
+            # 3. Cek volatilitas maksimal (terlalu volatile berbahaya untuk scalping)
+            if len(df) > 1:
+                volatility = df['close'].pct_change().std() * np.sqrt(252)
+                if volatility > SCALPING_CONFIG["max_volatility"]:
+                    logger.warning(f"⚠️ {symbol} too volatile for scalping: {volatility:.1%}")
+                    return None
+        
+        # 🔥 PERBAIKAN: Validasi harga 100 dengan metode yang TIDAK menyebabkan ambiguous truth value
+        try:
+            if 'close' in df.columns:
+                # Gunakan .values untuk menghindari ambiguous truth value
+                close_values = df['close'].values
+                
+                # Cek jika ada harga yang mendekati 100
+                is_close_to_100 = np.isclose(close_values, 100.0, atol=0.001)
+                
+                if np.any(is_close_to_100):
+                    count_100 = np.sum(is_close_to_100)
+                    logger.error(f"🚨 {symbol}: Found {count_100} bars with price ~100 in final check, rejecting!")
+                    return None
+                
+                # Pastikan harga realistic
+                if len(df) > 0:
+                    current_price = df['close'].iloc[-1]
+                else:
+                    current_price = 0
+                
+                # Skip kalau harga masih aneh
+                if current_price <= 0 or current_price > 1000000:
+                    logger.warning(f"⚠️ {symbol} has unrealistic price: {current_price}")
+                    return None
+                
+                # Cek pergerakan harga (tidak stuck)
+                if len(df) > 1:
+                    price_changes = df['close'].diff().abs().sum()
+                    if price_changes < (current_price * 0.0001 * len(df)):
+                        logger.warning(f"⚠️ {symbol} has flatline prices")
+                        return None
+        except Exception as e:
+            logger.error(f"Error in final validation for {symbol}: {e}")
+            return None
+        
+        logger.info(f"✅ Trading data ready for {symbol}: {len(df)} bars")
         return df
         
     except Exception as e:
-        logger.error(f"❌ Error in get_trading_data for {symbol}: {e}")
+        logger.error(f"Error in get_trading_data for {symbol}: {e}")
         return None
-
-# =============================================
-# DATA VALIDATION AND FIXING UTILITY - DIPERBAIKI
-# =============================================
-
-def validate_and_fix_data(data: Any, symbol: str) -> Optional[pd.DataFrame]:
-    """Validasi dan konversi data ke DataFrame dengan aman. Return None jika konversi gagal."""
-    logger.info(f"🔧 validate_and_fix_data for {symbol}: type={type(data)}")
-    
-    if data is None:
-        logger.warning(f"Data is None for {symbol}")
-        return None
-    
-    if isinstance(data, pd.DataFrame):
-        if data.empty:
-            logger.warning(f"Empty DataFrame for {symbol}")
-            return None
-        return data
-    
-    if isinstance(data, str):
-        try:
-            # Coba parse sebagai JSON dulu
-            data_dict = json.loads(data)
-            df = pd.DataFrame(data_dict)
-            logger.info(f"Converted JSON string to DataFrame for {symbol}: {len(df)} rows")
-            return df if not df.empty else None
-        except json.JSONDecodeError:
-            try:
-                # Coba sebagai CSV-like string
-                from io import StringIO
-                df = pd.read_csv(StringIO(data), sep=r'\s+')  # Asumsi whitespace separated
-                logger.info(f"Converted CSV string to DataFrame for {symbol}: {len(df)} rows")
-                return df if not df.empty else None
-            except:
-                try:
-                    # Coba ast.literal_eval jika aman (untuk dict/list)
-                    import ast
-                    parsed = ast.literal_eval(data)
-                    if isinstance(parsed, (dict, list)):
-                        df = pd.DataFrame(parsed)
-                        logger.info(f"Converted eval to DataFrame for {symbol}: {len(df)} rows")
-                        return df if not df.empty else None
-                except:
-                    pass
-        
-        logger.error(f"Cannot convert string to DataFrame for {symbol}: {data[:100]}...")
-        return None
-    
-    if isinstance(data, (dict, list)):
-        try:
-            df = pd.DataFrame(data)
-            return df if not df.empty else None
-        except Exception as e:
-            logger.error(f"Cannot convert {type(data)} to DataFrame for {symbol}: {e}")
-            return None
-    
-    logger.error(f"Unsupported data type for {symbol}: {type(data)}")
-    return None
 
 # =============================================
 # BASE STRATEGY CLASS DENGAN MARKET TYPE AWARENESS
@@ -878,115 +622,6 @@ class TradingStrategy(ABC):
         """Analyze market data and return trading signals"""
         pass
     
-    def analyze_enhanced(self, symbol: str, data: Any, timeframe: str = '1h') -> Dict[str, Any]:
-        """
-        Enhanced analysis dengan fallback yang aman untuk semua kemungkinan error
-        FIXED: sl_distance selalu memiliki nilai default
-        """
-        # 🔥 PERBAIKAN KRITIS: Validasi input data
-        logger.info(f"🔍 analyze_enhanced for {symbol}: Received data type: {type(data)}")
-        
-        # INISIALISASI DEFAULT VALUE UNTUK SEMUA VARIABEL
-        sl_distance = 0.02  # Default value 2%
-        tp_distance = 0.04  # Default value 4%
-        
-        # PERBAIKAN: Validasi dan perbaiki data
-        df = validate_and_fix_data(data, symbol)
-        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-            logger.error(f"❌ Data validation failed for {symbol}")
-            return {
-                'action': 'NEUTRAL',
-                'score': 0,
-                'sl_distance': sl_distance,
-                'tp_distance': tp_distance,
-                'error': 'Data validation failed'
-            }
-        
-        try:
-            # 1. Preprocess data
-            df = self._preprocess_and_validate(df, symbol, self.market_type)
-            
-            if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-                logger.warning(f"Enhanced analysis: Data validation failed for {symbol}")
-                return {
-                    'action': 'NEUTRAL',
-                    'score': 0,
-                    'sl_distance': sl_distance,
-                    'tp_distance': tp_distance,
-                    'error': 'Data validation failed'
-                }
-            
-            # 2. Skip jika data tidak valid untuk trading
-            if self._should_skip_symbol(df, symbol):
-                logger.info(f"Enhanced analysis: Skipping {symbol} due to data quality")
-                return {
-                    'action': 'NEUTRAL',
-                    'score': 0,
-                    'sl_distance': sl_distance,
-                    'tp_distance': tp_distance,
-                    'error': 'Data quality check failed'
-                }
-            
-            # 3. Lakukan analisis utama
-            analysis_result = self.analyze(df, symbol)
-            
-            if analysis_result is None:
-                logger.warning(f"Enhanced analysis: Analysis returned None for {symbol}")
-                return {
-                    'action': 'NEUTRAL',
-                    'score': 0,
-                    'sl_distance': sl_distance,
-                    'tp_distance': tp_distance,
-                    'error': 'Analysis returned None'
-                }
-            
-            # 4. Extract values dari hasil analisis
-            signal = analysis_result.get('action', 'NEUTRAL')
-            score = analysis_result.get('score', 0.0)
-            
-            # 5. Hitung sl_distance dan tp_distance berdasarkan hasil analisis
-            if signal != 'NEUTRAL':
-                current_price = analysis_result.get('current_price', 0)
-                sl_price = analysis_result.get('sl', 0)
-                tp1_price = analysis_result.get('tp1', 0)
-                
-                if current_price > 0 and sl_price > 0:
-                    if signal == 'LONG':
-                        sl_distance = abs(current_price - sl_price) / current_price
-                    elif signal == 'SHORT':
-                        sl_distance = abs(sl_price - current_price) / current_price
-                
-                if current_price > 0 and tp1_price > 0:
-                    if signal == 'LONG':
-                        tp_distance = abs(tp1_price - current_price) / current_price
-                    elif signal == 'SHORT':
-                        tp_distance = abs(current_price - tp1_price) / current_price
-            
-            # 6. Pastikan sl_distance dan tp_distance tidak nol
-            sl_distance = max(sl_distance, 0.01)  # Minimal 1%
-            tp_distance = max(tp_distance, 0.02)  # Minimal 2%
-            
-            # 7. Return hasil
-            return {
-                'action': signal,
-                'score': score,
-                'sl_distance': sl_distance,
-                'tp_distance': tp_distance,
-                'analysis_result': analysis_result,
-                'error': None
-            }
-            
-        except Exception as e:
-            logger.error(f"Enhanced analysis error for {symbol}: {str(e)}")
-            # RETURN DEFAULT VALUE dengan sl_distance yang aman
-            return {
-                'action': 'NEUTRAL',
-                'score': 0,
-                'sl_distance': 0.02,  # Default 2%
-                'tp_distance': 0.04,  # Default 4%
-                'error': str(e)
-            }
-    
     def _preprocess_and_validate(self, df: pd.DataFrame, symbol: str, market_type: str = None) -> pd.DataFrame:
         """Preprocess data dan validasi kualitas dengan market type awareness"""
         
@@ -994,12 +629,8 @@ class TradingStrategy(ABC):
             market_type = detect_market_type(symbol)
         
         # 1. Cek data kosong
-        if df is None or not isinstance(df, pd.DataFrame):
-            logger.error(f"Empty or invalid data for {symbol}")
-            return self._get_fallback_data(symbol, market_type)
-        
-        if df.empty:
-            logger.error(f"Empty DataFrame for {symbol}")
+        if df is None or df.empty:
+            logger.error(f"Empty data for {symbol}")
             return self._get_fallback_data(symbol, market_type)
         
         # 2. Cek kolom yang diperlukan
@@ -1019,13 +650,13 @@ class TradingStrategy(ABC):
             logger.warning(f"Price stuck detected for {symbol}, using synthetic data")
             df = self._synthesize_movement(df, symbol, market_type)
         
-        # 4. Cek harga tidak valid (<= 0) - PERBAIKAN: GUNAKAN .any()
-        if (df['close'] <= 0).any():
+        # 4. Cek harga tidak valid (<= 0) - PERBAIKAN: GUNAKAN .values
+        if (df['close'].values <= 0).any():
             logger.warning(f"Invalid price (<=0) detected for {symbol}, using synthetic data")
             df = self._synthesize_movement(df, symbol, market_type)
         
-        # 5. Cek high < low - PERBAIKAN: GUNAKAN .any()
-        if (df['high'] < df['low']).any():
+        # 5. Cek high < low - PERBAIKAN: GUNAKAN .values
+        if (df['high'].values < df['low'].values).any():
             logger.warning(f"High < Low detected for {symbol}, using synthetic data")
             df = self._synthesize_movement(df, symbol, market_type)
         
@@ -1449,9 +1080,6 @@ class TradingStrategy(ABC):
 
     def _estimate_realistic_price(self, symbol):
         """Estimate realistic price based on symbol - UPDATED WITH FUTURES"""
-        if symbol is None:
-            return 100.0
-            
         price_estimates = {
             # Crypto Spot
             'BTC/USDT': 50000.0, 'ETH/USDT': 3000.0, 'BNB/USDT': 500.0,
@@ -2089,7 +1717,6 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         
         self.pattern_detector = AdvancedPatternDetector()
         self.analysis_history = []
-        self.probability_calculator = ProbabilityCalculator()
         
         # 🔥 NEW: Konfigurasi enhancement
         self.use_multi_tf_confirmation = use_multi_tf_confirmation
@@ -2119,388 +1746,6 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         }
         
         logger.info(f"📊 Strategy Enhanced: Multi-TF={use_multi_tf_confirmation}, Adaptive={use_adaptive_params}, Regime={use_regime_detection}")
-
-    def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
-        """Enhanced analysis dengan sistem robust scoring dan filter sinyal"""
-        try:
-            # 🔥 PERBAIKAN: Validasi input sebelum analisis
-            logger.info(f"🔍 Enhanced analysis for {symbol}: START, df type={type(df)}")
-            
-            if df is None:
-                logger.error(f"❌ df is None for {symbol}")
-                return self._get_default_analysis(symbol)
-            
-            if not isinstance(df, pd.DataFrame):
-                logger.error(f"❌ df is not DataFrame for {symbol}, type={type(df)}")
-                return self._get_default_analysis(symbol)
-                
-            if df.empty:
-                logger.error(f"❌ df is empty for {symbol}")
-                return self._get_default_analysis(symbol)
-            
-            # 🔥 PERBAIKAN: Cek kolom yang diperlukan
-            required_cols = ['open', 'high', 'low', 'close']
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            if missing_cols:
-                logger.error(f"❌ Missing columns for {symbol}: {missing_cols}")
-                return self._get_default_analysis(symbol)
-            
-            # Update market type berdasarkan symbol
-            if symbol is not None:
-                self.market_type = detect_market_type(symbol)
-            
-            # 1. Validasi data dasar
-            if df.empty:
-                logger.warning(f"Data insufficient for {symbol}: empty DataFrame")
-                return self._get_default_analysis(symbol)
-            
-            # 2. Gunakan validasi data yang aman dengan market type awareness
-            if not self._safe_data_validation(df, symbol, self.market_type):
-                logger.warning(f"Data validation failed for {symbol}")
-                return self._get_safe_neutral_signal(symbol)
-            
-            # 3. Preprocess data
-            df = self._preprocess_and_validate(df, symbol, self.market_type)
-            
-            # 4. Skip jika data tidak valid
-            if self._should_skip_symbol(df, symbol):
-                return self._get_safe_neutral_signal(symbol)
-            
-            # 5. Ambil harga sekarang
-            current_price = df['close'].iloc[-1]
-            
-            # 6. Hitung indikator teknis dasar
-            indicators = self._calculate_enhanced_indicators(df)
-            
-            # 🔥 NEW: Calculate adaptive indicators
-            adaptive_indicators = self._calculate_adaptive_indicators(df)
-            indicators.update(adaptive_indicators)
-            
-            # 🔥 NEW: Gunakan robust scoring system
-            score = self.calculate_robust_score(indicators, df, symbol)
-            
-            # 🔥 NEW: Hitung dynamic threshold
-            required_score = self.calculate_dynamic_threshold(df, symbol)
-            
-            # 🔥 APPLY LONG BIAS CORRECTION - TIDAK ADA BIAS (0.0)
-            biased_score = score + (self.long_bias * 5)  # Scale bias effect
-            
-            # =============================================
-            # 🔥 PERBAIKAN UTAMA: BREAKOUT FILTER - CEGAH FALSE SIGNAL SAAT BREAKOUT
-            # =============================================
-            breakout_info = self._detect_breakout_pattern(df, symbol)
-            if breakout_info['breakout_detected']:
-                if breakout_info['direction'] == 'BULLISH':
-                    # Jika breakout bullish, beri WARNING untuk SHORT (tidak langsung block)
-                    if biased_score < 0:  # Ini adalah sinyal SHORT
-                        logger.warning(f"⚠️ {symbol}: Bullish breakout detected, caution on SHORT signal")
-                        # Kurangi sedikit score SHORT (20% reduction, bukan 70%)
-                        biased_score = biased_score * self.breakout_penalty_factor
-                
-                elif breakout_info['direction'] == 'BEARISH':
-                    # Jika breakout bearish, beri WARNING untuk LONG
-                    if biased_score > 0:  # Ini adalah sinyal LONG
-                        logger.warning(f"⚠️ {symbol}: Bearish breakout detected, caution on LONG signal")
-                        biased_score = biased_score * self.breakout_penalty_factor
-            
-            logger.debug(f"Score calculation for {symbol}: Base={score:.1f}, Bias={self.long_bias:.2f}, Final={biased_score:.1f}, Required={required_score:.1f}, Breakout={breakout_info['breakout_detected']}")
-            
-            # 🆕 APPLY MINIMUM SCORE THRESHOLD dengan dynamic threshold
-            if abs(biased_score) < max(required_score, self.min_score_threshold):
-                logger.debug(f"{symbol}: Score {biased_score:.1f} below threshold {max(required_score, self.min_score_threshold):.1f}, returning NEUTRAL")
-                action = "NEUTRAL"
-            elif biased_score > 0:
-                action = "LONG"
-            else:
-                action = "SHORT"
-            
-            # 🔥 NEW: Skip signals during strong consolidation with low ADX
-            if (indicators.get('consolidation_score', 0) > 0.8 and 
-                indicators.get('adx', 20) < 15 and
-                action != "NEUTRAL"):
-                logger.info(f"⏸️ {symbol}: Skipping {action} signal due to strong consolidation (ADX: {indicators.get('adx', 20):.1f})")
-                action = "NEUTRAL"
-            
-            # 7. Hitung smart entry dan probabilities
-            smart_entry = self.calculate_smart_entry(
-                symbol=symbol or "UNKNOWN",
-                current_price=current_price,
-                action=action,
-                df=df,
-                score=biased_score
-            )
-            
-            # 8. Hitung TP/SL dengan bias correction
-            entry_calc = self.calculate_custom_entry(
-                symbol=symbol or "UNKNOWN",
-                current_price=current_price,
-                action=action,
-                df=df
-            )
-            
-            # Tambahkan smart entry ke hasil
-            entry_calc['prob_tp1'] = smart_entry['prob_tp1']
-            entry_calc['prob_tp2'] = smart_entry['prob_tp2']
-            entry_calc['prob_tp3'] = smart_entry['prob_tp3']
-            
-            # 🔥 NEW: Hitung probabilitas dengan ProbabilityCalculator
-            probabilities = self.probability_calculator.calculate_probabilities(df, action, biased_score, indicators)
-            
-            # 🔥 NEW: Filter sinyal dengan SignalFilter
-            signal_to_check = {
-                'action': action,
-                'score': biased_score,
-                'prob_tp1': smart_entry['prob_tp1'],
-                'rr_ratio_tp1': entry_calc.get('rr_ratio_tp1', 0),
-                'volume_ratio': indicators.get('volume_ratio', 1.0),
-                'trend_strength': indicators.get('trend_strength', 0),
-                'market_type': self.market_type,
-                'scalping_mode': self.scalping_mode,
-                'volatility': indicators.get('volatility', 0)
-            }
-            
-            should_trade, reason = SignalFilter.should_trade(signal_to_check)
-            
-            if not should_trade and action != "NEUTRAL":
-                logger.info(f"⏸️ {symbol}: Signal filtered out: {reason}")
-                action = "NEUTRAL"
-            
-            # 9. Hitung confidence berdasarkan multiple factors
-            confidence_factors = []
-            enter_tags = []
-            
-            # RSI condition
-            rsi = indicators['rsi_14']
-            if rsi < self.rsi_oversold:
-                confidence_factors.append(self.confidence_weights['rsi'])
-                enter_tags.append('RSI_OVERSOLD')
-            elif rsi > self.rsi_overbought:
-                confidence_factors.append(self.confidence_weights['rsi'])
-                enter_tags.append('RSI_OVERBOUGHT')
-            
-            # Volume confirmation
-            if 'volume_ratio' in indicators and indicators['volume_ratio'] > 1.2:
-                confidence_factors.append(self.confidence_weights['volume'])
-                enter_tags.append('VOLUME_SPIKE')
-            
-            # Calculate final confidence score
-            base_confidence = np.mean(confidence_factors) if confidence_factors else 1.0
-            confidence_score = min(base_confidence * 100, 100)
-            
-            # 10. Return hasil
-            result = {
-                'action': action,
-                'score': biased_score,
-                'current_price': current_price,
-                'entry_range_low': entry_calc['entry_range_low'],
-                'entry_range_high': entry_calc['entry_range_high'],
-                'best_entry': entry_calc['best_entry'],
-                'tp1': entry_calc['tp1'],
-                'tp2': entry_calc['tp2'],
-                'tp3': entry_calc['tp3'],
-                'sl': entry_calc['sl'],
-                'trading_type': self.trading_type,
-                'leverage': self.leverage,
-                'rsi': rsi,
-                'atr': indicators['atr'],
-                'symbol': symbol or "UNKNOWN",
-                'entry_range_pct': entry_calc['entry_range_pct'],
-                'range_size': entry_calc['range_size'],
-                'risk_amount': entry_calc.get('risk_amount', 0),
-                'risk_percentage': entry_calc.get('risk_percentage', 0),
-                'rr_ratio_tp1': entry_calc.get('rr_ratio_tp1', 0),
-                'rr_ratio_tp3': entry_calc.get('rr_ratio_tp3', 0),
-                'liquidation_buffer_pct': entry_calc.get('liquidation_buffer_pct', 0),
-                'confidence': confidence_score / 100.0,
-                'long_bias_applied': self.long_bias,
-                'min_score_threshold': max(required_score, self.min_score_threshold),
-                'scalping_mode': self.scalping_mode,
-                'enter_tag': '|'.join(enter_tags) if enter_tags else 'BASIC',
-                'market_regime': indicators.get('market_regime', 'UNKNOWN'),
-                'adx': indicators.get('adx', 20),
-                'consolidation_score': indicators.get('consolidation_score', 0),
-                'rsi_threshold_used': f"{self.rsi_oversold:.1f}/{self.rsi_overbought:.1f}",
-                'volume_ratio': indicators.get('volume_ratio', 1.0),
-                'breakout_detected': breakout_info['breakout_detected'],
-                'breakout_direction': breakout_info.get('direction', 'NONE'),
-                'scoring_system': 'ROBUST',
-                'prob_tp1': smart_entry['prob_tp1'],
-                'prob_tp2': smart_entry['prob_tp2'],
-                'prob_tp3': smart_entry['prob_tp3'],
-                'required_score': required_score,
-                'dynamic_threshold': required_score,
-                'filter_reason': reason if not should_trade else "APPROVED",
-                'probabilities': probabilities
-            }
-            
-            # 11. Hitung trend_strength
-            ts = self._calculate_trend_strength(df, symbol)
-            
-            # 12. Tambahkan indikator tambahan
-            result.update({
-                'macd_line': indicators['macd_line'],
-                'macd_signal': indicators['macd_signal'],
-                'bb_position': indicators['bb_position'],
-                'volatility': indicators['volatility'],
-                'trend_strength': ts,
-                'trend_direction': 'BULLISH' if indicators['momentum_5'] > 0 else 'BEARISH' if indicators['momentum_5'] < 0 else 'NEUTRAL',
-                'pattern_count': len(self.pattern_detector.detect_comprehensive_patterns(df, symbol))
-            })
-            
-            # LOG SIGNAL DETAILS
-            logger.info(f"📈 {symbol}: {action} (Score: {biased_score:.1f}, Threshold: {required_score:.1f}, Prob TP1: {smart_entry['prob_tp1']}%, Filter: {reason if not should_trade else 'PASSED'})")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Enhanced analysis error for {symbol}: {e}")
-            return self._get_default_analysis(symbol)
-    
-    def calculate_robust_score(self, indicators, df, symbol):
-        """Scoring system yang lebih kuat dan realistis"""
-        score = 0
-        current_price = df['close'].iloc[-1]
-        
-        # 1. RSI WEIGHTED (40% weight)
-        rsi = indicators['rsi_14']
-        if rsi < 25: score += 12      # STRONG OVERSOLD
-        elif rsi < 35: score += 8     # MILD OVERSOLD
-        elif rsi > 85: score -= 12    # STRONG OVERBOUGHT
-        elif rsi > 75: score -= 8     # MILD OVERBOUGHT
-        else: score += 0              # NEUTRAL
-        
-        # 2. TREND ALIGNMENT (30% weight)
-        trend = self._calculate_trend_strength(df, symbol)
-        price_vs_sma = current_price / indicators.get('sma_20', current_price)
-        
-        if trend > 0.3:  # STRONG UPTREND
-            if price_vs_sma < 0.98: score += 10  # PULLBACK BUY
-            elif price_vs_sma > 1.02: score += 2 # CONTINUATION
-        elif trend < -0.3:  # STRONG DOWNTREND
-            if price_vs_sma > 1.02: score -= 10  # DEAD CAT BOUNCE SHORT
-            elif price_vs_sma < 0.98: score -= 2 # CONTINUATION
-        
-        # 3. VOLUME CONFIRMATION (20% weight)
-        if 'volume_ratio' in indicators:
-            vol_ratio = indicators['volume_ratio']
-            if vol_ratio > 2.0: score += 6      # VERY HIGH VOLUME
-            elif vol_ratio > 1.5: score += 3    # HIGH VOLUME
-            elif vol_ratio < 0.5: score -= 3    # LOW VOLUME
-        
-        # 4. MARKET REGIME (10% weight)
-        regime = indicators.get('market_regime', 'UNKNOWN')
-        if regime == 'BULL_TREND' and score > 0:
-            score = int(score * 1.3)  # BOOST LONGS
-        elif regime == 'BEAR_TREND' and score < 0:
-            score = int(score * 1.3)  # BOOST SHORTS
-        
-        return score
-
-    def calculate_dynamic_threshold(self, df, symbol):
-        """Threshold berdasarkan volatilitas dan volume"""
-        volatility = df['close'].pct_change().std() * np.sqrt(252)
-        avg_volume = df['volume'].mean() if 'volume' in df.columns else 0
-        
-        base_threshold = 6.0
-        
-        # Adjust untuk volatilitas tinggi
-        if volatility > 0.8:  # >80% volatilitas tahunan
-            base_threshold += 2.0
-        elif volatility > 0.5:  # >50%
-            base_threshold += 1.0
-        
-        # Adjust untuk volume rendah
-        if avg_volume < 100000:  # Volume sangat rendah
-            base_threshold += 3.0
-        elif avg_volume < 500000:
-            base_threshold += 1.5
-        
-        # Adjust untuk coin murah (<$0.01)
-        current_price = df['close'].iloc[-1]
-        if current_price < 0.01:
-            base_threshold += 2.0  # Lebih ketat untuk penny coins
-        
-        return min(base_threshold, 10.0)  # Maksimal threshold 10
-
-    def calculate_smart_entry(self, symbol, current_price, action, df, score=None):
-        """Entry dan TP/SL yang cerdas berdasarkan karakteristik koin"""
-        
-        # 1. Hitung volatilitas koin ini
-        if len(df) > 20:
-            volatility = df['close'].pct_change().std() * np.sqrt(252)
-        else:
-            # Default berdasarkan kategori koin
-            if 'BTC' in symbol or 'ETH' in symbol:
-                volatility = 0.6  # 60% volatilitas tahunan
-            elif current_price < 0.01:
-                volatility = 1.2  # 120% untuk penny coins
-            else:
-                volatility = 0.8  # 80% untuk altcoin umum
-        
-        # 2. Dynamic ATR multiplier berdasarkan volatilitas
-        if volatility < 0.5:
-            atr_multiplier = 1.0
-        elif volatility < 1.0:
-            atr_multiplier = 1.5
-        else:
-            atr_multiplier = 2.0
-        
-        # 3. Entry range berdasarkan volatilitas (bukan fixed!)
-        entry_range_pct = volatility * 0.01  # 1% dari volatilitas tahunan
-        entry_range_pct = max(0.005, min(entry_range_pct, 0.03))  # Clamp 0.5-3%
-        
-        # 4. TP/SL distances
-        atr = self._calculate_atr(df)
-        
-        if action == "LONG":
-            # Untuk LONG
-            sl_distance = atr * atr_multiplier * 1.2  # SL lebih lebar
-            tp1_distance = atr * atr_multiplier * 1.5  # TP1 1.5x ATR
-            tp3_distance = atr * atr_multiplier * 3.0  # TP3 3x ATR
-            
-            # Pastikan RR ratio minimal 1:1.5
-            if tp1_distance / sl_distance < 1.5:
-                tp1_distance = sl_distance * 1.5
-        
-        elif action == "SHORT":
-            # Untuk SHORT di crypto (harus lebih konservatif)
-            sl_distance = atr * atr_multiplier * 1.5  # SL lebih lebar untuk short
-            tp1_distance = atr * atr_multiplier * 1.2  # TP1 lebih dekat
-            tp3_distance = atr * atr_multiplier * 2.5  # TP3 2.5x ATR
-            
-            # Short harus punya RR ratio lebih baik
-            if tp1_distance / sl_distance < 1.8:
-                tp1_distance = sl_distance * 1.8
-        
-        # 5. Hitung probabilities REALISTIS
-        if score is not None:
-            if abs(score) > 8:  # Score kuat
-                tp1_prob = min(65, 40 + abs(score) * 2)
-                tp2_prob = min(45, 25 + abs(score) * 1.5)
-                tp3_prob = min(30, 15 + abs(score))
-            elif abs(score) > 5:  # Score medium
-                tp1_prob = min(50, 30 + abs(score) * 2)
-                tp2_prob = min(35, 20 + abs(score) * 1.5)
-                tp3_prob = min(20, 10 + abs(score))
-            else:  # Score lemah
-                tp1_prob = 25
-                tp2_prob = 15
-                tp3_prob = 8
-        else:
-            tp1_prob = 40
-            tp2_prob = 25
-            tp3_prob = 15
-        
-        return {
-            'entry_range_pct': entry_range_pct,
-            'sl_distance': sl_distance,
-            'tp1_distance': tp1_distance,
-            'tp3_distance': tp3_distance,
-            'prob_tp1': tp1_prob,
-            'prob_tp2': tp2_prob,
-            'prob_tp3': tp3_prob,
-            'required_score': self.calculate_dynamic_threshold(df, symbol)
-        }
 
     def _calculate_symmetrical_score(self, indicators, df):
         """Scoring system yang lebih seimbang untuk ranging markets"""
@@ -2882,11 +2127,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def _get_valid_current_price(self, df: pd.DataFrame) -> float:
         """Get valid current price from DataFrame with validation"""
         try:
-            if df is None or not isinstance(df, pd.DataFrame):
-                logger.warning("Not a DataFrame in _get_valid_current_price")
-                return 0.0
-            
-            if df.empty:
+            if df is None or df.empty:
                 logger.warning("Empty DataFrame in _get_valid_current_price")
                 return 0.0
             
@@ -2910,14 +2151,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
     def _safe_data_validation(self, df: pd.DataFrame, symbol: str, market_type: str = None) -> bool:
         """Validasi data dengan cara yang aman dari ambiguous truth value"""
         try:
-            logger.debug(f"🔍 Validating data for {symbol}: shape={df.shape if hasattr(df, 'shape') else 'N/A'}")
-            
-            if df is None or not isinstance(df, pd.DataFrame):
-                logger.warning(f"❌ Not a DataFrame for {symbol}, type: {type(df)}")
-                return False
-            
-            if df.empty:
-                logger.warning(f"❌ Empty DataFrame for {symbol}")
+            if df is None or df.empty:
                 return False
             
             # Auto-detect market type jika tidak diberikan
@@ -2931,13 +2165,13 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
                     logger.warning(f"Missing column {col} in {symbol}")
                     return False
             
-            # ✅ PERBAIKAN: Gunakan .any() untuk cek harga
-            if (df['close'] <= 0).any():
+            # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek harga
+            if (df['close'].values <= 0).any():
                 logger.warning(f"Invalid price (<=0) detected for {symbol}")
                 return False
             
-            # ✅ PERBAIKAN: Gunakan .any() untuk cek high >= low
-            if (df['high'] < df['low']).any():
+            # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek high >= low
+            if (df['high'].values < df['low'].values).any():
                 logger.warning(f"High < Low detected for {symbol}")
                 return False
             
@@ -2962,16 +2196,8 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
 
     def _should_skip_symbol(self, df, symbol):
         """Skip logic yang lebih pintar untuk scalping - DIPERBAIKI"""
-        if df is None or not isinstance(df, pd.DataFrame):
-            logger.debug(f"Skipping {symbol}: not a DataFrame")
-            return True
-            
-        if df.empty:
-            logger.debug(f"Skipping {symbol}: empty DataFrame")
-            return True
-            
-        if len(df) < 10:
-            logger.debug(f"Skipping {symbol}: data too short ({len(df)} bars)")
+        if df is None or df.empty or len(df) < 10:
+            logger.debug(f"Skipping {symbol}: data too short ({len(df) if df is not None else 0} bars)")
             return True
         
         # Deteksi market type
@@ -3017,13 +2243,13 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             logger.warning(f"Skipping {symbol}: has NaN values")
             return True
         
-        # ✅ PERBAIKAN: Gunakan .any() untuk cek harga
-        if (df['close'] <= 0).any() or (df['close'] > 100000000).any():
+        # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek harga
+        if (df['close'].values <= 0).any() or (df['close'].values > 100000000).any():
             logger.warning(f"Skipping {symbol}: invalid price range")
             return True
         
-        # ✅ PERBAIKAN: Gunakan .any() untuk cek high >= low
-        if (df['high'] < df['low']).any():
+        # ✅ PERBAIKAN: Gunakan .values dan .any() untuk cek high >= low
+        if (df['high'].values < df['low'].values).any():
             logger.warning(f"Skipping {symbol}: High < Low")
             return True
         
@@ -3045,11 +2271,6 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
         # 🆕 CEK VOLATILITY TERLALU TINGGI UNTUK SCALPING
         if self.scalping_mode and volatility > SCALPING_CONFIG["max_volatility"]:
             logger.debug(f"Skipping {symbol}: too volatile for scalping {volatility:.3f}")
-            return True
-        
-        # 🆕 DATA QUALITY VALIDATION: Tambahkan validasi kualitas data
-        if not validate_data_quality(df, symbol, self.scalping_mode):
-            logger.warning(f"Skipping {symbol}: failed data quality validation")
             return True
         
         return False
@@ -3077,6 +2298,238 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'consolidation_score': 0
         }
 
+    def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
+        """Enhanced analysis dengan semua improvement DAN HYBRID SCORING SYSTEM"""
+        try:
+            # Update market type berdasarkan symbol
+            if symbol is not None:
+                self.market_type = detect_market_type(symbol)
+            
+            # 1. Validasi data dasar
+            if df is None or df.empty:
+                logger.warning(f"Data insufficient for {symbol}: empty DataFrame")
+                return self._get_default_analysis(symbol)
+            
+            # 2. Gunakan validasi data yang aman dengan market type awareness
+            if not self._safe_data_validation(df, symbol, self.market_type):
+                logger.warning(f"Data validation failed for {symbol}")
+                return self._get_safe_neutral_signal(symbol)
+            
+            # 3. Preprocess data
+            df = self._preprocess_and_validate(df, symbol, self.market_type)
+            
+            # 4. Skip jika data tidak valid
+            if self._should_skip_symbol(df, symbol):
+                return self._get_safe_neutral_signal(symbol)
+            
+            # 5. Ambil harga sekarang
+            current_price = df['close'].iloc[-1]
+            
+            # 6. Hitung indikator teknis dasar
+            indicators = self._calculate_enhanced_indicators(df)
+            
+            # 🔥 NEW: Calculate adaptive indicators
+            adaptive_indicators = self._calculate_adaptive_indicators(df)
+            indicators.update(adaptive_indicators)
+            
+            # 🔥 NEW: Multi-timeframe confirmation (simulated)
+            mtf_confirmation = 1.0
+            if self.use_multi_tf_confirmation and df is not None and len(df) > 100:
+                # Simulate higher timeframe analysis using longer lookback
+                mtf_data = df.iloc[-100:]  # Use last 100 bars as "higher timeframe"
+                mtf_rsi = self._calculate_rsi(mtf_data['close'].values, 14)
+                mtf_trend = 'BULLISH' if mtf_data['close'].iloc[-1] > mtf_data['close'].iloc[-20] else 'BEARISH'
+                
+                # Confirm direction alignment
+                current_trend = 'BULLISH' if indicators['momentum_5'] > 0 else 'BEARISH'
+                if mtf_trend == current_trend:
+                    mtf_confirmation = 1.2  # 20% boost for alignment
+                else:
+                    mtf_confirmation = 0.8  # 20% penalty for divergence
+            
+            # 🔥 NEW: Confidence scoring system dengan multiple factors
+            confidence_factors = []
+            enter_tags = []
+            
+            # 1. RSI condition
+            rsi = indicators['rsi_14']
+            if rsi < self.rsi_oversold:
+                confidence_factors.append(self.confidence_weights['rsi'])
+                enter_tags.append('RSI_OVERSOLD')
+            elif rsi > self.rsi_overbought:
+                confidence_factors.append(self.confidence_weights['rsi'])
+                enter_tags.append('RSI_OVERBOUGHT')
+            else:
+                confidence_factors.append(0.8)
+            
+            # 2. MACD condition
+            macd_signal = indicators['macd_line'] > indicators['macd_signal']
+            if macd_signal:
+                confidence_factors.append(self.confidence_weights['macd'])
+                enter_tags.append('MACD_BULLISH')
+            else:
+                confidence_factors.append(0.9)
+                enter_tags.append('MACD_BEARISH')
+            
+            # 3. Market regime condition
+            if indicators['market_regime'] in ['BULL_TREND', 'BEAR_TREND']:
+                confidence_factors.append(self.confidence_weights['regime'])
+                enter_tags.append('TRENDING')
+            elif indicators['market_regime'] == 'RANGING':
+                confidence_factors.append(0.7)
+                enter_tags.append('RANGING')
+            
+            # 4. Volume confirmation
+            if 'volume_ratio' in indicators and indicators['volume_ratio'] > 1.2:
+                confidence_factors.append(self.confidence_weights['volume'])
+                enter_tags.append('VOLUME_SPIKE')
+            
+            # 5. Pattern detection
+            patterns = self.pattern_detector.detect_comprehensive_patterns(df, symbol)
+            if patterns:
+                confidence_factors.append(self.confidence_weights['pattern'])
+                pattern_names = [p for p in patterns.keys()][:2]  # Max 2 patterns
+                enter_tags.append(f"PATTERN_{'_'.join(pattern_names)}")
+            
+            # 6. Consolidation filter
+            if 'consolidation_score' in indicators and indicators['consolidation_score'] > 0.7:
+                confidence_factors.append(0.5)  # Heavy penalty during consolidation
+                enter_tags.append('CONSOLIDATION')
+            
+            # 7. Multi-timeframe confirmation
+            confidence_factors.append(mtf_confirmation)
+            if mtf_confirmation > 1.0:
+                enter_tags.append('MTF_CONFIRMED')
+            
+            # Calculate final confidence score
+            base_confidence = np.mean(confidence_factors) if confidence_factors else 1.0
+            confidence_score = min(base_confidence * 100, 100)
+            
+            # 7. Tentukan sinyal menggunakan HYBRID SCORING SYSTEM
+            # 🆕 SCORING SISTEM ADAPTIF BERDASARKAN REGIME
+            score = self.calculate_adaptive_score(indicators, df, symbol)
+            
+            # 🔥 APPLY LONG BIAS CORRECTION - TIDAK ADA BIAS (0.0)
+            biased_score = score + (self.long_bias * 5)  # Scale bias effect
+            
+            # =============================================
+            # 🔥 PERBAIKAN UTAMA: BREAKOUT FILTER - CEGAH FALSE SIGNAL SAAT BREAKOUT
+            # =============================================
+            breakout_info = self._detect_breakout_pattern(df, symbol)
+            if breakout_info['breakout_detected']:
+                if breakout_info['direction'] == 'BULLISH':
+                    # Jika breakout bullish, beri WARNING untuk SHORT (tidak langsung block)
+                    if biased_score < 0:  # Ini adalah sinyal SHORT
+                        logger.warning(f"⚠️ {symbol}: Bullish breakout detected, caution on SHORT signal")
+                        enter_tags.append('BULL_BREAKOUT_WARNING')
+                        # Kurangi sedikit score SHORT (20% reduction, bukan 70%)
+                        biased_score = biased_score * self.breakout_penalty_factor
+                
+                elif breakout_info['direction'] == 'BEARISH':
+                    # Jika breakout bearish, beri WARNING untuk LONG
+                    if biased_score > 0:  # Ini adalah sinyal LONG
+                        logger.warning(f"⚠️ {symbol}: Bearish breakout detected, caution on LONG signal")
+                        enter_tags.append('BEAR_BREAKOUT_WARNING')
+                        biased_score = biased_score * self.breakout_penalty_factor
+            
+            logger.debug(f"Score calculation for {symbol}: Base={score:.1f}, Bias={self.long_bias:.2f}, Final={biased_score:.1f}, Breakout={breakout_info['breakout_detected']}")
+            
+            # 🔥 NEW: Adjust confidence based on consolidation
+            if indicators.get('consolidation_score', 0) > 0.8:
+                confidence_score *= 0.3  # Reduce confidence during strong consolidation
+            
+            # 🆕 APPLY MINIMUM SCORE THRESHOLD
+            if abs(biased_score) < self.min_score_threshold:
+                logger.debug(f"{symbol}: Score {biased_score:.1f} below threshold {self.min_score_threshold}, returning NEUTRAL")
+                action = "NEUTRAL"
+            elif biased_score > 0:
+                action = "LONG"
+            else:
+                action = "SHORT"
+            
+            # 🔥 NEW: Skip signals during strong consolidation with low ADX
+            if (indicators.get('consolidation_score', 0) > 0.8 and 
+                indicators.get('adx', 20) < 15 and
+                action != "NEUTRAL"):
+                logger.info(f"⏸️ {symbol}: Skipping {action} signal due to strong consolidation (ADX: {indicators.get('adx', 20):.1f})")
+                action = "NEUTRAL"
+                enter_tags.append('CONSOLIDATION_SKIP')
+            
+            # 8. Hitung TP/SL dengan bias correction
+            entry_calc = self.calculate_custom_entry(
+                symbol=symbol or "UNKNOWN",
+                current_price=current_price,
+                action=action,
+                df=df
+            )
+            
+            # Adjust confidence based on bias
+            if (action == "LONG" and self.long_bias > 0) or (action == "SHORT" and self.long_bias < 0):
+                confidence_score = min(confidence_score * (1 + abs(self.long_bias) * 0.3), 100)
+            
+            # 9. Return hasil
+            result = {
+                'action': action,
+                'score': biased_score,
+                'current_price': current_price,
+                'entry_range_low': entry_calc['entry_range_low'],
+                'entry_range_high': entry_calc['entry_range_high'],
+                'best_entry': entry_calc['best_entry'],
+                'tp1': entry_calc['tp1'],
+                'tp2': entry_calc['tp2'],
+                'tp3': entry_calc['tp3'],
+                'sl': entry_calc['sl'],
+                'trading_type': self.trading_type,
+                'leverage': self.leverage,
+                'rsi': rsi,
+                'atr': indicators['atr'],
+                'symbol': symbol or "UNKNOWN",
+                'entry_range_pct': entry_calc['entry_range_pct'],
+                'range_size': entry_calc['range_size'],
+                'risk_amount': entry_calc.get('risk_amount', 0),
+                'risk_percentage': entry_calc.get('risk_percentage', 0),
+                'rr_ratio_tp1': entry_calc.get('rr_ratio_tp1', 0),
+                'rr_ratio_tp3': entry_calc.get('rr_ratio_tp3', 0),
+                'liquidation_buffer_pct': entry_calc.get('liquidation_buffer_pct', 0),
+                'confidence': confidence_score / 100.0,
+                'long_bias_applied': self.long_bias,
+                'min_score_threshold': self.min_score_threshold,
+                'scalping_mode': self.scalping_mode,
+                'enter_tag': '|'.join(enter_tags) if enter_tags else 'BASIC',
+                'market_regime': indicators.get('market_regime', 'UNKNOWN'),
+                'adx': indicators.get('adx', 20),
+                'consolidation_score': indicators.get('consolidation_score', 0),
+                'rsi_threshold_used': f"{self.rsi_oversold:.1f}/{self.rsi_overbought:.1f}",
+                'mtf_confirmation': mtf_confirmation,
+                'volume_ratio': indicators.get('volume_ratio', 1.0),
+                'breakout_detected': breakout_info['breakout_detected'],
+                'breakout_direction': breakout_info.get('direction', 'NONE'),
+                'scoring_system': 'HYBRID'  # Tambahkan info sistem scoring yang digunakan
+            }
+            
+            # 10. Hitung trend_strength
+            ts = self._calculate_trend_strength(df, symbol)
+            
+            # 11. Tambahkan indikator tambahan
+            result.update({
+                'macd_line': indicators['macd_line'],
+                'macd_signal': indicators['macd_signal'],
+                'bb_position': indicators['bb_position'],
+                'volatility': indicators['volatility'],
+                'trend_strength': ts,
+                'trend_direction': 'BULLISH' if indicators['momentum_5'] > 0 else 'BEARISH' if indicators['momentum_5'] < 0 else 'NEUTRAL',
+                'pattern_count': len(patterns)
+            })
+            
+            # LOG SIGNAL DETAILS
+            logger.info(f"📈 {symbol}: {action} (Score: {biased_score:.1f}, Bias: {self.long_bias:.2f}, Conf: {confidence_score:.1f}%, Regime: {indicators.get('market_regime', 'UNKNOWN')}, Breakout: {breakout_info['breakout_detected']}, Scoring: {result['scoring_system']})")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Enhanced analysis error for {symbol}: {e}")
+            return self._get_default_analysis(symbol)
+    
     def calculate_custom_entry(self, symbol: str, current_price: float, action: str = "LONG", 
                               df: pd.DataFrame = None) -> Dict[str, Any]:
         """Enhanced entry calculation with dynamic parameters based on market regime"""
@@ -3085,7 +2538,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             original_atr_multiplier = self.atr_multiplier
             original_entry_range = self.entry_range_pct
             
-            if df is not None and not df.empty:
+            if df is not None:
                 adaptive_indicators = self._calculate_adaptive_indicators(df)
                 regime = adaptive_indicators.get('market_regime', 'UNKNOWN')
                 adx = adaptive_indicators.get('adx', 20)
@@ -3108,7 +2561,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             self.entry_range_pct = original_entry_range
             
             # Add regime info to result
-            if df is not None and not df.empty:
+            if df is not None:
                 adaptive_indicators = self._calculate_adaptive_indicators(df)
                 result['market_regime'] = adaptive_indicators.get('market_regime', 'UNKNOWN')
                 result['adx_value'] = adaptive_indicators.get('adx', 20)
@@ -3307,7 +2760,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             return 0.0
     
     def _get_default_analysis(self, symbol: str = None) -> Dict[str, Any]:
-        """Get default analysis result ketika data invalid"""
+        """Get default analysis result"""
         if symbol is None:
             symbol = "UNKNOWN"
             
@@ -3353,15 +2806,7 @@ class EnhancedTechnicalAnalysisStrategy(TradingStrategy):
             'volume_ratio': 1.0,
             'breakout_detected': False,
             'breakout_direction': 'NONE',
-            'scoring_system': 'DEFAULT',
-            'prob_tp1': 25,
-            'prob_tp2': 15,
-            'prob_tp3': 8,
-            'required_score': self.min_score_threshold,
-            'dynamic_threshold': self.min_score_threshold,
-            'filter_reason': 'DEFAULT_ANALYSIS',
-            'probabilities': {'TP1': 25, 'TP2': 15, 'TP3': 8},
-            'error': 'Invalid data received'
+            'scoring_system': 'DEFAULT'
         }
 
 # =============================================
@@ -3380,7 +2825,7 @@ class ScalpingStrategy(EnhancedTechnicalAnalysisStrategy):
             entry_range_pct=SCALPING_CONFIG["entry_range_pct"],  # 0.8%
             atr_multiplier=SCALPING_CONFIG["atr_multiplier"],    # 0.7
             long_bias=0.0,  # 🔥 GANTI: PASTIKAN 0.0 - TIDAK ADA BIAS
-            min_score_threshold=SCALPING_CONFIG["min_score_threshold"],  # 6.0
+            min_score_threshold=SCALPING_CONFIG["min_score_threshold"],  # 4.0
             scalping_mode=True,
             # 🔥 NEW: Scalping-specific config
             use_multi_tf_confirmation=True,
@@ -3403,15 +2848,8 @@ class ScalpingStrategy(EnhancedTechnicalAnalysisStrategy):
     def analyze(self, df: pd.DataFrame, symbol: str = None, **kwargs) -> Dict[str, Any]:
         """Override untuk scalping dengan validasi tambahan"""
         
-        # PERBAIKAN: Validasi input df adalah DataFrame
-        if df is None or not isinstance(df, pd.DataFrame):
-            return self._get_safe_neutral_signal(symbol)
-            
-        if df.empty:
-            return self._get_safe_neutral_signal(symbol)
-        
         # 1. Validasi khusus untuk scalping
-        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        if df is None or df.empty:
             return self._get_safe_neutral_signal(symbol)
         
         # 2. Gunakan validasi data yang aman
@@ -3477,9 +2915,6 @@ def auto_detect_trading_type_and_format(symbol: str) -> Tuple[str, str]:
     Auto-detect trading type dan konversi format secara otomatis.
     Returns: (trading_type, formatted_symbol)
     """
-    if symbol is None:
-        return "spot", "UNKNOWN"
-        
     symbol_upper = symbol.upper()
     
     # Deteksi futures
@@ -3518,9 +2953,6 @@ def convert_symbol_format(symbol: str, target_type: str = "spot") -> str:
     """
     Convert symbol between spot and futures format
     """
-    if symbol is None:
-        return "UNKNOWN"
-        
     if target_type == "futures":
         # Convert spot to futures format
         if ':USDT' not in symbol.upper():
@@ -3546,9 +2978,6 @@ def auto_suggest_leverage(symbol: str, market_type: str = "crypto", scalping_mod
     """
     Auto-suggest leverage based on symbol and market type
     """
-    if symbol is None:
-        return 1
-    
     # 🆕 SCALPING LEVERAGE LEBIH RENDAH
     if scalping_mode:
         leverage_map = {
@@ -3617,9 +3046,6 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
     """
     Create appropriate strategy based on symbol auto-detection dengan scalping support
     """
-    if symbol is None:
-        symbol = "UNKNOWN"
-    
     # Auto-detect market type jika tidak ditentukan atau "auto"
     if market_type == "auto":
         market_type = detect_market_type(symbol)
@@ -3643,7 +3069,7 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
         )
         logger.info(f"⚡ SCALPING Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x, Breakout Protection=ON")
     else:
-        # 🔥 PERBAIKAN: ROBUST SCORING SYSTEM UNTUK REGULAR STRATEGY
+        # 🔥 PERBAIKAN: HYBRID SCORING SYSTEM UNTUK REGULAR STRATEGY
         strategy = EnhancedTechnicalAnalysisStrategy(
             market_type=market_type,
             trading_type=trading_type,
@@ -3651,13 +3077,13 @@ def create_strategy_for_symbol(symbol: str, market_type: str = "auto",
             entry_range_pct=0.02,
             atr_multiplier=1.0,
             long_bias=0.0,  # 🔥 GANTI: dari 0.1 ke 0.0 (NEUTRAL)
-            min_score_threshold=6.0,
+            min_score_threshold=3.0,
             use_multi_tf_confirmation=True,
             use_adaptive_params=True,
             use_regime_detection=True,
             use_consolidation_filter=True
         )
-        logger.info(f"📊 REGULAR Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x, Robust Scoring=ON")
+        logger.info(f"📊 REGULAR Strategy for {symbol} -> {formatted_symbol}: Market={market_type}, Leverage={leverage}x, Hybrid Scoring=ON")
     
     return strategy
 
@@ -3726,7 +3152,7 @@ def test_indonesia_stocks():
             
             # Coba analisis
             result = strategy.analyze(df, symbol)
-            print(f"   Analysis result: {result['action']} (Score: {result['score']:.1f}, Prob TP1: {result['prob_tp1']}%)")
+            print(f"   Analysis result: {result['action']} (Score: {result['score']:.1f})")
         else:
             print(f"   ❌ Failed to get data for {symbol}")
     
@@ -3762,10 +3188,10 @@ def test_cache_system():
     
     return True
 
-def test_robust_scoring_system():
-    """Test the robust scoring system"""
+def test_hybrid_scoring_system():
+    """Test the hybrid scoring system"""
     print("\n" + "=" * 60)
-    print("🧪 TESTING ROBUST SCORING SYSTEM")
+    print("🧪 TESTING HYBRID SCORING SYSTEM")
     print("=" * 60)
     
     # Buat data dengan berbagai kondisi
@@ -3802,202 +3228,43 @@ def test_robust_scoring_system():
         adaptive_indicators = strategy._calculate_adaptive_indicators(test_df)
         indicators.update(adaptive_indicators)
         
-        # Test robust scoring system
-        robust_score = strategy.calculate_robust_score(indicators, test_df, f"TEST_{scenario_name}")
+        # Test semua scoring systems
+        sym_score = strategy._calculate_symmetrical_score(indicators, test_df)
+        tf_score = strategy._calculate_trend_following_score(indicators, test_df)
+        hybrid_score = strategy.calculate_adaptive_score(indicators, test_df, "TEST")
         
-        # Test dynamic threshold
-        threshold = strategy.calculate_dynamic_threshold(test_df, f"TEST_{scenario_name}")
-        
-        print(f"   Robust Score: {robust_score:.1f}")
-        print(f"   Dynamic Threshold: {threshold:.1f}")
-        
-        # Test smart entry
-        current_price = test_df['close'].iloc[-1]
-        smart_entry = strategy.calculate_smart_entry(
-            f"TEST_{scenario_name}", 
-            current_price, 
-            "LONG" if robust_score > 0 else "SHORT" if robust_score < 0 else "NEUTRAL",
-            test_df,
-            robust_score
-        )
-        
-        print(f"   Smart Entry - TP1 Prob: {smart_entry['prob_tp1']}%")
-        print(f"   Smart Entry - Required Score: {smart_entry['required_score']:.1f}")
+        print(f"   Symmetrical Score: {sym_score:.1f}")
+        print(f"   Trend-Following Score: {tf_score:.1f}")
+        print(f"   Hybrid Score: {hybrid_score:.1f}")
         
         # Test full analysis
         result = strategy.analyze(test_df, f"TEST_{scenario_name}")
         print(f"   Final Action: {result['action']}")
         print(f"   Final Score: {result['score']:.1f}")
         print(f"   Scoring System Used: {result.get('scoring_system', 'N/A')}")
-        print(f"   Probabilities: TP1={result['prob_tp1']}%, TP2={result['prob_tp2']}%, TP3={result['prob_tp3']}%")
-    
-    return True
-
-def test_signal_filter():
-    """Test signal filter"""
-    print("\n" + "=" * 60)
-    print("🔍 TESTING SIGNAL FILTER")
-    print("=" * 60)
-    
-    # Test cases
-    test_signals = [
-        {
-            'action': 'LONG',
-            'score': 7.5,
-            'prob_tp1': 45,
-            'rr_ratio_tp1': 1.8,
-            'volume_ratio': 1.2,
-            'trend_strength': 0.4,
-            'market_type': 'crypto',
-            'scalping_mode': False
-        },
-        {
-            'action': 'SHORT',
-            'score': 4.0,  # Too low
-            'prob_tp1': 35,
-            'rr_ratio_tp1': 1.6,
-            'volume_ratio': 0.9,
-            'trend_strength': 0.5,  # Strong uptrend - bad for short
-            'market_type': 'crypto',
-            'scalping_mode': False
-        },
-        {
-            'action': 'LONG',
-            'score': 8.5,
-            'prob_tp1': 30,  # Too low probability
-            'rr_ratio_tp1': 2.0,
-            'volume_ratio': 1.5,
-            'trend_strength': 0.3,
-            'market_type': 'crypto',
-            'scalping_mode': False
-        }
-    ]
-    
-    for i, signal in enumerate(test_signals, 1):
-        print(f"\nTest Case {i}: {signal['action']}")
-        should_trade, reason = SignalFilter.should_trade(signal)
-        print(f"   Should Trade: {should_trade}")
-        print(f"   Reason: {reason}")
-    
-    return True
-
-def test_data_quality_validation():
-    """Test data quality validation"""
-    print("\n" + "=" * 60)
-    print("🧪 TESTING DATA QUALITY VALIDATION")
-    print("=" * 60)
-    
-    # Create test data
-    dates = pd.date_range('2023-01-01', periods=100, freq='D')
-    
-    # Good data
-    good_data = pd.DataFrame({
-        'open': np.random.normal(100, 5, 100),
-        'high': np.random.normal(105, 5, 100),
-        'low': np.random.normal(95, 5, 100),
-        'close': np.random.normal(100, 5, 100),
-        'volume': np.random.normal(1000000, 100000, 100)
-    }, index=dates)
-    
-    # Bad data (flatline)
-    bad_data = pd.DataFrame({
-        'open': [100] * 100,
-        'high': [100] * 100,
-        'low': [100] * 100,
-        'close': [100] * 100,
-        'volume': [0] * 100
-    }, index=dates)
-    
-    # Test good data
-    print("\n1. Testing good data:")
-    result_good = validate_data_quality(good_data, "TEST_GOOD", False)
-    print(f"   Result: {result_good}")
-    
-    # Test bad data
-    print("\n2. Testing bad data (flatline):")
-    result_bad = validate_data_quality(bad_data, "TEST_BAD", False)
-    print(f"   Result: {result_bad}")
-    
-    # Test pre-filtering
-    print("\n3. Testing pre-filtering:")
-    prefilter_good = pre_filter_trading_data("TEST_GOOD", good_data, False)
-    prefilter_bad = pre_filter_trading_data("TEST_BAD", bad_data, False)
-    print(f"   Good data pre-filter: {prefilter_good}")
-    print(f"   Bad data pre-filter: {prefilter_bad}")
-    
-    return True
-
-def test_data_validation_and_fixing():
-    """Test data validation and fixing"""
-    print("\n" + "=" * 60)
-    print("🔧 TESTING DATA VALIDATION AND FIXING")
-    print("=" * 60)
-    
-    # Test case 1: Valid DataFrame
-    df_valid = pd.DataFrame({
-        'open': [100, 101, 102],
-        'high': [105, 106, 107],
-        'low': [95, 96, 97],
-        'close': [100, 101, 102],
-        'volume': [1000, 1100, 1200]
-    })
-    
-    result1 = validate_and_fix_data(df_valid, "TEST_VALID")
-    print(f"✅ Test 1 - Valid DataFrame: {type(result1)}, shape: {result1.shape}")
-    
-    # Test case 2: String with DataFrame
-    df_string = """open high low close volume
-100 105 95 100 1000
-101 106 96 101 1100
-102 107 97 102 1200"""
-    
-    result2 = validate_and_fix_data(df_string, "TEST_STRING")
-    print(f"✅ Test 2 - String to DataFrame: {type(result2)}, shape: {result2.shape}")
-    
-    # Test case 3: Error message string
-    error_string = "Error: Failed to get data for BTC/USDT"
-    result3 = validate_and_fix_data(error_string, "TEST_ERROR")
-    print(f"✅ Test 3 - Error string: {type(result3)}, shape: {result3.shape}")
-    
-    # Test case 4: None
-    result4 = validate_and_fix_data(None, "TEST_NONE")
-    print(f"✅ Test 4 - None: {type(result4)}, shape: {result4.shape}")
     
     return True
 
 if __name__ == "__main__":
-    print("\n" + "=" * 80)
-    print("STRATEGIES.PY - ENHANCED VERSION WITH ALL IMPROVEMENTS")
-    print("=" * 80)
+    print("\n" + "=" * 60)
+    print("STRATEGIES.PY - ENHANCED VERSION WITH CACHE AND MARKET TYPE AWARENESS")
+    print("=" * 60)
     print("✅ Cache System: Active (30 min TTL)")
     print("✅ Market Type Detection: Auto for all symbols")
     print("✅ Indonesia Stocks: 1d timeframe, 40+ days required")
-    print("✅ Bias Correction: SEMUA BIAS = 0.0 (NEUTRAL)")
-    print("✅ Robust Scoring: New scoring system dengan dynamic threshold")
-    print("✅ Signal Filter: Integrated filtering untuk semua sinyal")
-    print("✅ Probability Calculator: Realistic probabilities")
-    print("✅ Data Quality Validation: Active untuk semua data")
-    print("✅ Pre-Filtering: Active sebelum analisis mendalam")
-    print("✅ Data Validation & Fixing: Fix string to DataFrame conversion")
-    print("=" * 80)
+    print("✅ Bias Correction: SEMUA BIAS = 0.0")
+    print("✅ Hybrid Scoring: Symmetrical + Trend-Following")
+    print("=" * 60)
     
     # Jalankan test
     test_cache_system()
     test_indonesia_stocks()
-    test_robust_scoring_system()
-    test_signal_filter()
-    test_data_quality_validation()
-    test_data_validation_and_fixing()
+    test_hybrid_scoring_system()
     
-    print("\n" + "=" * 80)
-    print("✅ SEMUA SYSTEM READY DAN TERINTEGRASI!")
+    print("\n" + "=" * 60)
+    print("✅ SEMUA SYSTEM READY!")
     print("✅ Cache bekerja untuk hindari rate limit")
     print("✅ Saham Indonesia menggunakan timeframe 1d")
     print("✅ Market type auto-detection aktif")
     print("✅ Long bias tetap 0.0 (NEUTRAL)")
-    print("✅ Robust scoring dengan dynamic threshold aktif")
-    print("✅ Signal filter terintegrasi ke dalam strategi")
-    print("✅ Data quality validation aktif")
-    print("✅ Pre-filtering aktif untuk reject data buruk")
-    print("✅ Data validation & fixing aktif (string to DataFrame)")
-    print("=" * 80)
+    print("=" * 60)
