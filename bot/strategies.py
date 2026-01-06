@@ -143,7 +143,7 @@ def validate_data_quality(df: pd.DataFrame, symbol: str, scalping_mode: bool = F
                 return False
             
             # Check for price stuck at 100
-            price_100_count = (np.isclose(close_series.values, 100.0, atol=0.001)).sum()
+            price_100_count = (np.abs(close_series.values - 100.0) < 0.001).sum()
             if price_100_count > len(df) * 0.2:  # More than 20% of prices at 100
                 logger.warning(f"Data quality check failed for {symbol}: Too many prices stuck at 100 ({price_100_count})")
                 return False
@@ -632,11 +632,11 @@ def get_clean_data(symbol: str, provider=None, timeframe: str = None,
                     else:
                         df[col] = 100  # Fallback
         
-        # 🚨 **CEK DAN PERBAIKI HARGA 100** - GUNAKAN numpy.isclose
+        # 🚨 **CEK DAN PERBAIKI HARGA 100** - PERBAIKAN: gunakan np.abs bukan np.isclose
         if 'close' in df.columns:
-            # Deteksi harga stuck di 100 - GUNAKAN numpy.isclose
+            # Deteksi harga stuck di 100
             close_values = df['close'].values
-            is_close_to_100 = np.isclose(close_values, 100.0, atol=0.001)
+            is_close_to_100 = np.abs(close_values - 100.0) < 0.001
             
             if np.any(is_close_to_100):
                 count_100 = np.sum(is_close_to_100)
@@ -655,7 +655,7 @@ def get_clean_data(symbol: str, provider=None, timeframe: str = None,
         if 'close' in df.columns:
             close_values = df['close'].values
             
-            # Hapus baris dengan harga <= 0 - GUNAKAN BOOLEAN INDEXING dengan .values
+            # Hapus baris dengan harga <= 0
             mask_positive = close_values > 0
             if not np.all(mask_positive):
                 df = df[mask_positive].copy()
@@ -681,11 +681,10 @@ def get_clean_data(symbol: str, provider=None, timeframe: str = None,
                 logger.error(f"❌ Data tidak cukup untuk saham Indonesia: {len(df)} bars")
                 return pd.DataFrame()
         
-        # Final check: pastikan TIDAK ADA harga 100 - GUNAKAN np.isclose
+        # Final check: pastikan TIDAK ADA harga 100 - PERBAIKAN: gunakan np.abs
         if 'close' in df.columns:
-            # GUNAKAN numpy.isclose untuk array
             close_values_final = df['close'].values
-            is_close_to_100_final = np.isclose(close_values_final, 100.0, atol=0.001)
+            is_close_to_100_final = np.abs(close_values_final - 100.0) < 0.001
             
             if np.any(is_close_to_100_final):
                 logger.error(f"🚨 {symbol} still has price 100 after cleaning!")
@@ -773,58 +772,62 @@ def get_trading_data(symbol: str, provider=None, scalping_mode: bool = False,
         return None
 
 # =============================================
-# DATA VALIDATION AND FIXING UTILITY
+# DATA VALIDATION AND FIXING UTILITY - DIPERBAIKI
 # =============================================
 
-def validate_and_fix_data(data: Any, symbol: str) -> pd.DataFrame:
-    """
-    Validate and fix data issues - ensure we always return DataFrame
-    """
+def validate_and_fix_data(data: Any, symbol: str) -> Optional[pd.DataFrame]:
+    """Validasi dan konversi data ke DataFrame dengan aman. Return None jika konversi gagal."""
     logger.info(f"🔧 validate_and_fix_data for {symbol}: type={type(data)}")
     
-    # Case 1: Already a DataFrame
+    if data is None:
+        logger.warning(f"Data is None for {symbol}")
+        return None
+    
     if isinstance(data, pd.DataFrame):
-        logger.info(f"✅ Already DataFrame, shape: {data.shape}")
+        if data.empty:
+            logger.warning(f"Empty DataFrame for {symbol}")
+            return None
         return data
     
-    # Case 2: String that might contain DataFrame
-    elif isinstance(data, str):
-        logger.warning(f"⚠️ Data is string, trying to parse...")
-        
-        # Check if it's an error message
-        if "error" in data.lower() or "exception" in data.lower() or "traceback" in data.lower():
-            logger.error(f"❌ String appears to be error message: {data[:200]}")
-            return pd.DataFrame()
-        
-        # Try to parse as CSV/table
+    if isinstance(data, str):
         try:
-            import io
-            # Clean the string
-            lines = data.strip().split('\n')
-            clean_lines = []
-            
-            for line in lines:
-                # Only keep lines that look like data (have numbers)
-                if any(c.isdigit() for c in line) or any(x in line.lower() for x in ['open', 'high', 'low', 'close', 'volume']):
-                    clean_lines.append(line)
-            
-            if len(clean_lines) > 1:
-                clean_str = '\n'.join(clean_lines)
-                df = pd.read_csv(io.StringIO(clean_str), sep=r'\s+', index_col=0, parse_dates=True, engine='python')
-                logger.info(f"✅ Parsed string to DataFrame, shape: {df.shape}")
-                return df
-            else:
-                logger.error("❌ Not enough data lines in string")
-                return pd.DataFrame()
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to parse string: {e}")
-            return pd.DataFrame()
+            # Coba parse sebagai JSON dulu
+            data_dict = json.loads(data)
+            df = pd.DataFrame(data_dict)
+            logger.info(f"Converted JSON string to DataFrame for {symbol}: {len(df)} rows")
+            return df if not df.empty else None
+        except json.JSONDecodeError:
+            try:
+                # Coba sebagai CSV-like string
+                from io import StringIO
+                df = pd.read_csv(StringIO(data), sep=r'\s+')  # Asumsi whitespace separated
+                logger.info(f"Converted CSV string to DataFrame for {symbol}: {len(df)} rows")
+                return df if not df.empty else None
+            except:
+                try:
+                    # Coba ast.literal_eval jika aman (untuk dict/list)
+                    import ast
+                    parsed = ast.literal_eval(data)
+                    if isinstance(parsed, (dict, list)):
+                        df = pd.DataFrame(parsed)
+                        logger.info(f"Converted eval to DataFrame for {symbol}: {len(df)} rows")
+                        return df if not df.empty else None
+                except:
+                    pass
+        
+        logger.error(f"Cannot convert string to DataFrame for {symbol}: {data[:100]}...")
+        return None
     
-    # Case 3: None or other types
-    else:
-        logger.error(f"❌ Unsupported data type: {type(data)}")
-        return pd.DataFrame()
+    if isinstance(data, (dict, list)):
+        try:
+            df = pd.DataFrame(data)
+            return df if not df.empty else None
+        except Exception as e:
+            logger.error(f"Cannot convert {type(data)} to DataFrame for {symbol}: {e}")
+            return None
+    
+    logger.error(f"Unsupported data type for {symbol}: {type(data)}")
+    return None
 
 # =============================================
 # BASE STRATEGY CLASS DENGAN MARKET TYPE AWARENESS
@@ -883,107 +886,27 @@ class TradingStrategy(ABC):
         # 🔥 PERBAIKAN KRITIS: Validasi input data
         logger.info(f"🔍 analyze_enhanced for {symbol}: Received data type: {type(data)}")
         
-        # PERBAIKAN 1: Handle None
-        if data is None:
-            logger.error(f"❌ Data is None for {symbol}")
-            return self._get_default_analysis(symbol)
-        
-        # PERBAIKAN 2: Handle string (log messages, error messages)
-        if isinstance(data, str):
-            logger.error(f"❌ CRITICAL: Data for {symbol} is STRING, not DataFrame!")
-            logger.error(f"String preview: {data[:500] if len(data) > 500 else data}")
-            
-            # Coba konversi string ke DataFrame jika mungkin (untuk debugging)
-            try:
-                # Cek jika string mengandung data tabel
-                if 'open' in data.lower() and 'high' in data.lower() and 'close' in data.lower():
-                    # Coba ekstrak data tabel dari string
-                    import io
-                    lines = data.split('\n')
-                    
-                    # Cari baris yang mengandung header
-                    header_idx = None
-                    for i, line in enumerate(lines):
-                        if 'open' in line.lower() and 'high' in line.lower() and 'low' in line.lower():
-                            header_idx = i
-                            break
-                    
-                    if header_idx is not None:
-                        # Reconstruct tabel
-                        table_lines = []
-                        for line in lines[header_idx:]:
-                            # Hanya ambil baris yang terlihat seperti data
-                            if len(line.strip()) > 0 and any(c.isdigit() or c == '.' for c in line):
-                                table_lines.append(line)
-                        
-                        if table_lines:
-                            table_str = '\n'.join(table_lines)
-                            data = pd.read_csv(io.StringIO(table_str), sep=r'\s+', index_col=0, parse_dates=True, engine='python')
-                            logger.info(f"✅ Converted string to DataFrame, shape: {data.shape}")
-                        else:
-                            logger.error("❌ No table data found in string")
-                            return self._get_default_analysis(symbol)
-                    else:
-                        logger.error("❌ No header found in string")
-                        return self._get_default_analysis(symbol)
-                else:
-                    logger.error("❌ String doesn't contain OHLCV data")
-                    return self._get_default_analysis(symbol)
-                    
-            except Exception as e:
-                logger.error(f"❌ Failed to convert string to DataFrame: {e}")
-                return self._get_default_analysis(symbol)
-        
-        # PERBAIKAN 3: Pastikan ini adalah DataFrame
-        if not isinstance(data, pd.DataFrame):
-            logger.error(f"❌ Data must be DataFrame, got {type(data)}")
-            return self._get_default_analysis(symbol)
-        
-        # PERBAIKAN 4: Validasi DataFrame
-        if data.empty:
-            logger.error(f"❌ DataFrame is empty for {symbol}")
-            return self._get_default_analysis(symbol)
-        
         # INISIALISASI DEFAULT VALUE UNTUK SEMUA VARIABEL
         sl_distance = 0.02  # Default value 2%
         tp_distance = 0.04  # Default value 4%
         
+        # PERBAIKAN: Validasi dan perbaiki data
+        df = validate_and_fix_data(data, symbol)
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            logger.error(f"❌ Data validation failed for {symbol}")
+            return {
+                'action': 'NEUTRAL',
+                'score': 0,
+                'sl_distance': sl_distance,
+                'tp_distance': tp_distance,
+                'error': 'Data validation failed'
+            }
+        
         try:
-            # 1. Validasi data
-            if data is None:
-                logger.warning(f"Enhanced analysis: Data is None for {symbol}")
-                return {
-                    'action': 'NEUTRAL',
-                    'score': 0,
-                    'sl_distance': sl_distance,
-                    'tp_distance': tp_distance,
-                    'error': 'Data is None'
-                }
+            # 1. Preprocess data
+            df = self._preprocess_and_validate(df, symbol, self.market_type)
             
-            if not isinstance(data, pd.DataFrame):
-                logger.warning(f"Enhanced analysis: Data is not DataFrame for {symbol}")
-                return {
-                    'action': 'NEUTRAL',
-                    'score': 0,
-                    'sl_distance': sl_distance,
-                    'tp_distance': tp_distance,
-                    'error': 'Data is not DataFrame'
-                }
-                
-            if data.empty:
-                logger.warning(f"Enhanced analysis: Empty DataFrame for {symbol}")
-                return {
-                    'action': 'NEUTRAL',
-                    'score': 0,
-                    'sl_distance': sl_distance,
-                    'tp_distance': tp_distance,
-                    'error': 'Empty DataFrame'
-                }
-            
-            # 2. Preprocess data
-            data = self._preprocess_and_validate(data, symbol, self.market_type)
-            
-            if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+            if df is None or not isinstance(df, pd.DataFrame) or df.empty:
                 logger.warning(f"Enhanced analysis: Data validation failed for {symbol}")
                 return {
                     'action': 'NEUTRAL',
@@ -993,8 +916,8 @@ class TradingStrategy(ABC):
                     'error': 'Data validation failed'
                 }
             
-            # 3. Skip jika data tidak valid untuk trading
-            if self._should_skip_symbol(data, symbol):
+            # 2. Skip jika data tidak valid untuk trading
+            if self._should_skip_symbol(df, symbol):
                 logger.info(f"Enhanced analysis: Skipping {symbol} due to data quality")
                 return {
                     'action': 'NEUTRAL',
@@ -1004,8 +927,8 @@ class TradingStrategy(ABC):
                     'error': 'Data quality check failed'
                 }
             
-            # 4. Lakukan analisis utama
-            analysis_result = self.analyze(data, symbol)
+            # 3. Lakukan analisis utama
+            analysis_result = self.analyze(df, symbol)
             
             if analysis_result is None:
                 logger.warning(f"Enhanced analysis: Analysis returned None for {symbol}")
@@ -1017,11 +940,11 @@ class TradingStrategy(ABC):
                     'error': 'Analysis returned None'
                 }
             
-            # 5. Extract values dari hasil analisis
+            # 4. Extract values dari hasil analisis
             signal = analysis_result.get('action', 'NEUTRAL')
             score = analysis_result.get('score', 0.0)
             
-            # 6. Hitung sl_distance dan tp_distance berdasarkan hasil analisis
+            # 5. Hitung sl_distance dan tp_distance berdasarkan hasil analisis
             if signal != 'NEUTRAL':
                 current_price = analysis_result.get('current_price', 0)
                 sl_price = analysis_result.get('sl', 0)
@@ -1039,11 +962,11 @@ class TradingStrategy(ABC):
                     elif signal == 'SHORT':
                         tp_distance = abs(current_price - tp1_price) / current_price
             
-            # 7. Pastikan sl_distance dan tp_distance tidak nol
+            # 6. Pastikan sl_distance dan tp_distance tidak nol
             sl_distance = max(sl_distance, 0.01)  # Minimal 1%
             tp_distance = max(tp_distance, 0.02)  # Minimal 2%
             
-            # 8. Return hasil
+            # 7. Return hasil
             return {
                 'action': signal,
                 'score': score,
@@ -1676,7 +1599,7 @@ class TradingStrategy(ABC):
 
 🛑 Stop Loss: {analysis.get('sl', 0):.5f}
 
-{futires_info}
+{futures_info}
 📈 Analytics:
    Confidence: {confidence:.1f}%
    Range Size: ±{range_pct:.1f}%
