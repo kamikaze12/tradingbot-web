@@ -13,6 +13,15 @@ import concurrent.futures
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# TAMBAHAN: Import TV Provider
+try:
+    from tv_provider import TradingViewProvider
+    TV_AVAILABLE = True
+    print("✅ TV Provider module found.")
+except ImportError:
+    TV_AVAILABLE = False
+    print("⚠️ TV Provider module NOT found. Using YFinance only.")
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -25,6 +34,7 @@ class NonCryptoAssetsProvider:
     """
     Provider untuk list aset non-crypto dengan filter cerdas untuk hindari saham sampah.
     UPDATED: Smart filtering system untuk buang saham stagnan (KPAS.JK) & pertahankan yang aktif.
+    HYBRID: Menggunakan TradingView sebagai prioritas utama, YFinance sebagai fallback.
     """
     
     def __init__(self):
@@ -34,6 +44,9 @@ class NonCryptoAssetsProvider:
         self.cache_lock = Lock()
         self.rate_limit_delay = 0.3  # Optimal untuk rate limiting
         self._verified_stocks = None
+        
+        # TAMBAHAN: Init TradingView Provider
+        self.tv_provider = TradingViewProvider() if TV_AVAILABLE else None
         
         # Inisialisasi blacklist saham sampah
         self._init_stock_blacklist()
@@ -150,6 +163,112 @@ class NonCryptoAssetsProvider:
             'HEAL.JK', 'INKP.JK', 'INTP.JK', 'MAPA.JK', 'MTEL.JK', 'NCKL.JK',
             'SCMA.JK', 'TBIG.JK', 'WIKA.JK', 'WSKT.JK'  # Masih aktif di Jan 2026
         ]
+    
+    def get_stock_data(self, symbol, timeframe='1d', limit=100):
+        """
+        HYBRID FETCH: 
+        1. Coba TradingView (Real-time/Cepat)
+        2. Fallback YFinance (Jika TV gagal/symbol tidak ada)
+        """
+        df = None
+        
+        # -------------------------------------------
+        # STRATEGI 1: TRADINGVIEW (PRIORITAS UTAMA)
+        # -------------------------------------------
+        if self.tv_provider:
+            # Deteksi Exchange & Bersihkan Simbol
+            tv_symbol = symbol.replace('.JK', '').replace('=X', '')  # Hapus suffix YF
+            exchange = 'IDX'  # Default Saham Indo
+            
+            # Logika Deteksi Forex / Index Luar
+            if 'USD' in symbol or 'JPY' in symbol or 'EUR' in symbol or 'GBP' in symbol:
+                exchange = 'FX_IDC'  # Forex umum
+            elif '^' in symbol or 'DJI' in symbol or 'SPX' in symbol:
+                exchange = 'TVC'  # Index global
+            elif '.JK' in symbol:
+                exchange = 'IDX'  # Saham Indonesia
+            
+            try:
+                # Fetch dari TV
+                df = self.tv_provider.get_hist(tv_symbol, exchange, timeframe, limit)
+                
+                if df is not None and not df.empty:
+                    # Validasi singkat
+                    if len(df) >= 10:  # Minimal data valid
+                        logger.info(f"✅ Data fetched from TradingView: {symbol}")
+                        return df
+                    else:
+                        logger.warning(f"⚠️ TradingView data insufficient for {symbol}: {len(df)} bars")
+            except Exception as e:
+                logger.warning(f"⚠️ TV fetch failed for {symbol}: {e}")
+
+        # -------------------------------------------
+        # STRATEGI 2: YFINANCE (FALLBACK)
+        # -------------------------------------------
+        logger.info(f"🔄 Switching to YFinance for {symbol}...")
+        try:
+            ticker = yf.Ticker(symbol)
+            
+            # Mapping timeframe untuk YFinance
+            # YF period mapping: 1d->1y, 1h->1mo, dll biar datanya cukup
+            period_map = {
+                '1d': '2y',
+                '1h': '2mo',
+                '4h': '3mo',
+                '5m': '5d',
+                '15m': '15d',
+                '30m': '1mo',
+                '1m': '5d'
+            }
+            
+            period = period_map.get(timeframe, '2y')
+            
+            df = ticker.history(period=period, interval=timeframe)
+            
+            if df is None or df.empty:
+                logger.warning(f"❌ YFinance returned empty data for {symbol}")
+                return None
+                
+            # Formatting Data YFinance agar sama dengan format sistem
+            df = df.reset_index()
+            
+            # Rename kolom jadi lowercase
+            df.columns = [c.lower() for c in df.columns]
+            
+            # Handle kolom Date/Datetime
+            if 'date' in df.columns:
+                df = df.rename(columns={'date': 'timestamp'})
+            elif 'datetime' in df.columns:  # YF kadang pakai datetime
+                df = df.rename(columns={'datetime': 'timestamp'})
+                
+            # Pastikan Timezone naive (hapus info timezone biar gak konflik sama pandas)
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
+                df = df.set_index('timestamp')
+            
+            # Ambil kolom penting saja
+            cols = ['open', 'high', 'low', 'close', 'volume']
+            df = df[[c for c in cols if c in df.columns]]
+            
+            # Pastikan numeric
+            df = df.apply(pd.to_numeric, errors='coerce')
+            
+            # Drop NaN rows
+            df = df.dropna()
+            
+            # Return last N bars
+            result = df.tail(limit)
+            
+            if not result.empty:
+                logger.info(f"✅ YFinance data fetched: {symbol} ({len(result)} bars)")
+            else:
+                logger.warning(f"⚠️ YFinance returned empty result after processing: {symbol}")
+            
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ YFinance failed for {symbol}: {e}")
+            return None
     
     def _get_active_stocks(self) -> List[str]:
         """Dapatkan daftar saham aktif dengan filter cerdas untuk hindari saham sampah."""
@@ -311,8 +430,8 @@ class NonCryptoAssetsProvider:
             return None
         
         try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="90d")
+            # Gunakan method get_stock_data yang hybrid
+            hist = self.get_stock_data(symbol, timeframe='1d', limit=90)
             
             # Validasi data dengan fungsi baru
             hist = self._validate_and_fix_data(hist)
@@ -323,12 +442,12 @@ class NonCryptoAssetsProvider:
                 return None
             
             # Pastikan kolom ada
-            if 'Close' not in hist.columns or 'Volume' not in hist.columns:
+            if 'close' not in hist.columns or 'volume' not in hist.columns:
                 self.invalid_symbols.add(symbol)
                 return None
             
-            close_prices = hist['Close']
-            volumes = hist['Volume']
+            close_prices = hist['close']
+            volumes = hist['volume']
             
             # FILTER 2: Price range (hindari saham flat)
             if len(close_prices) == 0:
@@ -456,8 +575,8 @@ class NonCryptoAssetsProvider:
     def get_stock_quality_report(self, symbol: str) -> Dict[str, Any]:
         """Dapatkan laporan kualitas untuk stock tertentu."""
         try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="90d")
+            # Gunakan method get_stock_data yang hybrid
+            hist = self.get_stock_data(symbol, timeframe='1d', limit=90)
             
             # Validasi data dengan fungsi baru
             hist = self._validate_and_fix_data(hist)
@@ -471,8 +590,19 @@ class NonCryptoAssetsProvider:
                     'strengths': []
                 }
             
-            close_prices = hist['Close']
-            volumes = hist['Volume']
+            # Pastikan kolom ada
+            if 'close' not in hist.columns or 'volume' not in hist.columns:
+                return {
+                    'error': 'Insufficient data columns',
+                    'symbol': symbol,
+                    'quality_score': -100,
+                    'is_stagnant': True,
+                    'issues': ['Missing price/volume data'],
+                    'strengths': []
+                }
+            
+            close_prices = hist['close']
+            volumes = hist['volume']
             
             # Validasi data series
             if len(close_prices) == 0 or len(volumes) == 0:
@@ -639,8 +769,8 @@ class NonCryptoAssetsProvider:
         
         for symbol in active_stocks:
             try:
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period="90d", interval="1d")
+                # Gunakan method get_stock_data yang hybrid
+                hist = self.get_stock_data(symbol, timeframe='1d', limit=90)
                 
                 # Validasi data
                 hist = self._validate_and_fix_data(hist)
@@ -651,25 +781,25 @@ class NonCryptoAssetsProvider:
                     continue
                 
                 # Pastikan kolom ada
-                if 'Close' not in hist.columns or 'Volume' not in hist.columns:
+                if 'close' not in hist.columns or 'volume' not in hist.columns:
                     continue
                 
-                avg_volume = hist['Volume'].mean()
+                avg_volume = hist['volume'].mean()
                 if avg_volume < min_volume:
                     continue
                 
-                recent_returns = hist['Close'][-30:].pct_change().dropna()
+                recent_returns = hist['close'][-30:].pct_change().dropna()
                 volatility = recent_returns.std() if len(recent_returns) > 5 else 0
                 
                 if volatility < min_volatility:
                     continue
                 
-                price_change = (hist['Close'].iloc[-1] - hist['Close'].iloc[-30]) / hist['Close'].iloc[-30]
+                price_change = (hist['close'].iloc[-1] - hist['close'].iloc[-30]) / hist['close'].iloc[-30]
                 if abs(price_change) < min_price_change:
                     continue
                 
-                volume_5d = hist['Volume'][-5:].mean()
-                volume_30d = hist['Volume'][-30:].mean()
+                volume_5d = hist['volume'][-5:].mean()
+                volume_30d = hist['volume'][-30:].mean()
                 volume_trend = volume_5d / volume_30d if volume_30d > 0 else 1
                 
                 # Score calculation
@@ -745,8 +875,8 @@ class NonCryptoAssetsProvider:
                 
                 print(f"  🔍 Analisa {symbol}...")
                 
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period="90d", interval="1d")
+                # Gunakan method get_stock_data yang hybrid
+                hist = self.get_stock_data(symbol, timeframe='1d', limit=90)
                 
                 # Validasi data historis
                 hist = self._validate_and_fix_data(hist)
@@ -759,7 +889,7 @@ class NonCryptoAssetsProvider:
                     continue
                 
                 # Pastikan kolom ada
-                required_columns = ['Close', 'Volume']
+                required_columns = ['close', 'volume']
                 for col in required_columns:
                     if col not in hist.columns:
                         print(f"    ⚠️ Kolom {col} tidak ditemukan")
@@ -767,8 +897,8 @@ class NonCryptoAssetsProvider:
                 
                 # Analisis teknikal dengan error handling
                 try:
-                    close_series = hist['Close']
-                    volume_series = hist['Volume']
+                    close_series = hist['close']
+                    volume_series = hist['volume']
                     
                     # RSI Calculation
                     delta = close_series.diff()
@@ -1008,4 +1138,5 @@ if __name__ == "__main__":
     print("   • Multi-threading untuk screening cepat")
     print("   • Quality report untuk tiap saham")
     print("   • Data validation system untuk hindari ambiguous errors")
-    print("\n✅ Sistem filter cerdas telah aktif!")
+    print("   • HYBRID DATA SOURCE: TradingView priority, YFinance fallback")
+    print("\n✅ Sistem filter cerdas & hybrid data source telah aktif!")
