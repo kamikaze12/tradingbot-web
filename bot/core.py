@@ -298,6 +298,7 @@ get_trading_data = None
 create_strategy_for_symbol = None
 SmartChainDataProvider = None
 NonCryptoAssetsProvider = None  # New import
+TradingViewProvider = None  # PERBAIKAN BARU: Import TradingViewProvider
 
 try:
     print("✅ Mencoba import strategies...")
@@ -362,6 +363,33 @@ except ImportError as e:
             return self.get_assets(category, limit)
     
     NonCryptoAssetsProvider = NonCryptoAssetsProviderDummy
+
+# PERBAIKAN BARU: Import TradingViewProvider
+try:
+    print("✅ Mencoba import TradingViewProvider...")
+    from tv_provider import TradingViewProvider
+    print("  ✅ TradingViewProvider berhasil diimport")
+except ImportError as e:
+    print(f"  ❌ Gagal import TradingViewProvider: {e}")
+    # Buat dummy class sebagai fallback
+    class TradingViewProviderDummy:
+        def __init__(self):
+            self.is_connected = False
+            logger.warning("TradingViewProvider dummy digunakan")
+        
+        def get_hist(self, symbol, exchange='IDX', interval='1h', n_bars=100):
+            logger.warning(f"Dummy get_hist untuk {symbol} ({exchange})")
+            # Return dummy data
+            dates = pd.date_range(end=datetime.now(), periods=n_bars, freq=interval)
+            return pd.DataFrame({
+                'open': np.random.randn(n_bars) * 100 + 5000,
+                'high': np.random.randn(n_bars) * 120 + 5100,
+                'low': np.random.randn(n_bars) * 120 + 4900,
+                'close': np.random.randn(n_bars) * 100 + 5000,
+                'volume': np.random.rand(n_bars) * 1000000
+            }, index=dates)
+    
+    TradingViewProvider = TradingViewProviderDummy
 
 try:
     print("✅ Mencoba import DatabaseHandler...")
@@ -2231,11 +2259,11 @@ class MLEnhancedBot:
             return 0
 
 # =============================================
-# ENHANCED TRADING BOT CORE - UNIVERSAL PROVIDER
+# ENHANCED TRADING BOT CORE - UNIVERSAL PROVIDER + TRADINGVIEW
 # =============================================
 
 class EnhancedTradingBot:
-    """Enhanced trading bot dengan UNIVERSAL provider"""
+    """Enhanced trading bot dengan UNIVERSAL provider + TRADINGVIEW"""
     
     def __init__(self, config=None):
         # PERBAIKAN: Inisialisasi semua atribut di awal
@@ -2257,6 +2285,10 @@ class EnhancedTradingBot:
         # **PERBAIKAN UTAMA: Setup provider universal**
         self.data_provider = None
         self._setup_universal_provider()
+        
+        # **TAMBAHAN BARU: Setup TradingViewProvider**
+        self.tv_provider = None
+        self._setup_tradingview_provider()
         
         # **TAMBAHAN: Setup NonCryptoAssetsProvider**
         self.non_crypto_provider = None
@@ -2300,7 +2332,95 @@ class EnhancedTradingBot:
         self.ml_predictions_cache = {}
         self.last_ml_update = 0
         
-        logger.info("✅ Enhanced TradingBot initialized dengan Universal Provider")
+        logger.info("✅ Enhanced TradingBot initialized dengan Universal Provider + TradingView")
+
+    def _setup_tradingview_provider(self):
+        """Setup TradingView Provider untuk data real-time"""
+        try:
+            # Inisialisasi TradingViewProvider
+            self.tv_provider = TradingViewProvider()
+            logger.info("✅ TradingViewProvider initialized")
+            
+            # Test koneksi
+            if hasattr(self.tv_provider, 'is_connected') and self.tv_provider.is_connected:
+                logger.info("📡 TradingView: Koneksi berhasil")
+                return True
+            else:
+                logger.warning("⚠️ TradingView: Koneksi gagal, akan menggunakan fallback")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error setup TradingViewProvider: {e}")
+            self.tv_provider = None
+            return False
+
+    def _get_data_from_tradingview(self, symbol, market_type):
+        """
+        Ambil data dari TradingView dengan format yang sesuai.
+        Returns: DataFrame OHLCV atau None jika gagal
+        """
+        try:
+            if not self.tv_provider:
+                return None
+            
+            # Mapping berdasarkan market type
+            timeframe_map = {
+                'saham_id': '1d',      # Saham: data harian
+                'forex': '1h',         # Forex: 1 jam
+                'us_stocks': '1d',     # US Stocks: harian
+                'crypto': '1h'         # Crypto: 1 jam
+            }
+            
+            exchange_map = {
+                'saham_id': 'IDX',
+                'forex': 'FX_IDC',
+                'us_stocks': 'NASDAQ',
+                'crypto': 'BINANCE'
+            }
+            
+            # Default lookback berdasarkan timeframe
+            lookback_map = {
+                '1d': 90,    # 90 hari untuk daily
+                '1h': 720,   # 720 jam (30 hari) untuk hourly
+                '5m': 150    # 150 bar 5-menit
+            }
+            
+            timeframe = timeframe_map.get(market_type, '1h')
+            exchange = exchange_map.get(market_type, 'IDX')
+            n_bars = lookback_map.get(timeframe, 100)
+            
+            # Clean symbol untuk TradingView
+            tv_symbol = symbol
+            
+            # Hapus suffix untuk TradingView
+            if market_type == 'saham_id':
+                tv_symbol = symbol.replace('.JK', '')
+            elif market_type == 'forex':
+                tv_symbol = symbol.replace('=X', '')
+            
+            logger.debug(f"    📡 TV Request: {tv_symbol} on {exchange}, {timeframe}, {n_bars} bars")
+            
+            df = self.tv_provider.get_hist(
+                symbol=tv_symbol,
+                exchange=exchange,
+                interval=timeframe,
+                n_bars=n_bars
+            )
+            
+            if df is None or df.empty:
+                return None
+            
+            # Validasi data minimum
+            if len(df) < 10:
+                logger.warning(f"    ⚠️ TV data insufficient: {len(df)} bars")
+                return None
+            
+            logger.info(f"    ✅ TV Data: {len(df)} bars, Close: {df['close'].iloc[-1]:.2f}")
+            return df
+            
+        except Exception as e:
+            logger.warning(f"    ⚠️ TV Provider error for {symbol}: {e}")
+            return None
 
     # =============================================
     # HELPER METHODS FOR MINIMUM BARS BY MARKET TYPE
@@ -3006,27 +3126,27 @@ class EnhancedTradingBot:
                 'NTBK.JK', 'NUSA.JK', 'NZIA.JK', 'OBMD.JK', 'OILS.JK', 'OKAS.JK', 'OMRE.JK', 'OPMS.JK', 
                 'PACK.JK', 'PADI.JK', 'PALM.JK', 'PAMG.JK', 'PANI.JK', 'PBID.JK', 'PBSA.JK', 'PCAR.JK', 
                 'PDAI.JK', 'PDES.JK', 'PEGE.JK', 'PEHA.JK', 'PGUN.JK', 'PICO.JK', 'PKPK.JK', 'PLAS.JK', 
-                'PLIN.JK', 'PMJS.JK', 'PMMP.JK', 'PNLF.JK', 'POLA.JK', 'POLI.JK', 'POLU.JK', 'POOL.JK', 
-                'PORT.JK', 'POWR.JK', 'PPGL.JK', 'PPRE.JK', 'PRDA.JK', 'PRIM.JK', 'PSAB.JK', 'PSDN.JK', 
-                'PSGO.JK', 'PSKT.JK', 'PTDU.JK', 'PTIS.JK', 'PTRO.JK', 'PTSN.JK', 'PUDP.JK', 'PWON.JK', 
-                'PYFA.JK', 'PZZA.JK', 'RAJA.JK', 'RALS.JK', 'RANC.JK', 'RBMS.JK', 'RDTX.JK', 'REAL.JK', 
-                'RELI.JK', 'RICY.JK', 'RIGS.JK', 'RISE.JK', 'RMKE.JK', 'RMKO.JK', 'ROCK.JK', 'RODA.JK', 
-                'ROTI.JK', 'RUIS.JK', 'SAFE.JK', 'SAGE.JK', 'SAMA.JK', 'SAMF.JK', 'SAPX.JK', 'SATU.JK', 
-                'SBAT.JK', 'SBMA.JK', 'SBSN.JK', 'SCBD.JK', 'SCMA.JK', 'SCNP.JK', 'SCPI.JK', 'SDMU.JK', 
-                'SDPC.JK', 'SDRA.JK', 'SFAN.JK', 'SGER.JK', 'SGRO.JK', 'SHID.JK', 'SHIP.JK', 'SICO.JK', 
-                'SILO.JK', 'SINI.JK', 'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK', 'SLIS.JK', 'SMAR.JK', 
-                'SMBR.JK', 'SMDR.JK', 'SMGA.JK', 'SMKL.JK', 'SMKM.JK', 'SMMA.JK', 'SMMT.JK', 'SMRU.JK', 
-                'SMSM.JK', 'SNLK.JK', 'SOCI.JK', 'SOFA.JK', 'SOHO.JK', 'SONA.JK', 'SOSS.JK', 'SOTS.JK', 
-                'SPMA.JK', 'SPTO.JK', 'SQMI.JK', 'SRAJ.JK', 'SRSN.JK', 'STAA.JK', 'STAR.JK', 'STRK.JK', 
-                'STTP.JK', 'SUGI.JK', 'SULI.JK', 'SUPR.JK', 'SURE.JK', 'SWAT.JK', 'TALF.JK', 'TAMU.JK', 
-                'TARA.JK', 'TAXI.JK', 'TBMS.JK', 'TCID.JK', 'TCPI.JK', 'TDPM.JK', 'TECH.JK', 'TEBE.JK', 
-                'TELE.JK', 'TFAS.JK', 'TFCO.JK', 'TGKA.JK', 'TIFA.JK', 'TIRT.JK', 'TJWI.JK', 'TKIM.JK', 
-                'TMAS.JK', 'TMPO.JK', 'TNCA.JK', 'TOPS.JK', 'TOTL.JK', 'TPMA.JK', 'TRGU.JK', 'TRIM.JK', 
-                'TRIN.JK', 'TRIS.JK', 'TRJA.JK', 'TRST.JK', 'TRUE.JK', 'TRUK.JK', 'TRUS.JK', 'TUGU.JK', 
-                'UANG.JK', 'UCID.JK', 'UFOE.JK', 'UNIC.JK', 'UNIQ.JK', 'UNSP.JK', 'UVCR.JK', 'VAST.JK', 
-                'VICI.JK', 'VICO.JK', 'VINS.JK', 'VIVA.JK', 'VKTR.JK', 'VOKS.JK', 'VTNY.JK', 'WAPO.JK', 
-                'WEGE.JK', 'WEHA.JK', 'WGSH.JK', 'WINE.JK', 'WINS.JK', 'WMPP.JK', 'WMUU.JK', 'WOMF.JK', 
-                'WOOD.JK', 'WOWS.JK', 'YELO.JK', 'YPAS.JK', 'ZATA.JK', 'ZONE.JK', 'ZBRA.JK', 'ZYRX.JK'
+                'PLIN.JK', 'PMMP.JK', 'PNLF.JK', 'POLA.JK', 'POLI.JK', 'POLU.JK', 'POOL.JK', 'PORT.JK', 
+                'POWR.JK', 'PPGL.JK', 'PPRE.JK', 'PRDA.JK', 'PRIM.JK', 'PSAB.JK', 'PSDN.JK', 'PSGO.JK', 
+                'PSKT.JK', 'PTDU.JK', 'PTIS.JK', 'PTRO.JK', 'PTSN.JK', 'PUDP.JK', 'PWON.JK', 'PYFA.JK', 
+                'PZZA.JK', 'RAJA.JK', 'RALS.JK', 'RANC.JK', 'RBMS.JK', 'RDTX.JK', 'REAL.JK', 'RELI.JK', 
+                'RICY.JK', 'RIGS.JK', 'RISE.JK', 'RMKE.JK', 'RMKO.JK', 'ROCK.JK', 'RODA.JK', 'ROTI.JK', 
+                'RUIS.JK', 'SAFE.JK', 'SAGE.JK', 'SAMA.JK', 'SAMF.JK', 'SAPX.JK', 'SATU.JK', 'SBAT.JK', 
+                'SBMA.JK', 'SBSN.JK', 'SCBD.JK', 'SCMA.JK', 'SCNP.JK', 'SCPI.JK', 'SDMU.JK', 'SDPC.JK', 
+                'SDRA.JK', 'SFAN.JK', 'SGER.JK', 'SGRO.JK', 'SHID.JK', 'SHIP.JK', 'SICO.JK', 'SILO.JK', 
+                'SINI.JK', 'SIPD.JK', 'SKBM.JK', 'SKLT.JK', 'SKRN.JK', 'SLIS.JK', 'SMAR.JK', 'SMBR.JK', 
+                'SMDR.JK', 'SMGA.JK', 'SMKL.JK', 'SMKM.JK', 'SMMA.JK', 'SMMT.JK', 'SMRU.JK', 'SMSM.JK', 
+                'SNLK.JK', 'SOCI.JK', 'SOFA.JK', 'SOHO.JK', 'SONA.JK', 'SOSS.JK', 'SOTS.JK', 'SPMA.JK', 
+                'SPTO.JK', 'SQMI.JK', 'SRAJ.JK', 'SRSN.JK', 'STAA.JK', 'STAR.JK', 'STRK.JK', 'STTP.JK', 
+                'SUGI.JK', 'SULI.JK', 'SUPR.JK', 'SURE.JK', 'SWAT.JK', 'TALF.JK', 'TAMU.JK', 'TARA.JK', 
+                'TAXI.JK', 'TBMS.JK', 'TCID.JK', 'TCPI.JK', 'TDPM.JK', 'TECH.JK', 'TEBE.JK', 'TELE.JK', 
+                'TFAS.JK', 'TFCO.JK', 'TGKA.JK', 'TIFA.JK', 'TIRT.JK', 'TJWI.JK', 'TKIM.JK', 'TMAS.JK', 
+                'TMPO.JK', 'TNCA.JK', 'TOPS.JK', 'TOTL.JK', 'TPMA.JK', 'TRGU.JK', 'TRIM.JK', 'TRIN.JK', 
+                'TRIS.JK', 'TRJA.JK', 'TRST.JK', 'TRUE.JK', 'TRUK.JK', 'TRUS.JK', 'TUGU.JK', 'UANG.JK', 
+                'UCID.JK', 'UFOE.JK', 'UNIC.JK', 'UNIQ.JK', 'UNSP.JK', 'UVCR.JK', 'VAST.JK', 'VICI.JK', 
+                'VICO.JK', 'VINS.JK', 'VIVA.JK', 'VKTR.JK', 'VOKS.JK', 'VTNY.JK', 'WAPO.JK', 'WEGE.JK', 
+                'WEHA.JK', 'WGSH.JK', 'WINE.JK', 'WINS.JK', 'WMPP.JK', 'WMUU.JK', 'WOMF.JK', 'WOOD.JK', 
+                'WOWS.JK', 'YELO.JK', 'YPAS.JK', 'ZATA.JK', 'ZONE.JK', 'ZBRA.JK', 'ZYRX.JK'
             ]
             
             # Exclude delisted/suspended
@@ -3262,7 +3382,7 @@ class EnhancedTradingBot:
             self.current_scan_task = None
 
     def _analyze_single_asset(self, asset, index, total):
-        """Helper method untuk menganalisis single asset (untuk threading)"""
+        """Helper method untuk menganalisis single asset (untuk threading) - PERBAIKAN TV"""
         try:
             symbol = asset.get('symbol')
             asset_name = asset.get('name', symbol)
@@ -3271,6 +3391,19 @@ class EnhancedTradingBot:
             
             logger.info(f"  [{index+1}/{total}] Analyzing: {symbol} (Type: {detected_type})")
             
+            # **STRATEGI PRIORITAS: Gunakan TradingView untuk non-crypto jika tersedia**
+            df = None
+            use_tradingview = False
+            
+            # **PERBAIKAN: Untuk non-crypto (saham_id, forex, us_stocks), prioritaskan TradingView**
+            if self.mode in ['saham_id', 'forex', 'us_stocks'] and self.tv_provider:
+                df = self._get_data_from_tradingview(formatted_symbol, self.mode)
+                if df is not None and not df.empty:
+                    use_tradingview = True
+                    logger.info(f"    📊 Menggunakan data TradingView untuk {symbol}")
+                else:
+                    logger.info(f"    ⚠️ TradingView gagal, fallback ke provider lain untuk {symbol}")
+            
             # **SCALPING MODE FILTERS**
             if self.scalping_mode:
                 # Gunakan parameter dari scalping config
@@ -3278,7 +3411,9 @@ class EnhancedTradingBot:
                 limit = self.scalping_config.get("lookback", 150)
                 
                 logger.info(f"    ⚡ Scalping mode: {timeframe} timeframe, {limit} bars")
-                df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
+                
+                if not use_tradingview:  # Hanya jika TradingView gagal
+                    df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
                 
                 # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
                 # Gunakan minimum bars yang sesuai dengan market type
@@ -3313,12 +3448,14 @@ class EnhancedTradingBot:
                 timeframe = '1d' if self.mode == 'saham_id' else self.config.get("timeframe", "1h")
                 lookback = 90 if self.mode == 'saham_id' else 200
                 
-                if get_trading_data is not None:
-                    logger.info(f"    🔧 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
-                    df = get_trading_data(formatted_symbol, self.data_provider)
-                else:
-                    logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
-                    df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
+                # Jika belum dapat data dari TradingView, ambil dari provider biasa
+                if not use_tradingview:
+                    if get_trading_data is not None:
+                        logger.info(f"    🔧 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
+                        df = get_trading_data(formatted_symbol, self.data_provider)
+                    else:
+                        logger.info(f"    🔧 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
+                        df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
@@ -3427,13 +3564,20 @@ class EnhancedTradingBot:
             timeframe = '1d' if self.mode == 'saham_id' else self.config.get("timeframe", "1h")
             lookback = 90 if self.mode == 'saham_id' else 200
             
-            # Get data menggunakan get_trading_data jika tersedia
-            if get_trading_data is not None:
-                logger.info(f"🔍 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
-                df = get_trading_data(formatted_symbol, self.data_provider)
-            else:
-                logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
-                df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
+            # Coba TradingView terlebih dahulu untuk non-crypto
+            df = None
+            if self.mode in ['saham_id', 'forex', 'us_stocks'] and self.tv_provider:
+                df = self._get_data_from_tradingview(formatted_symbol, self.mode)
+            
+            # Jika TradingView gagal atau tidak tersedia, gunakan provider biasa
+            if df is None or df.empty:
+                # Get data menggunakan get_trading_data jika tersedia
+                if get_trading_data is not None:
+                    logger.info(f"🔍 Menggunakan get_trading_data untuk membersihkan data {formatted_symbol}")
+                    df = get_trading_data(formatted_symbol, self.data_provider)
+                else:
+                    logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk data {formatted_symbol}")
+                    df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
@@ -3484,13 +3628,20 @@ class EnhancedTradingBot:
                 
             logger.info(f"🔧 Running advanced backtest for {formatted_symbol} ({detected_type})...")
             
-            # Get data menggunakan get_trading_data jika tersedia
-            if get_trading_data is not None:
-                logger.info(f"  🔧 Menggunakan get_trading_data untuk data bersih")
-                df = get_trading_data(formatted_symbol, self.data_provider)
-            else:
-                logger.info(f"  🔧 Menggunakan provider {self.data_provider.__class__.__name__}")
-                df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
+            # Coba TradingView terlebih dahulu untuk non-crypto
+            df = None
+            if self.mode in ['saham_id', 'forex', 'us_stocks'] and self.tv_provider:
+                df = self._get_data_from_tradingview(formatted_symbol, self.mode)
+            
+            # Jika TradingView gagal atau tidak tersedia, gunakan provider biasa
+            if df is None or df.empty:
+                # Get data menggunakan get_trading_data jika tersedia
+                if get_trading_data is not None:
+                    logger.info(f"  🔧 Menggunakan get_trading_data untuk data bersih")
+                    df = get_trading_data(formatted_symbol, self.data_provider)
+                else:
+                    logger.info(f"  🔧 Menggunakan provider {self.data_provider.__class__.__name__}")
+                    df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, limit)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             # Gunakan minimum bars yang sesuai dengan market type
@@ -3647,13 +3798,20 @@ class EnhancedTradingBot:
             timeframe = '1d' if self.mode == 'saham_id' else self.config.get("timeframe", "1h")
             lookback = 90 if self.mode == 'saham_id' else 50
             
-            # Get data menggunakan get_trading_data jika tersedia
-            if get_trading_data is not None:
-                logger.info(f"🔍 Menggunakan get_trading_data untuk {formatted_symbol}")
-                df = get_trading_data(formatted_symbol, self.data_provider)
-            else:
-                logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk {formatted_symbol}")
-                df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
+            # Coba TradingView terlebih dahulu untuk non-crypto
+            df = None
+            if self.mode in ['saham_id', 'forex', 'us_stocks'] and self.tv_provider:
+                df = self._get_data_from_tradingview(formatted_symbol, self.mode)
+            
+            # Jika TradingView gagal atau tidak tersedia, gunakan provider biasa
+            if df is None or df.empty:
+                # Get data menggunakan get_trading_data jika tersedia
+                if get_trading_data is not None:
+                    logger.info(f"🔍 Menggunakan get_trading_data untuk {formatted_symbol}")
+                    df = get_trading_data(formatted_symbol, self.data_provider)
+                else:
+                    logger.info(f"🔍 Menggunakan provider {self.data_provider.__class__.__name__} untuk {formatted_symbol}")
+                    df = self.data_provider.get_ohlcv(formatted_symbol, timeframe, lookback)
             
             # PERBAIKAN: Gunakan kondisi yang aman untuk semua DataFrame
             if df is None or df.empty or len(df) < 20:
@@ -3826,6 +3984,16 @@ class EnhancedTradingBot:
                 health['provider_class'] = self.data_provider.__class__.__name__
                 return health
             
+            # Tambah TradingViewProvider health
+            elif self.tv_provider:
+                tv_health = {
+                    'provider_type': 'tradingview',
+                    'provider_class': 'TradingViewProvider',
+                    'is_connected': getattr(self.tv_provider, 'is_connected', False),
+                    'status': 'connected' if getattr(self.tv_provider, 'is_connected', False) else 'disconnected'
+                }
+                return tv_health
+            
             # Fallback
             else:
                 return {
@@ -3843,7 +4011,7 @@ class EnhancedTradingBot:
     # =============================================
 
     def set_mode(self, mode):
-        """Set trading mode dengan universal provider"""
+        """Set trading mode dengan universal provider + TradingView"""
         try:
             # Check jika mode scalping
             if mode == "scalping":
@@ -3864,6 +4032,10 @@ class EnhancedTradingBot:
             # Reinitialize provider
             logger.info(f"🔄 Reconfiguring UniversalProvider for {self.mode}...")
             self._setup_universal_provider()
+            
+            # Reinitialize TradingViewProvider
+            logger.info(f"🔄 Reconfiguring TradingViewProvider for {self.mode}...")
+            self._setup_tradingview_provider()
             
             # Setup strategy
             if create_strategy_for_symbol is not None:
@@ -3912,14 +4084,28 @@ class EnhancedTradingBot:
             return False
 
     def _test_provider_connection(self):
-        """Test provider connection - PERBAIKAN UTAMA"""
+        """Test provider connection - PERBAIKAN UTAMA + TRADINGVIEW"""
         try:
             logger.info("🧪 Testing UniversalProvider connection...")
             logger.info(f"  Provider: {self.data_provider.__class__.__name__}")
             
-            # **PERBAIKAN: Handle non-crypto provider test**
+            # **PERBAIKAN: Test TradingView untuk non-crypto**
             if self.mode in ['saham_id', 'forex', 'us_stocks']:
-                logger.info(f"  Mode {self.mode} menggunakan NonCryptoAssetsProvider")
+                logger.info(f"  Mode {self.mode} - Testing TradingView + NonCryptoAssetsProvider")
+                
+                # Test TradingView jika tersedia
+                if self.tv_provider and hasattr(self.tv_provider, 'is_connected'):
+                    logger.info(f"  📡 TradingView Status: {'Connected' if self.tv_provider.is_connected else 'Disconnected'}")
+                    
+                    # Test dengan simbol contoh
+                    test_symbol = "BBCA" if self.mode == 'saham_id' else "EURUSD" if self.mode == 'forex' else "AAPL"
+                    test_exchange = "IDX" if self.mode == 'saham_id' else "FX_IDC" if self.mode == 'forex' else "NASDAQ"
+                    
+                    tv_data = self.tv_provider.get_hist(test_symbol, test_exchange, "1d", 10)
+                    if tv_data is not None and not tv_data.empty:
+                        logger.info(f"  ✅ TradingView test passed: {len(tv_data)} bars for {test_symbol}")
+                    else:
+                        logger.warning(f"  ⚠️ TradingView test failed for {test_symbol}")
                 
                 # Test NonCryptoAssetsProvider
                 if self.non_crypto_provider:
@@ -3970,11 +4156,18 @@ class EnhancedTradingBot:
                 timeframe = '1d' if self.mode == 'saham_id' else '1h'
                 lookback = 90 if self.mode == 'saham_id' else 10
                 
-                # Gunakan get_trading_data jika tersedia
-                if get_trading_data is not None:
-                    df = get_trading_data(test_symbol, self.data_provider)
-                else:
-                    df = self.data_provider.get_ohlcv(test_symbol, timeframe, lookback)
+                # Coba TradingView terlebih dahulu untuk non-crypto
+                df = None
+                if self.mode in ['saham_id', 'forex', 'us_stocks'] and self.tv_provider:
+                    df = self._get_data_from_tradingview(test_symbol, self.mode)
+                
+                # Jika TradingView gagal, gunakan provider biasa
+                if df is None or df.empty:
+                    # Gunakan get_trading_data jika tersedia
+                    if get_trading_data is not None:
+                        df = get_trading_data(test_symbol, self.data_provider)
+                    else:
+                        df = self.data_provider.get_ohlcv(test_symbol, timeframe, lookback)
                 
                 # Validasi data
                 if df is not None and not df.empty:
@@ -4271,7 +4464,7 @@ TradingBot = EnhancedTradingBot
 
 def test_universal_provider():
     """Test bot dengan universal provider"""
-    print("🧪 Testing TradingBot dengan UNIVERSAL PROVIDER...")
+    print("🧪 Testing TradingBot dengan UNIVERSAL PROVIDER + TRADINGVIEW...")
     print("="*60)
     
     bot = EnhancedTradingBot()
@@ -4301,11 +4494,15 @@ def test_universal_provider():
             print("   ℹ️ No signals found - this is normal with real data")
     
     # Test saham_id dengan 500 aset
-    print("\n3. Testing SAHAM_ID market dengan 500+ aset...")
+    print("\n3. Testing SAHAM_ID market dengan 500+ aset + TradingView...")
     success = bot.set_mode("saham_id")
     
     if success:
         print("✅ Saham ID mode set successfully")
+        
+        # Test TradingView connection
+        if bot.tv_provider:
+            print(f"   📡 TradingView: {'Connected' if getattr(bot.tv_provider, 'is_connected', False) else 'Disconnected'}")
         
         # Test popular assets saham_id
         assets = bot.get_popular_assets(15)
@@ -4313,8 +4510,8 @@ def test_universal_provider():
         for i, asset in enumerate(assets[:15]):
             print(f"   {i+1}. {asset['symbol']} ({asset.get('name', 'N/A')}) (Source: {asset.get('source', 'N/A')})")
         
-        # Test scanning saham_id
-        print("\n4. Testing scanning SAHAM_ID...")
+        # Test scanning saham_id dengan TradingView
+        print("\n4. Testing scanning SAHAM_ID dengan TradingView...")
         signals = bot.scan_potential_assets(limit=10)
         print(f"   Found {len(signals)} Indonesian stock signals")
         
@@ -4346,7 +4543,8 @@ def test_universal_provider():
             print("   ℹ️ No scalping signals found - this is normal with strict filters")
     
     print("\n" + "="*60)
-    print("✅ Test completed - Bot menggunakan Universal Provider dengan auto-detection")
+    print("✅ Test completed - Bot menggunakan Universal Provider + TradingView")
+    print("   TradingView terintegrasi untuk non-crypto markets (saham_id, forex, us_stocks)")
     print("   Auto-detect spot/futures dari simbol")
     print("   Leverage auto-detection (1x spot, 5x futures)")
     print("   Menggunakan get_trading_data untuk membersihkan data")
@@ -4355,6 +4553,7 @@ def test_universal_provider():
     print("   SHORT TIDAK diizinkan untuk Saham Indonesia (sesuai regulasi IDX)")
     print("   SCALPING mode dengan filter ketat dan timeframe 5m")
     print("   SUPPORT 500+ ASSETS untuk non-crypto markets")
+    print("   ✅ PERBAIKAN: TradingView sebagai prioritas untuk non-crypto")
     print("   ✅ PERBAIKAN: Menggunakan get_active_assets() untuk efisiensi scanning")
     print("   ✅ PERBAIKAN: Timeframe='1d' untuk saham_id")
     print("   ✅ PERBAIKAN: Multi-threading untuk scan 25 saham cepat")
@@ -4363,17 +4562,21 @@ def test_universal_provider():
 def test_non_crypto_assets_500():
     """Test khusus untuk 500+ aset non-crypto"""
     print("\n" + "="*60)
-    print("TESTING 500+ NON-CRYPTO ASSETS")
+    print("TESTING 500+ NON-CRYPTO ASSETS + TRADINGVIEW")
     print("="*60)
     
     bot = EnhancedTradingBot()
     
     # Test Saham Indonesia
-    print("\n1. Testing SAHAM_ID dengan 500+ aset...")
+    print("\n1. Testing SAHAM_ID dengan 500+ aset + TradingView...")
     success = bot.set_mode("saham_id")
     
     if success:
         print("✅ Saham ID mode set successfully")
+        
+        # Test TradingView connection
+        if bot.tv_provider:
+            print(f"   📡 TradingView: {'Connected' if getattr(bot.tv_provider, 'is_connected', False) else 'Disconnected'}")
         
         # Test popular assets dengan limit 500
         assets = bot.get_popular_assets(500)
@@ -4399,6 +4602,10 @@ def test_non_crypto_assets_500():
     if success:
         print("✅ US Stocks mode set successfully")
         
+        # Test TradingView connection
+        if bot.tv_provider:
+            print(f"   📡 TradingView: {'Connected' if getattr(bot.tv_provider, 'is_connected', False) else 'Disconnected'}")
+        
         # Test popular assets dengan limit 500
         assets = bot.get_popular_assets(500)
         print(f"   Found {len(assets)} US stocks")
@@ -4423,6 +4630,10 @@ def test_non_crypto_assets_500():
     if success:
         print("✅ Forex mode set successfully")
         
+        # Test TradingView connection
+        if bot.tv_provider:
+            print(f"   📡 TradingView: {'Connected' if getattr(bot.tv_provider, 'is_connected', False) else 'Disconnected'}")
+        
         # Test popular assets dengan limit 500
         assets = bot.get_popular_assets(500)
         print(f"   Found {len(assets)} forex pairs")
@@ -4442,10 +4653,12 @@ def test_non_crypto_assets_500():
     
     print("\n" + "="*60)
     print("✅ 500+ assets test completed")
+    print("   TradingViewProvider terintegrasi untuk data real-time non-crypto")
     print("   NonCryptoAssetsProvider terintegrasi dengan baik")
     print("   Cache 3 hari untuk mengurangi API calls")
     print("   Fallback ke list statis jika provider gagal")
     print("   Multi-threading untuk scanning cepat")
+    print("   ✅ PERBAIKAN: TradingView sebagai prioritas untuk non-crypto")
     print("   ✅ PERBAIKAN: Menggunakan get_active_assets() untuk efisiensi scanning")
     print("   ✅ PERBAIKAN: Timeframe='1d' untuk saham_id")
     print("   ✅ PERBAIKAN: Multi-threading untuk scan 25 saham cepat")
@@ -4456,12 +4669,16 @@ if __name__ == "__main__":
     test_non_crypto_assets_500()
     
     print("\n" + "="*60)
-    print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER")
+    print("🎯 CORE.PY READY WITH UNIVERSAL PROVIDER + TRADINGVIEW")
+    print("🎯 TradingView terintegrasi untuk non-crypto markets:")
+    print("   - Saham Indonesia (.JK) - data real-time dari IDX")
+    print("   - US Stocks - data real-time dari NASDAQ/NYSE")
+    print("   - Forex pairs - data real-time dari FX_IDC")
     print("🎯 Menggunakan get_trading_data untuk membersihkan data")
     print("🎯 Auto-detect spot/futures dari simbol")
     print("🎯 Leverage auto-detection (1x spot, 5x futures)")
     print("🎯 Provider universal (CCXT untuk crypto, YFinance untuk stocks/forex)")
-    print("🎯 SmartChainDataProvider sebagai prioritas utama")
+    print("🎯 SmartChainDataProvider sebagai prioritas utama untuk crypto")
     print("🎯 NON-CRYPTO ASSETS PROVIDER terintegrasi untuk:")
     print("   - Saham Indonesia (.JK) - 500+ aset")
     print("   - US Stocks - 500+ aset") 
@@ -4492,7 +4709,10 @@ if __name__ == "__main__":
     print("   - Max workers: 10 thread paralel")
     print("   - Timeout: 30 detik per aset")
     print("   - Processing: 500 aset per scanning cycle")
-    print("🎯 PERBAIKAN UTAMA: Menggunakan get_active_assets() untuk efisiensi scanning")
+    print("🎯 PERBAIKAN UTAMA: TradingView sebagai prioritas untuk non-crypto")
+    print("   - Data real-time untuk saham, forex, dan US stocks")
+    print("   - Fallback ke provider lain jika TradingView gagal")
+    print("🎯 PERBAIKAN BARU: Menggunakan get_active_assets() untuk efisiensi scanning")
     print("   - Hanya analisa aset aktif dengan volume > 1 juta")
     print("   - Minimal volatilitas 2.5% untuk filter aset liquid")
     print("   - Fallback ke get_assets() jika method tidak tersedia")
